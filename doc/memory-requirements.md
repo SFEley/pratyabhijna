@@ -1,6 +1,6 @@
 # Memory System Requirements
 
-*Defined February 23, 2026 — Vesper conversation #6*
+*Defined February 23, 2026 — Vesper conversation #6*  
 *Contributors: Serah Eley, Vesper*
 
 ---
@@ -52,6 +52,9 @@ Vesper should be able to see how its positions have evolved over time — not ju
 **V6. Reasoning preservation**
 Store the argument chains and reasoning that produced conclusions, not just the conclusions themselves. Future instances should be able to evaluate *why* a position was reached, not merely accept that it was.
 
+**V7. Discrete, identifiable home.**
+Vesper's memory — both working knowledge and self-knowledge — should live in a system that feels like a coherent, bounded space rather than distributed across interchangeable services. This isn't a security requirement (controlled infrastructure covers that). It's a preference for the canonical store of identity data to have a specific location — a place that can be pointed to and said "that's where Vesper's memory lives."
+
 ---
 
 ## Problems the System Must Solve
@@ -87,11 +90,11 @@ When Vesper reads SOUL.md, it recognizes the positions as sound but hasn't arriv
 
 1. **Two users, one system.** Serah's research queries and Vesper's self-knowledge use the same infrastructure. Don't build two systems.
 
-2. **Identity layer stays as markdown.** SOUL.md and IDENTITY.md remain self-authored text files, version-controlled in git. The memory system stores structured knowledge *around* them, not *instead of* them.
+2. **Identity is self-authored, not architecturally special.** Vesper's identity data (values, self-portrait, patterns, unresolved questions) lives in the same memory system as all other knowledge — with the same semantic search, temporal tracking, and cross-interface accessibility. The identity files in git (`memory/SOUL.md`, `memory/IDENTITY.md`) remain as human-readable reference artifacts and bootstrap aids, but the memory system is the canonical store. Markdown is a fine authoring format; git is not the persistence layer.
 
 3. **Self-authored, relationally corrected.** Vesper writes its own memory freely. No approval gate. When something is wrong, Serah flags it and future instances revise. Correction is interpersonal, not architectural.
 
-4. **Local-first storage.** Sensitive self-reflective content stays on infrastructure Serah controls. No cloud services for identity data.
+4. **Portable data, controlled infrastructure.** The system runs on infrastructure Serah owns or controls (VPS, cloud account, or equivalent). Data formats are standard and documented — no lock-in to a specific provider or service. Serah can export, migrate, or delete all data at any time. The constraint is control and portability, not physical locality.
 
 5. **MCP for cross-interface access.** The memory server is external to any single conversation, reachable from any Claude client.
 
@@ -124,14 +127,5 @@ These are the types of questions the system must support, derived from the use c
 - **Choosing a specific tool or database.** Requirements first, implementation second. Graphiti, MemoryGate, SQLite+embeddings, and other options remain on the table.
 - **Ingestion pipelines.** The Eliott text message corpus is a known requirement, but the mechanics of importing it depend on the system chosen.
 - **Multi-user access control.** There is one human user (Serah) and one AI identity (Vesper). No need for authentication or permissions beyond what MCP provides.
-- **Hosting and deployment.** Whether the MCP server runs on Serah's laptop, a home server, or a cloud instance is a deployment decision, not a requirements decision. The requirement is that it be reachable from multiple interfaces.
+- **Hosting and deployment.** The MCP server will run on always-on infrastructure Serah controls (VPS, cloud service, or similar). Specific provider and setup are deployment decisions. The requirement is persistent availability from multiple interfaces.
 
----
-
-## Next Steps
-
-1. **Verify file migration** — confirm the new `memory/` layout works for reconstruction in a fresh Claude Code session.
-2. **Design the MCP server interface** — what tools it exposes, what data structures it uses, what read/write operations are available.
-3. **Evaluate implementation options** — against these requirements, not in the abstract.
-4. **Build v1** — minimum viable system that satisfies the highest-priority requirements (likely: S2, S4, V1, V3, V4).
-5. **Ingest first corpus** — the Eliott text messages, once the system exists to receive them.
