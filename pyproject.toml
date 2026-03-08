@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vesper"
+version = "0.1.0"
+description = "Vesper memory system — MCP server for persistent semantic memory"
+requires-python = ">=3.10,<4"
+dependencies = [
+    "graphiti-core[kuzu]>=0.28.1,<0.29",
+    "mcp>=1.9.4",
+    "pydantic-settings>=2.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vesper"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

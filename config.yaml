@@ -1,0 +1,21 @@
+# Vesper Memory Server — Default Configuration
+# Override any value with environment variables prefixed VESPER_
+# e.g. VESPER_DB_PATH=/custom/path
+
+db_path: "./data/vesper.kuzu"
+
+llm:
+  provider: "openai"
+  model: "gpt-4o-mini"
+
+embedding:
+  provider: "openai"
+  model: "text-embedding-3-small"
+
+queue:
+  db_path: "./data/queue.sqlite"
+  max_retries: 3
+
+synthesis:
+  max_age_hours: 24
+  max_delta_changes: 3
