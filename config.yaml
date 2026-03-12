@@ -2,7 +2,11 @@
 # Override any value with environment variables prefixed VESPER_
 # e.g. VESPER_DB_PATH=/custom/path
 
-db_path: "./data/vesper.kuzu"
+neo4j:
+  uri: "bolt://localhost:7687"
+  user: "neo4j"
+  password: "vesper-dev"
+  database: "vesper-dev"
 
 llm:
   provider: "openai"

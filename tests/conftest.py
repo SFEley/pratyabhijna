@@ -1,7 +1,6 @@
 """Shared test fixtures for Vesper memory server."""
 
 import os
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -16,7 +15,9 @@ def tmp_data_dir(tmp_path):
 @pytest.fixture
 def config_env(tmp_data_dir, monkeypatch):
     """Set environment variables pointing to temporary test paths."""
-    monkeypatch.setenv("VESPER_DB_PATH", str(tmp_data_dir / "test.kuzu"))
+    monkeypatch.setenv("VESPER_NEO4J__URI", "bolt://localhost:7687")
+    monkeypatch.setenv("VESPER_NEO4J__USER", "neo4j")
+    monkeypatch.setenv("VESPER_NEO4J__PASSWORD", "")
     monkeypatch.setenv("VESPER_QUEUE__DB_PATH", str(tmp_data_dir / "queue.sqlite"))
 
 
@@ -24,7 +25,11 @@ def config_env(tmp_data_dir, monkeypatch):
 def config_yaml(tmp_path):
     """Write a minimal config YAML and return its path."""
     yaml_content = f"""\
-db_path: "{tmp_path / 'vesper.kuzu'}"
+neo4j:
+  uri: "bolt://localhost:7687"
+  user: "neo4j"
+  password: ""
+  database: "neo4j"
 
 llm:
   provider: "openai"

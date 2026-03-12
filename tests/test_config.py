@@ -16,8 +16,8 @@ class TestConfigLoading:
         from vesper.config import VesperConfig
 
         config = VesperConfig.from_yaml(config_yaml)
-        assert config.db_path is not None
-        assert "vesper.kuzu" in str(config.db_path)
+        assert config.neo4j.uri == "bolt://localhost:7687"
+        assert config.neo4j.user == "neo4j"
 
     def test_has_llm_settings(self, config_yaml):
         """Config includes LLM provider and model."""
@@ -55,13 +55,13 @@ class TestConfigLoading:
 class TestConfigEnvOverrides:
     """Environment variables override YAML values."""
 
-    def test_env_overrides_db_path(self, config_yaml, monkeypatch):
-        """VESPER_DB_PATH overrides the YAML db_path."""
+    def test_env_overrides_neo4j_uri(self, config_yaml, monkeypatch):
+        """VESPER_NEO4J__URI overrides the YAML neo4j.uri."""
         from vesper.config import VesperConfig
 
-        monkeypatch.setenv("VESPER_DB_PATH", "/override/path.kuzu")
+        monkeypatch.setenv("VESPER_NEO4J__URI", "bolt://remotehost:7687")
         config = VesperConfig.from_yaml(config_yaml)
-        assert str(config.db_path) == "/override/path.kuzu"
+        assert config.neo4j.uri == "bolt://remotehost:7687"
 
     def test_env_overrides_nested_value(self, config_yaml, monkeypatch):
         """VESPER_LLM__MODEL overrides the nested llm.model."""
@@ -85,5 +85,5 @@ class TestConfigDefaults:
                 monkeypatch.delenv(key, raising=False)
 
         config = VesperConfig()
-        assert config.db_path is not None
+        assert config.neo4j.uri == "bolt://localhost:7687"
         assert config.llm.provider == "openai"

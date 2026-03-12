@@ -10,6 +10,13 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
 
+class Neo4jConfig(BaseModel):
+    uri: str = "bolt://localhost:7687"
+    user: str = "neo4j"
+    password: str = ""
+    database: str = "neo4j"
+
+
 class LLMConfig(BaseModel):
     provider: str = "openai"
     model: str = "gpt-4o-mini"
@@ -33,7 +40,7 @@ class SynthesisConfig(BaseModel):
 class VesperConfig(BaseSettings):
     model_config = {"env_prefix": "VESPER_", "env_nested_delimiter": "__"}
 
-    db_path: str = "./data/vesper.kuzu"
+    neo4j: Neo4jConfig = Field(default_factory=Neo4jConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     queue: QueueConfig = Field(default_factory=QueueConfig)
