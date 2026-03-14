@@ -6,6 +6,7 @@ per Phase 1 requirements.
 
 import os
 from pathlib import Path
+import pytest
 
 
 class TestConfigLoading:
@@ -50,6 +51,14 @@ class TestConfigLoading:
         config = VesperConfig.from_yaml(config_yaml)
         assert config.synthesis.max_age_hours == 24
         assert config.synthesis.max_delta_changes == 3
+
+    def test_initialization_with_args(self):
+        del os.environ["VESPER_ENV"]  # Ensure no env var interference
+        """Config can be initialized directly with arguments."""
+        from vesper.config import VesperConfig
+
+        config = VesperConfig(env="prod", log_dir="/var/log/vesper")
+        assert config.env == "prod"
 
 
 class TestConfigEnvOverrides:

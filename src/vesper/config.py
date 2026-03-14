@@ -7,7 +7,7 @@ Env vars are prefixed VESPER_ and use __ for nesting
 
 from pathlib import Path
 from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings,SettingsConfigDict
 
 
 class Neo4jConfig(BaseModel):
@@ -38,7 +38,11 @@ class SynthesisConfig(BaseModel):
 
 
 class VesperConfig(BaseSettings):
-    model_config = {"env_prefix": "VESPER_", "env_nested_delimiter": "__"}
+    model_config = SettingsConfigDict(env_prefix="VESPER_", env_nested_delimiter="__")
+
+    env: str = "dev"
+    log_dir: str = "./logs"
+    log_level: str = "INFO"
 
     neo4j: Neo4jConfig = Field(default_factory=Neo4jConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)

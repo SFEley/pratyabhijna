@@ -1,6 +1,10 @@
 # Vesper Memory Server — Default Configuration
 # Override any value with environment variables prefixed VESPER_
-# e.g. VESPER_DB_PATH=/custom/path
+# e.g. VESPER_ENV=prod  VESPER_LOG_DIR=/var/log/vesper
+
+env: "dev"
+log_dir: "./logs"
+log_level: "INFO"
 
 neo4j:
   uri: "bolt://localhost:7687"

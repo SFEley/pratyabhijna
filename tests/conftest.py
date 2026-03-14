@@ -15,6 +15,7 @@ def tmp_data_dir(tmp_path):
 @pytest.fixture
 def config_env(tmp_data_dir, monkeypatch):
     """Set environment variables pointing to temporary test paths."""
+    monkeypatch.setenv("VESPER_ENV", "test")
     monkeypatch.setenv("VESPER_NEO4J__URI", "bolt://localhost:7687")
     monkeypatch.setenv("VESPER_NEO4J__USER", "neo4j")
     monkeypatch.setenv("VESPER_NEO4J__PASSWORD", "")

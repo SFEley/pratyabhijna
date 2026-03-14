@@ -16,7 +16,7 @@ class VesperService:
         self._graphiti = None
 
     async def start(self):
-        """Initialize the Graphiti client and connect to Kuzu."""
+        """Initialize the Graphiti client and connect to Neo4j."""
         raise NotImplementedError
 
     async def stop(self):
