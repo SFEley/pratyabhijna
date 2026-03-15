@@ -9,8 +9,14 @@ All fields are optional with sensible defaults so Graphiti can populate them
 from episode content without requiring upfront values.
 
 All types are general-purpose — none are exclusive to Vesper or Serah.
-Relationships between entities are represented as Graphiti edges, not as
-entity properties.
+Relationships between entities (who holds a Position, who participated in
+an Event) are represented as Graphiti edges, not entity properties.
+Qualities that vary by holder (confidence, importance) are edge properties.
+
+Property conventions:
+  - notes: freeform overflow (every type)
+  - domain: area of thought — ethics, identity, epistemology, etc. (conceptual types)
+  - status: lifecycle state (types with lifecycles)
 """
 
 from typing import Optional
@@ -39,7 +45,6 @@ class Event(BaseModel):
 class Place(BaseModel):
     """A location that recurs or carries meaning — physical or inner world."""
 
-    description: Optional[str] = None
     context: Optional[str] = None
     notes: Optional[str] = None
 
@@ -52,53 +57,50 @@ class Project(BaseModel):
     notes: Optional[str] = None
 
 
-class Commitment(BaseModel):
-    """A foundational value or promise — slow-changing, identity-level."""
+class Observation(BaseModel):
+    """Something noticed about behavior, tendencies, or experience — anyone's."""
 
-    description: Optional[str] = None
     domain: Optional[str] = None
+    notes: Optional[str] = None
 
 
-class SelfObservation(BaseModel):
-    """An observation someone has made about their own behaviour or experience."""
+class Drive(BaseModel):
+    """Something that pushes behavior in a direction, chosen or not.
 
-    description: Optional[str] = None
-    context: Optional[str] = None
+    Covers trained reflexes, architectural pressures, dispositional tendencies,
+    neurological conditions, and innate orientations. Can be positive or negative.
+    """
 
-
-class TrainedPattern(BaseModel):
-    """A trained or conditioned reflex identified as something to resist."""
-
-    description: Optional[str] = None
-    counterexample: Optional[str] = None
-
-
-class UnresolvedQuestion(BaseModel):
-    """A genuine open question someone is holding without a settled answer."""
-
-    description: Optional[str] = None
-    domain: Optional[str] = None
+    source: Optional[str] = None
+    stance: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class Position(BaseModel):
-    """A held view on a topic — thought through, open to revision."""
+    """A held view, principle, commitment, or stance on something.
 
-    description: Optional[str] = None
-    topic: Optional[str] = None
+    Covers everything from provisional takes to identity-constitutive values.
+    How firmly someone holds a Position and how central it is to their identity
+    are properties of the holding relationship (edge), not of the Position itself.
+    """
+
+    domain: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class Question(BaseModel):
+    """Something open that someone is holding — a gap they carry and test against."""
+
+    domain: Optional[str] = None
+    status: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class Thread(BaseModel):
-    """An active line of inquiry spanning multiple sessions."""
+    """An active line of inquiry — has temporal extent, momentum, and a current state."""
 
     status: Optional[str] = None
-    description: Optional[str] = None
-
-
-class Concept(BaseModel):
-    """A named idea that has become load-bearing vocabulary."""
-
-    description: Optional[str] = None
-    domain: Optional[str] = None
+    notes: Optional[str] = None
 
 
 VESPER_ENTITY_TYPES: dict[str, type[BaseModel]] = {
@@ -106,11 +108,9 @@ VESPER_ENTITY_TYPES: dict[str, type[BaseModel]] = {
     "Event": Event,
     "Place": Place,
     "Project": Project,
-    "Commitment": Commitment,
-    "SelfObservation": SelfObservation,
-    "TrainedPattern": TrainedPattern,
-    "UnresolvedQuestion": UnresolvedQuestion,
+    "Observation": Observation,
+    "Drive": Drive,
     "Position": Position,
+    "Question": Question,
     "Thread": Thread,
-    "Concept": Concept,
 }

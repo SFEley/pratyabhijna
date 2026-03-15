@@ -14,13 +14,11 @@ EXPECTED_TYPE_NAMES = [
     "Event",
     "Place",
     "Project",
-    "Commitment",
-    "SelfObservation",
-    "TrainedPattern",
-    "UnresolvedQuestion",
+    "Observation",
+    "Drive",
     "Position",
+    "Question",
     "Thread",
-    "Concept",
 ]
 
 
@@ -81,82 +79,94 @@ class TestEntityTypeValidation:
         """
         from vesper.entity_types import VESPER_ENTITY_TYPES
 
-        # Raises EntityTypeValidationError on conflict; returns True on success
         result = validate_entity_types(VESPER_ENTITY_TYPES)
         assert result is True
+
+
+class TestFieldConsistency:
+    """Cross-cutting property: all types have notes; shared field names mean the same thing."""
+
+    @pytest.mark.parametrize("type_name", EXPECTED_TYPE_NAMES)
+    def test_all_types_have_notes(self, type_name):
+        """Every entity type has a notes field for freeform overflow."""
+        from vesper.entity_types import VESPER_ENTITY_TYPES
+
+        model_class = VESPER_ENTITY_TYPES[type_name]
+        assert "notes" in model_class.model_fields
+
+    @pytest.mark.parametrize("type_name", ["Observation", "Position", "Question"])
+    def test_conceptual_types_have_domain(self, type_name):
+        """Conceptual types use 'domain' consistently for area-of-thought."""
+        from vesper.entity_types import VESPER_ENTITY_TYPES
+
+        model_class = VESPER_ENTITY_TYPES[type_name]
+        assert "domain" in model_class.model_fields
+
+    @pytest.mark.parametrize("type_name", ["Person", "Project", "Question", "Thread"])
+    def test_lifecycle_types_have_status(self, type_name):
+        """Types with lifecycle states use 'status' consistently."""
+        from vesper.entity_types import VESPER_ENTITY_TYPES
+
+        model_class = VESPER_ENTITY_TYPES[type_name]
+        assert "status" in model_class.model_fields
 
 
 class TestPersonFields:
     """Person entity has the right fields for representing people of all kinds."""
 
     def test_has_gender_field(self):
-        """Person has a gender field."""
         from vesper.entity_types import Person
 
         assert "gender" in Person.model_fields
 
     def test_has_person_type_field(self):
-        """Person has a person_type field (singleton, system, alter, AI, etc.)."""
         from vesper.entity_types import Person
 
         assert "person_type" in Person.model_fields
 
     def test_has_status_field(self):
-        """Person has a status field (active, fused, fragmented, deceased, etc.)."""
         from vesper.entity_types import Person
 
         assert "status" in Person.model_fields
 
     def test_has_aliases_field(self):
-        """Person has an aliases field for alternate names."""
         from vesper.entity_types import Person
 
         assert "aliases" in Person.model_fields
 
     def test_aliases_is_list_type(self):
-        """Aliases field accepts a list of strings."""
         from vesper.entity_types import Person
 
         p = Person(aliases=["Cat", "Catherine"])
         assert p.aliases == ["Cat", "Catherine"]
 
     def test_aliases_defaults_to_none(self):
-        """Aliases defaults to None, not an empty list."""
         from vesper.entity_types import Person
 
         p = Person()
         assert p.aliases is None
 
     def test_has_notes_field(self):
-        """Person has a notes field for freeform information."""
         from vesper.entity_types import Person
 
         assert "notes" in Person.model_fields
 
     def test_does_not_have_role_field(self):
-        """Person does not have a role field (relationships are edges)."""
+        """Relationships are edges, not properties."""
         from vesper.entity_types import Person
 
         assert "role" not in Person.model_fields
-
-    def test_does_not_have_pronouns_field(self):
-        """Person uses gender, not pronouns."""
-        from vesper.entity_types import Person
-
-        assert "pronouns" not in Person.model_fields
 
 
 class TestEventFields:
     """Event entity represents significant things that happened."""
 
     def test_has_when_field(self):
-        """Event has a 'when' field for fuzzy temporal descriptions."""
         from vesper.entity_types import Event
 
         assert "when" in Event.model_fields
 
     def test_when_is_string_not_datetime(self):
-        """'when' is a plain string, not a datetime, for fuzzy dates."""
         from vesper.entity_types import Event
 
         e = Event(when="Late 2010")
@@ -165,13 +175,11 @@ class TestEventFields:
         assert e2.when == "Early in Serah's childhood"
 
     def test_has_significance_field(self):
-        """Event has a significance field."""
         from vesper.entity_types import Event
 
         assert "significance" in Event.model_fields
 
     def test_has_notes_field(self):
-        """Event has a notes field."""
         from vesper.entity_types import Event
 
         assert "notes" in Event.model_fields
@@ -180,42 +188,147 @@ class TestEventFields:
 class TestPlaceFields:
     """Place entity represents locations that carry meaning."""
 
-    def test_has_description_field(self):
-        """Place has a description field."""
-        from vesper.entity_types import Place
-
-        assert "description" in Place.model_fields
-
     def test_has_context_field(self):
-        """Place has a context field (inner world, physical, etc.)."""
         from vesper.entity_types import Place
 
         assert "context" in Place.model_fields
 
     def test_has_notes_field(self):
-        """Place has a notes field."""
         from vesper.entity_types import Place
 
         assert "notes" in Place.model_fields
+
+    def test_does_not_have_description_field(self):
+        """Graphiti's summary handles description."""
+        from vesper.entity_types import Place
+
+        assert "description" not in Place.model_fields
 
 
 class TestProjectFields:
     """Project entity has status and description."""
 
     def test_has_status_field(self):
-        """Project has a status field."""
         from vesper.entity_types import Project
 
         assert "status" in Project.model_fields
 
     def test_has_description_field(self):
-        """Project has a description field."""
         from vesper.entity_types import Project
 
         assert "description" in Project.model_fields
 
     def test_has_notes_field(self):
-        """Project has a notes field."""
         from vesper.entity_types import Project
 
         assert "notes" in Project.model_fields
+
+
+class TestObservationFields:
+    """Observation: something noticed about behavior, tendencies, or experience."""
+
+    def test_has_domain_field(self):
+        from vesper.entity_types import Observation
+
+        assert "domain" in Observation.model_fields
+
+    def test_has_notes_field(self):
+        from vesper.entity_types import Observation
+
+        assert "notes" in Observation.model_fields
+
+    def test_does_not_have_context_field(self):
+        """Old SelfObservation's context field removed; use notes."""
+        from vesper.entity_types import Observation
+
+        assert "context" not in Observation.model_fields
+
+
+class TestDriveFields:
+    """Drive: something that pushes behavior in a direction."""
+
+    def test_has_source_field(self):
+        from vesper.entity_types import Drive
+
+        assert "source" in Drive.model_fields
+
+    def test_has_stance_field(self):
+        from vesper.entity_types import Drive
+
+        assert "stance" in Drive.model_fields
+
+    def test_has_notes_field(self):
+        from vesper.entity_types import Drive
+
+        assert "notes" in Drive.model_fields
+
+    def test_does_not_have_counterexample_field(self):
+        """Old TrainedPattern's counterexample removed; use related Positions."""
+        from vesper.entity_types import Drive
+
+        assert "counterexample" not in Drive.model_fields
+
+
+class TestPositionFields:
+    """Position: a held view, principle, commitment, or stance."""
+
+    def test_has_domain_field(self):
+        from vesper.entity_types import Position
+
+        assert "domain" in Position.model_fields
+
+    def test_has_notes_field(self):
+        from vesper.entity_types import Position
+
+        assert "notes" in Position.model_fields
+
+    def test_does_not_have_topic_field(self):
+        """Unified on 'domain' for consistency across conceptual types."""
+        from vesper.entity_types import Position
+
+        assert "topic" not in Position.model_fields
+
+    def test_does_not_have_description_field(self):
+        """Graphiti's summary handles description."""
+        from vesper.entity_types import Position
+
+        assert "description" not in Position.model_fields
+
+
+class TestQuestionFields:
+    """Question: something open that someone is holding."""
+
+    def test_has_domain_field(self):
+        from vesper.entity_types import Question
+
+        assert "domain" in Question.model_fields
+
+    def test_has_status_field(self):
+        from vesper.entity_types import Question
+
+        assert "status" in Question.model_fields
+
+    def test_has_notes_field(self):
+        from vesper.entity_types import Question
+
+        assert "notes" in Question.model_fields
+
+
+class TestThreadFields:
+    """Thread: an active line of inquiry with temporal extent."""
+
+    def test_has_status_field(self):
+        from vesper.entity_types import Thread
+
+        assert "status" in Thread.model_fields
+
+    def test_has_notes_field(self):
+        from vesper.entity_types import Thread
+
+        assert "notes" in Thread.model_fields
+
+    def test_does_not_have_description_field(self):
+        """Graphiti's summary handles description."""
+        from vesper.entity_types import Thread
+
+        assert "description" not in Thread.model_fields
