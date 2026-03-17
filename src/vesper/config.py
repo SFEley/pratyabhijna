@@ -44,6 +44,7 @@ class EmbeddingConfig(BaseModel):
 class QueueConfig(BaseModel):
     db_path: str = "./data/queue.sqlite"
     max_retries: int = 3
+    poll_interval: float = 0.5
 
 
 class SynthesisConfig(BaseModel):
