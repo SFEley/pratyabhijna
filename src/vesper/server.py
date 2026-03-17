@@ -1,14 +1,29 @@
 """Vesper MCP server entry point.
 
 Creates a FastMCP server with all seven tools registered.
-Tools are stubs until their respective phases are implemented.
+Tools are wired to service and queue when provided.
 """
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
 
+if TYPE_CHECKING:
+    from vesper.queue import WorkQueue
+    from vesper.service import VesperService
 
-def create_server() -> FastMCP:
-    """Create and configure the Vesper MCP server."""
+
+def create_server(
+    service: VesperService | None = None,
+    queue: WorkQueue | None = None,
+) -> FastMCP:
+    """Create and configure the Vesper MCP server.
+
+    When service and queue are provided, write tools and status
+    return live values. Otherwise tools return stubs or raise.
+    """
     server = FastMCP("vesper")
 
     # --- Phase 1: status ---
@@ -18,9 +33,9 @@ def create_server() -> FastMCP:
         """System orientation — DB health, queue depth, last write time."""
         from vesper.tools.status import status as _status
 
-        return await _status()
+        return await _status(service=service, queue=queue)
 
-    # --- Phase 3: write tools (stubs until Phase 3) ---
+    # --- Phase 3b: write tools ---
 
     @server.tool()
     async def remember(
@@ -29,7 +44,13 @@ def create_server() -> FastMCP:
         source: str = "vesper",
     ) -> dict:
         """Queue an observation, fact, reasoning, or identity item for processing."""
-        raise NotImplementedError("remember is not yet implemented (Phase 3)")
+        if queue is None:
+            raise RuntimeError("remember requires a running work queue")
+        from vesper.tools.remember import remember as _remember
+
+        return await _remember(
+            queue=queue, content=content, memory_type=memory_type, source=source,
+        )
 
     @server.tool()
     async def correct(
@@ -37,7 +58,11 @@ def create_server() -> FastMCP:
         search_terms: str,
     ) -> dict:
         """Queue a correction with temporal supersession."""
-        raise NotImplementedError("correct is not yet implemented (Phase 3)")
+        if queue is None:
+            raise RuntimeError("correct requires a running work queue")
+        from vesper.tools.correct import correct as _correct
+
+        return await _correct(queue=queue, content=content, search_terms=search_terms)
 
     # --- Phase 4: read tools (stubs until Phase 4) ---
 
