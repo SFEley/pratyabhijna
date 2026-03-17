@@ -2,8 +2,71 @@
 
 import os
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 import pytest
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--live",
+        action="store_true",
+        default=False,
+        help="Run tests against real services (Neo4j, etc.) instead of mocks.",
+    )
+
+
+@pytest.fixture
+def live_mode(request):
+    """Whether tests should hit real services."""
+    return request.config.getoption("--live") or os.getenv("VESPER_TEST_LIVE") == "1"
+
+
+@pytest.fixture
+def mock_graphiti(live_mode):
+    """Patch Neo4jDriver, Graphiti, and client builders unless running in live mode.
+
+    Yields a namespace with .driver_cls, .graphiti_cls, .llm_builder,
+    and .embedder_builder (the mocks, or None in live mode) so tests
+    can make assertions on calls.
+    """
+    if live_mode:
+        yield MagicNS(driver_cls=None, graphiti_cls=None,
+                       llm_builder=None, embedder_builder=None)
+    else:
+        with patch("vesper.service.Neo4jDriver") as mock_driver, \
+             patch("vesper.service.Graphiti") as mock_graphiti_cls, \
+             patch("vesper.service._build_llm_client") as mock_llm, \
+             patch("vesper.service._build_embedder") as mock_embedder:
+            yield MagicNS(driver_cls=mock_driver, graphiti_cls=mock_graphiti_cls,
+                           llm_builder=mock_llm, embedder_builder=mock_embedder)
+
+
+class MagicNS:
+    """Simple namespace for fixture return values."""
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+@pytest.fixture
+def live_config(live_mode):
+    """Config tuned for the current test mode.
+
+    Live mode: real Neo4j credentials for the vesper-test database.
+    Mock mode: default config (connection details don't matter).
+    """
+    from vesper.config import VesperConfig, Neo4jConfig
+
+    if live_mode:
+        return VesperConfig(
+            neo4j=Neo4jConfig(
+                uri="neo4j://127.0.0.1:7687",
+                user="neo4j",
+                password="vesper-test",
+                database="vesper-test",
+            )
+        )
+    return VesperConfig()
 
 
 @pytest.fixture

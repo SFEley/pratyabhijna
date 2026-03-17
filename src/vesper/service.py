@@ -8,13 +8,55 @@ and graphiti-core.
 from graphiti_core import Graphiti
 from graphiti_core.driver.neo4j_driver import Neo4jDriver
 
+from vesper.config import VesperConfig
 from vesper.entity_types import VESPER_ENTITY_TYPES
+
+
+def _build_llm_client(config: VesperConfig):
+    """Construct LLM client from config."""
+    llm = config.llm
+    if llm.provider == "anthropic":
+        from graphiti_core.llm_client.anthropic_client import AnthropicClient
+        from graphiti_core.llm_client.config import LLMConfig
+
+        return AnthropicClient(
+            config=LLMConfig(api_key=llm.api_key or None, model=llm.model),
+        )
+    if llm.provider == "openai":
+        from graphiti_core.llm_client.openai_client import OpenAIClient
+        from graphiti_core.llm_client.config import LLMConfig
+
+        return OpenAIClient(
+            config=LLMConfig(api_key=llm.api_key or None, model=llm.model),
+        )
+    raise ValueError(f"Unsupported LLM provider: {llm.provider}")
+
+
+def _build_embedder(config: VesperConfig):
+    """Construct embedding client from config."""
+    emb = config.embedding
+    if emb.provider == "voyageai":
+        from graphiti_core.embedder.voyage import VoyageAIEmbedder, VoyageAIEmbedderConfig
+
+        return VoyageAIEmbedder(
+            config=VoyageAIEmbedderConfig(
+                api_key=emb.api_key or None,
+                embedding_model=emb.model,
+            ),
+        )
+    if emb.provider == "openai":
+        from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
+
+        return OpenAIEmbedder(
+            config=OpenAIEmbedderConfig(api_key=emb.api_key or None),
+        )
+    raise ValueError(f"Unsupported embedding provider: {emb.provider}")
 
 
 class VesperService:
     """Wraps graphiti-core client with Vesper-specific lifecycle."""
 
-    def __init__(self, config):
+    def __init__(self, config: VesperConfig):
         self.config = config
         self._graphiti = None
 
@@ -27,7 +69,13 @@ class VesperService:
             password=neo4j.password,
             database=neo4j.database,
         )
-        self._graphiti = Graphiti(graph_driver=driver)
+        llm_client = _build_llm_client(self.config)
+        embedder = _build_embedder(self.config)
+        self._graphiti = Graphiti(
+            graph_driver=driver,
+            llm_client=llm_client,
+            embedder=embedder,
+        )
 
     async def stop(self):
         """Shut down the Graphiti client."""

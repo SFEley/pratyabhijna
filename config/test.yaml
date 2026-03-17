@@ -1,0 +1,23 @@
+# Vesper test configuration.
+# Secrets (API keys, passwords) go in .env.test, not here.
+
+neo4j:
+  uri: "neo4j://127.0.0.1:7687"
+  user: "neo4j"
+  database: "vesper-test"
+
+llm:
+  provider: "anthropic"
+  model: "claude-sonnet-4-6"
+
+embedding:
+  provider: "voyageai"
+  model: "voyage-3"
+
+queue:
+  db_path: "./data/queue-test.sqlite"
+  max_retries: 1
+
+synthesis:
+  max_age_hours: 24
+  max_delta_changes: 3
