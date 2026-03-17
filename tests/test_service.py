@@ -58,6 +58,7 @@ class TestGraphitiInitialization:
                 graph_driver=mock_graphiti.driver_cls.return_value,
                 llm_client=mock_graphiti.llm_builder.return_value,
                 embedder=mock_graphiti.embedder_builder.return_value,
+                cross_encoder=mock_graphiti.cross_encoder_builder.return_value,
             )
         else:
             assert service.is_connected

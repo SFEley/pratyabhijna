@@ -32,14 +32,17 @@ def mock_graphiti(live_mode):
     """
     if live_mode:
         yield MagicNS(driver_cls=None, graphiti_cls=None,
-                       llm_builder=None, embedder_builder=None)
+                       llm_builder=None, embedder_builder=None,
+                       cross_encoder_builder=None)
     else:
         with patch("vesper.service.Neo4jDriver") as mock_driver, \
              patch("vesper.service.Graphiti") as mock_graphiti_cls, \
              patch("vesper.service._build_llm_client") as mock_llm, \
-             patch("vesper.service._build_embedder") as mock_embedder:
+             patch("vesper.service._build_embedder") as mock_embedder, \
+             patch("vesper.service._build_cross_encoder") as mock_cross:
             yield MagicNS(driver_cls=mock_driver, graphiti_cls=mock_graphiti_cls,
-                           llm_builder=mock_llm, embedder_builder=mock_embedder)
+                           llm_builder=mock_llm, embedder_builder=mock_embedder,
+                           cross_encoder_builder=mock_cross)
 
 
 class MagicNS:
@@ -52,20 +55,13 @@ class MagicNS:
 def live_config(live_mode):
     """Config tuned for the current test mode.
 
-    Live mode: real Neo4j credentials for the vesper-test database.
+    Live mode: loads config/test.yaml + .env.test via from_env().
     Mock mode: default config (connection details don't matter).
     """
-    from vesper.config import VesperConfig, Neo4jConfig
+    from vesper.config import VesperConfig
 
     if live_mode:
-        return VesperConfig(
-            neo4j=Neo4jConfig(
-                uri="neo4j://127.0.0.1:7687",
-                user="neo4j",
-                password="vesper-test",
-                database="vesper-test",
-            )
-        )
+        return VesperConfig.from_env("test")
     return VesperConfig()
 
 

@@ -53,6 +53,24 @@ def _build_embedder(config: VesperConfig):
     raise ValueError(f"Unsupported embedding provider: {emb.provider}")
 
 
+def _build_cross_encoder(config: VesperConfig):
+    """Construct cross-encoder (reranker) from config.
+
+    Uses the same provider as the embedder — if you're using Voyage
+    for embeddings, you get Voyage reranking too.
+    """
+    emb = config.embedding
+    if emb.provider == "voyageai":
+        from vesper.reranker import VoyageRerankerClient
+
+        return VoyageRerankerClient(api_key=emb.api_key or None)
+    if emb.provider == "openai":
+        from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
+
+        return OpenAIRerankerClient()
+    raise ValueError(f"No cross-encoder available for provider: {emb.provider}")
+
+
 class VesperService:
     """Wraps graphiti-core client with Vesper-specific lifecycle."""
 
@@ -71,10 +89,12 @@ class VesperService:
         )
         llm_client = _build_llm_client(self.config)
         embedder = _build_embedder(self.config)
+        cross_encoder = _build_cross_encoder(self.config)
         self._graphiti = Graphiti(
             graph_driver=driver,
             llm_client=llm_client,
             embedder=embedder,
+            cross_encoder=cross_encoder,
         )
 
     async def stop(self):
