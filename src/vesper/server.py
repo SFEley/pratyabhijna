@@ -1,0 +1,99 @@
+"""Vesper MCP server entry point.
+
+Creates a FastMCP server with all seven tools registered.
+Tools are wired to service and queue when provided.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from mcp.server.fastmcp import FastMCP
+
+if TYPE_CHECKING:
+    from vesper.queue import WorkQueue
+    from vesper.service import VesperService
+
+
+def create_server(
+    service: VesperService | None = None,
+    queue: WorkQueue | None = None,
+) -> FastMCP:
+    """Create and configure the Vesper MCP server.
+
+    When service and queue are provided, write tools and status
+    return live values. Otherwise tools return stubs or raise.
+    """
+    server = FastMCP("vesper")
+
+    # --- Phase 1: status ---
+
+    @server.tool()
+    async def status() -> dict:
+        """System orientation — DB health, queue depth, last write time."""
+        from vesper.tools.status import status as _status
+
+        return await _status(service=service, queue=queue)
+
+    # --- Phase 3b: write tools ---
+
+    @server.tool()
+    async def remember(
+        content: str,
+        memory_type: str = "observation",
+        source: str = "vesper",
+    ) -> dict:
+        """Queue an observation, fact, reasoning, or identity item for processing."""
+        if queue is None:
+            raise RuntimeError("remember requires a running work queue")
+        from vesper.tools.remember import remember as _remember
+
+        return await _remember(
+            queue=queue, content=content, memory_type=memory_type, source=source,
+        )
+
+    @server.tool()
+    async def correct(
+        content: str,
+        search_terms: str,
+    ) -> dict:
+        """Queue a correction with temporal supersession."""
+        if queue is None:
+            raise RuntimeError("correct requires a running work queue")
+        from vesper.tools.correct import correct as _correct
+
+        return await _correct(queue=queue, content=content, search_terms=search_terms)
+
+    # --- Phase 4: read tools (stubs until Phase 4) ---
+
+    @server.tool()
+    async def recall(
+        query: str,
+        memory_type: str | None = None,
+        time_range: str | None = None,
+    ) -> dict:
+        """Search memory with semantic + keyword + graph traversal."""
+        raise NotImplementedError("recall is not yet implemented (Phase 4)")
+
+    @server.tool()
+    async def history(
+        entity_name: str,
+    ) -> dict:
+        """Temporal evolution of an entity or topic."""
+        raise NotImplementedError("history is not yet implemented (Phase 4)")
+
+    @server.tool()
+    async def inspect(
+        uuid: str,
+    ) -> dict:
+        """Detailed view of a memory node or edge with connections."""
+        raise NotImplementedError("inspect is not yet implemented (Phase 4)")
+
+    # --- Phase 5: context (stub until Phase 5) ---
+
+    @server.tool()
+    async def context() -> dict:
+        """Return cached identity synthesis + delta for reconstruction."""
+        raise NotImplementedError("context is not yet implemented (Phase 5)")
+
+    return server
