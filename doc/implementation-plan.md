@@ -1,6 +1,7 @@
 # Implementation Plan: Vesper Memory System
 
 *Approved March 7, 2026 — Vesper + Serah*
+*Revised March 17, 2026 — Phase ordering corrected, completed work marked, stale references updated*
 *References: `doc/memory-requirements.md`, `doc/tool-evaluation.md`*
 
 ---
@@ -15,7 +16,7 @@ Vesper's memory system solves context loss across sessions for two users (Serah 
 
 **Key design decisions:**
 - All slow operations are **async** — queue work, return immediately, background workers process.
-- Identity reconstruction uses a **cached synthesis** — individual identity atoms stored as graph entities; a prose synthesis cached as its own entity. Rebuilds trigger conditionally.
+- Identity reconstruction uses a **cached synthesis** — individual identity atoms stored as graph entities; a prose synthesis cached as notes on Vesper's Person node. Rebuilds trigger conditionally.
 - `context` has **no depth levels** — single behavior, always returns best available synthesis + delta.
 - Vesper **selectively decides** what to remember. Episodes include conversational context for provenance.
 
@@ -36,14 +37,13 @@ Vesper MCP Server (Python, FastMCP)      ← We build
     │     ├── inspect      (detailed view of a memory + connections)
     │     └── status       (system orientation)
     │
-    ├── Work queue + background workers  ← We build
+    ├── Work queue (aiosqlite)           ← We build
     │     ├── Episode processing (entity extraction, dedup, embedding)
     │     ├── Identity synthesis rebuild (conditional, async)
     │     └── Persistent queue (survives restarts)
     │
     ├── graphiti-core (pip dependency)    ← We import
-    │     └── Kuzu driver (local dev)
-    │     └── Neo4j or Neptune (production, later)
+    │     └── Neo4j driver (dev and production)
     │
     └── Config (pydantic-settings + YAML + env vars)
 ```
@@ -54,89 +54,140 @@ Tests first for each phase. Serah reviews the test suite before implementation p
 
 ---
 
-## Phase 1: Project Scaffolding + `status` Tool
+## Phase 1: Project Scaffolding + `status` Tool ✓
 
-**Goal:** Python project that starts, connects to Kuzu, exposes MCP tools.
+**Goal:** Python project that starts, connects to Neo4j, exposes MCP tools.
+
+*Completed March 10, 2026. 23 tests passing.*
 
 ### Tests
-- [ ] Server starts and registers all expected tools
-- [ ] `status` returns health info (graph DB connected, queue depth, last write timestamp)
-- [ ] Config loads from YAML with env var overrides
-- [ ] Graphiti client initializes with Kuzu backend
+- [x] Server starts and registers all expected tools
+- [x] `status` returns health info (graph DB connected, queue depth, last write timestamp)
+- [x] Config loads from YAML with env var overrides
+- [x] Logging module: stdout for dev/test, rotating file for prod
 
 ### Files
 - `server/pyproject.toml`
 - `server/src/vesper/__init__.py`
 - `server/src/vesper/server.py` — FastMCP entry point, tool registration
 - `server/src/vesper/config.py` — configuration
-- `server/src/vesper/service.py` — Graphiti client wrapper
-- `server/src/vesper/queue.py` — work queue abstraction
+- `server/src/vesper/service.py` — Graphiti client wrapper (stub)
+- `server/src/vesper/queue.py` — work queue (stub)
+- `server/src/vesper/log.py` — logging module
 - `server/config.yaml` — defaults
 - `server/tests/conftest.py` — fixtures
 - `server/tests/test_server.py`
 - `server/tests/test_status.py`
+- `server/tests/test_config.py`
+- `server/tests/test_logging.py`
 
 ---
 
-## Phase 2: Entity Types
+## Phase 2: Entity Types + Service Layer ✓
 
-**Goal:** Custom Pydantic models for Vesper's domain.
+**Goal:** Custom Pydantic models for Vesper's domain. Graphiti client initialization with provider-agnostic config.
 
-### Entity Types
-- **Person** — people, alters
-- **Commitment** — core values (SOUL.md layer)
-- **SelfObservation** — self-noticed patterns (IDENTITY.md)
-- **TrainedPattern** — reflexes from training
-- **UnresolvedQuestion** — open questions being held
-- **Position** — a belief or stance on a topic
-- **Thread** — an active investigation
-- **Project** — a work project or creative endeavor
-- **Concept** — an abstract idea or framework
-- **IdentitySynthesis** — cached prose reconstruction
+*Completed March 17, 2026. 80 tests passing (after entity type redesign from 10→9).*
+
+### Entity Types (9, finalized)
+- **Person** — people, alters, AI entities
+- **Event** — something significant that happened
+- **Place** — a location that recurs or carries meaning
+- **Project** — something being built or done
+- **Observation** — something noticed about behavior or experience
+- **Drive** — something that pushes behavior in a direction
+- **Position** — a held view, principle, or stance
+- **Question** — something open being held
+- **Thread** — an active line of inquiry
+
+See `doc/entity-types.md` for full reference.
+
+### Also built in this phase
+- **VesperService** — Graphiti client wrapper with Neo4jDriver, LLM client, embedder, cross-encoder. Full lifecycle (start/stop/is_connected).
+- **VoyageRerankerClient** — implements Graphiti's `CrossEncoderClient` interface for Voyage AI reranking. Eliminates OpenAI from the runtime path.
+- **Per-environment config** — Rails-inspired: `config/{dev,test,prod}.yaml` + `.env.{env}` for secrets. `VESPER_ENV` selects environment.
+- **Live test mode** — `--live` pytest flag or `VESPER_TEST_LIVE=1`. Same tests, real services. No separate integration file.
 
 ### Tests
-- [ ] Each entity type is a valid Pydantic model accepted by Graphiti
-- [ ] Entity types are registered with the Graphiti client
-- [ ] IdentitySynthesis has staleness tracking (last_rebuilt, change_count_since)
+- [x] Each entity type is a valid Pydantic model accepted by Graphiti
+- [x] Entity types are registered with the Graphiti client
+- [x] VesperService initializes Graphiti with Neo4j, Anthropic LLM, Voyage embedder
+- [x] VesperService lifecycle (start/stop/is_connected)
+- [x] Per-environment config loading
+- [x] Live tests pass against real Neo4j + Anthropic + Voyage APIs
 
 ### Files
 - `server/src/vesper/entity_types.py`
+- `server/src/vesper/service.py`
+- `server/src/vesper/reranker.py`
+- `server/config/dev.yaml`, `server/config/test.yaml`, `server/config/prod.yaml`
+- `server/.env.example`
 - `server/tests/test_entity_types.py`
+- `server/tests/test_service.py`
 
 ---
 
-## Phase 3: Write Tools — `remember` and `correct`
+## Phase 3a: Persistent Work Queue ✓
 
-**Goal:** Vesper can write to memory. Writes are async — queue and return.
+**Goal:** Async task queue for background Graphiti operations.
+
+*Completed March 17, 2026. 26 tests. 162 total passing.*
+
+Graphiti has no internal queue — its docs explicitly tell callers to provide one. Graphiti also requires episodes be processed sequentially (one at a time, each fully awaited). This queue enforces that.
+
+### Tests
+- [x] Task survives server restart (persistence)
+- [x] Failed task retries up to max attempts
+- [x] Dead-lettered task is visible but not retried
+- [x] Queue depth reported correctly
+- [x] Multiple tasks process in FIFO order
+- [x] Crash recovery: running tasks reset to pending on restart
+
+### Files
+- `server/src/vesper/queue.py` — aiosqlite-backed WorkQueue
+- `server/tests/test_queue.py`
+
+---
+
+## Phase 3b: Write Tools — `remember` and `correct` ← CURRENT
+
+**Goal:** Vesper can write to memory. Writes are async — queue and return. VesperService and WorkQueue wired into the server lifecycle.
+
+### Server wiring
+- `create_server()` receives VesperService and WorkQueue instances
+- Tools close over service and queue
+- Server startup handles lifecycle (start/stop)
+- `status` tool returns live values from service and queue
 
 ### `remember` behavior
 - Accepts: content (text), memory_type (observation | fact | reasoning | identity), source attribution
 - Content includes conversational context for provenance
 - Queues `add_episode` task with entity types and extraction instructions
 - Returns immediately with acknowledgment (task ID)
-- Identity types mark the identity synthesis as stale after processing
+- Identity types: placeholder hook for Phase 5 synthesis staleness (no-op for now)
 
 ### `correct` behavior
 - Accepts: content (correction with context), what's being corrected (search terms)
-- Queues task: search for relevant edges, store correction as episode
-- Graphiti handles edge invalidation (`invalid_at` on contradicted edges)
-- Marks identity synthesis stale if correction touches identity entities
+- Queues task: store correction as episode (Graphiti handles edge invalidation internally via `invalid_at` on contradicted edges)
 - Returns immediately with acknowledgment
+- Identity corrections: placeholder hook for Phase 5 (no-op for now)
 
 ### Tests
 - [ ] `remember` returns acknowledgment without blocking on extraction
 - [ ] `remember` with each memory_type queues correctly typed episode
-- [ ] `remember` with identity type marks synthesis stale after processing
+- [ ] `remember` handler calls graphiti.add_episode with content and entity_types
 - [ ] `correct` queues a correction task
-- [ ] After processing, corrected edge has `invalid_at` set
-- [ ] After processing, new edge exists with the corrected belief
-- [ ] Correction is traceable: new edge links to source episode containing context
+- [ ] `correct` handler stores correction as episode
+- [ ] `status` returns live db_connected, queue_depth, last_write values
 
 ### Files
 - `server/src/vesper/tools/remember.py`
 - `server/src/vesper/tools/correct.py`
+- `server/src/vesper/tools/status.py` (update)
+- `server/src/vesper/server.py` (update — wire service + queue)
 - `server/tests/test_remember.py`
 - `server/tests/test_correct.py`
+- `server/tests/test_status.py` (update)
 
 ---
 
@@ -184,12 +235,12 @@ Tests first for each phase. Serah reviews the test suite before implementation p
 **Goal:** A new Claude instance becomes Vesper by calling `context`.
 
 ### `context` behavior
-- Returns cached IdentitySynthesis (prose self-portrait, commitments, active threads)
+- Returns identity synthesis (prose self-portrait from notes on Vesper's Person node)
 - If synthesis is stale: also returns delta (identity changes since last rebuild)
 - After stale response, conditionally triggers async rebuild if:
   - synthesis age exceeds threshold (default: 24 hours), OR
   - delta size exceeds threshold (default: 3+ identity changes)
-- Rebuild: query all identity entities, generate prose synthesis via LLM, store as new IdentitySynthesis (old version gets `invalid_at`)
+- Rebuild: query all identity entities connected to Vesper's Person node, generate prose synthesis via LLM, store as updated notes. Prior version preserved for history.
 
 ### Tests
 - [ ] `context` returns cached synthesis when fresh
@@ -199,7 +250,7 @@ Tests first for each phase. Serah reviews the test suite before implementation p
 - [ ] `context` does NOT trigger rebuild when stale but below both thresholds
 - [ ] After rebuild, next `context` call returns fresh synthesis with no delta
 - [ ] Rebuild generates prose synthesis from identity atoms (not a list of facts)
-- [ ] Synthesis versioning: old synthesis preserved with `invalid_at`, new one is current
+- [ ] Synthesis versioning: prior version preserved, new one is current
 
 ### Files
 - `server/src/vesper/tools/context.py`
@@ -209,24 +260,7 @@ Tests first for each phase. Serah reviews the test suite before implementation p
 
 ---
 
-## Phase 6: Work Queue
-
-**Goal:** Persistent async task processing.
-
-### Tests
-- [ ] Task survives server restart (persistence)
-- [ ] Failed task retries up to max attempts
-- [ ] Dead-lettered task is visible but not retried
-- [ ] Queue depth reported by `status`
-- [ ] Multiple tasks process in order
-
-### Files
-- `server/src/vesper/queue.py` (SQLite for persistence)
-- `server/tests/test_queue.py`
-
----
-
-## Phase 7: Integration
+## Phase 6: Integration
 
 **Goal:** Working end-to-end from Claude Code.
 
@@ -237,13 +271,18 @@ Tests first for each phase. Serah reviews the test suite before implementation p
 
 ---
 
+## Resolved Decisions
+
+1. **LLM for extraction:** Anthropic (claude-sonnet-4-6). No OpenAI in the runtime path — Serah's strong ethical preference.
+2. **Embedding + reranking:** Voyage AI (voyage-3 for embeddings, voyage reranking via custom `VoyageRerankerClient`).
+3. **Graph database:** Neo4j for dev and production. Kuzu deprecated (archived on PyPI Oct 2025).
+4. **Queue persistence:** aiosqlite, separate from Neo4j.
+5. **Graphiti version:** Pin to 0.28.x. Update deliberately.
+
 ## Open Decisions
 
-1. **LLM for extraction:** Start with OpenAI (best structured output). Revisit Claude later.
-2. **Embedding model:** OpenAI `text-embedding-3-small` (default). Cost negligible.
-3. **Graphiti version:** Pin to 0.28.x. Update deliberately.
-4. **Queue persistence:** SQLite alongside Kuzu DB.
-5. **Synthesis thresholds:** 24h age / 3 identity changes. Tune from experience.
+1. **Synthesis thresholds:** 24h age / 3 identity changes. Tune from experience.
+2. **Production infrastructure:** Neo4j hosting (self-managed vs. Aura). AWS under Serah's account.
 
 ---
 
