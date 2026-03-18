@@ -1,10 +1,10 @@
-"""Live integration tests for read and write tools.
+"""Live integration tests for all MCP tools.
 
 These tests seed real episodes into the Neo4j database via Graphiti's
 add_episode (with LLM extraction), then exercise recall, history,
 inspect, remember, and correct against the actual graph.
 
-Run with: pytest tests/test_live_read_tools.py --live -v
+Run with: pytest tests/test_live_tools.py --live -v
 
 Requires:
 - Neo4j running locally
