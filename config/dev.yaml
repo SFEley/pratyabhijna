@@ -4,7 +4,7 @@
 neo4j:
   uri: "neo4j://127.0.0.1:7687"
   user: "neo4j"
-  database: "vesper-dev"
+  database: "neo4j"
 
 llm:
   provider: "anthropic"
@@ -12,7 +12,7 @@ llm:
 
 embedding:
   provider: "voyageai"
-  model: "voyage-3"
+  model: "voyage-4"
 
 queue:
   db_path: "./data/queue.sqlite"

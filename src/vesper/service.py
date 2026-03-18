@@ -173,7 +173,7 @@ class VesperService:
     async def get_edges_for_node(self, node_uuid: str) -> list[EntityEdge]:
         """Get all entity edges connected to a node (incoming + outgoing)."""
         driver = self._graphiti.driver
-        return await driver.graph_operations_interface.entity_edge_ops.get_by_node_uuid(
+        return await driver.entity_edge_ops.get_by_node_uuid(
             driver, node_uuid
         )
 

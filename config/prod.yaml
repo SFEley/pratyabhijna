@@ -12,7 +12,7 @@ llm:
 
 embedding:
   provider: "voyageai"
-  model: "voyage-3"
+  model: "voyage-4"
 
 queue:
   db_path: "./data/queue.sqlite"
