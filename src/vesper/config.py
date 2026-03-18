@@ -37,7 +37,7 @@ class LLMConfig(BaseModel):
 
 class EmbeddingConfig(BaseModel):
     provider: str = "voyageai"
-    model: str = "voyage-3"
+    model: str = "voyage-4"
     api_key: str = ""
 
 

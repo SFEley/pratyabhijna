@@ -33,7 +33,7 @@ async def inspect(
     """
     # Try as entity node first
     try:
-        entity = await service.get_entity(uuid)
+        entity = await service.get_entity_by_uuid(uuid)
         return await _format_entity(service, entity, uuid)
     except NodeNotFoundError:
         pass

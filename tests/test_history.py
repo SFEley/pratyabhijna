@@ -13,61 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from graphiti_core.edges import EntityEdge
-from graphiti_core.nodes import EntityNode
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _make_entity_node(
-    uuid="node-1",
-    name="Serah",
-    labels=None,
-    summary="A person",
-    attributes=None,
-    created_at=None,
-):
-    return EntityNode(
-        uuid=uuid,
-        name=name,
-        group_id="default",
-        labels=labels or ["Person"],
-        created_at=created_at or datetime(2026, 3, 15, tzinfo=timezone.utc),
-        name_embedding=None,
-        summary=summary,
-        attributes=attributes or {},
-    )
-
-
-def _make_entity_edge(
-    uuid="edge-1",
-    name="lives_in",
-    fact="Serah lives in Atlanta",
-    source_node_uuid="node-1",
-    target_node_uuid="node-2",
-    valid_at=None,
-    invalid_at=None,
-    created_at=None,
-    episodes=None,
-    attributes=None,
-):
-    return EntityEdge(
-        uuid=uuid,
-        group_id="default",
-        source_node_uuid=source_node_uuid,
-        target_node_uuid=target_node_uuid,
-        created_at=created_at or datetime(2026, 3, 15, tzinfo=timezone.utc),
-        name=name,
-        fact=fact,
-        fact_embedding=None,
-        episodes=episodes or [],
-        expired_at=None,
-        valid_at=valid_at,
-        invalid_at=invalid_at,
-        attributes=attributes or {},
-    )
+from helpers import make_entity_edge, make_entity_node
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +27,7 @@ def mock_service():
     service.is_connected = True
     service.get_entity_by_name = AsyncMock()
     service.get_edges_for_node = AsyncMock()
-    service.get_entity = AsyncMock()
+    service.get_entity_by_uuid = AsyncMock()
     return service
 
 
@@ -94,21 +40,21 @@ class TestHistoryTimeline:
         """history() returns entity info and a chronological timeline of edges."""
         from vesper.tools.history import history
 
-        entity = _make_entity_node(uuid="node-1", name="Serah")
+        entity = make_entity_node(uuid="node-1", name="Serah")
         edges = [
-            _make_entity_edge(
+            make_entity_edge(
                 uuid="edge-1",
                 fact="Serah joined the project",
                 valid_at=datetime(2025, 10, 1, tzinfo=timezone.utc),
                 created_at=datetime(2025, 10, 1, tzinfo=timezone.utc),
             ),
-            _make_entity_edge(
+            make_entity_edge(
                 uuid="edge-2",
                 fact="Serah started Phase 2",
                 valid_at=datetime(2026, 3, 13, tzinfo=timezone.utc),
                 created_at=datetime(2026, 3, 13, tzinfo=timezone.utc),
             ),
-            _make_entity_edge(
+            make_entity_edge(
                 uuid="edge-3",
                 fact="Serah completed Phase 3",
                 valid_at=datetime(2026, 3, 17, tzinfo=timezone.utc),
@@ -137,15 +83,15 @@ class TestHistoryTimeline:
         """Superseded edges show invalid_at; current edges show None."""
         from vesper.tools.history import history
 
-        entity = _make_entity_node(uuid="node-1", name="Serah")
+        entity = make_entity_node(uuid="node-1", name="Serah")
         edges = [
-            _make_entity_edge(
+            make_entity_edge(
                 uuid="edge-old",
                 fact="Serah lives in Atlanta",
                 valid_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 invalid_at=datetime(2025, 8, 1, tzinfo=timezone.utc),
             ),
-            _make_entity_edge(
+            make_entity_edge(
                 uuid="edge-current",
                 fact="Serah lives in Aurora, CO",
                 valid_at=datetime(2025, 8, 1, tzinfo=timezone.utc),
@@ -170,20 +116,20 @@ class TestHistoryTimeline:
         """Timeline is sorted chronologically by valid_at, falling back to created_at."""
         from vesper.tools.history import history
 
-        entity = _make_entity_node(uuid="node-1", name="Serah")
+        entity = make_entity_node(uuid="node-1", name="Serah")
         # Return edges out of chronological order
         edges = [
-            _make_entity_edge(
+            make_entity_edge(
                 uuid="edge-late",
                 fact="late event",
                 valid_at=datetime(2026, 3, 17, tzinfo=timezone.utc),
             ),
-            _make_entity_edge(
+            make_entity_edge(
                 uuid="edge-early",
                 fact="early event",
                 valid_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
             ),
-            _make_entity_edge(
+            make_entity_edge(
                 uuid="edge-middle",
                 fact="middle event, no valid_at",
                 valid_at=None,
@@ -219,7 +165,7 @@ class TestHistoryEdgeCases:
         """Entity with no edges returns empty timeline."""
         from vesper.tools.history import history
 
-        entity = _make_entity_node(uuid="node-1", name="Serah")
+        entity = make_entity_node(uuid="node-1", name="Serah")
         mock_service.get_entity_by_name.return_value = entity
         mock_service.get_edges_for_node.return_value = []
 

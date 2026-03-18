@@ -88,7 +88,10 @@ async def recall(
     # Build search filter from optional parameters
     search_filter = None
     node_labels = [memory_type] if memory_type else None
-    created_at = _parse_time_range(time_range) if time_range else None
+    try:
+        created_at = _parse_time_range(time_range) if time_range else None
+    except ValueError as e:
+        return {"error": "invalid_time_range", "message": str(e)}
 
     if node_labels or created_at:
         search_filter = SearchFilters(

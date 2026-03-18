@@ -12,66 +12,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from graphiti_core.edges import EntityEdge
-from graphiti_core.nodes import EntityNode, EpisodicNode
 from graphiti_core.search.search_config import SearchResults
 from graphiti_core.search.search_filters import (
     ComparisonOperator,
     SearchFilters,
 )
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _make_entity_node(
-    uuid="node-1",
-    name="Serah",
-    labels=None,
-    summary="A person",
-    attributes=None,
-    created_at=None,
-):
-    return EntityNode(
-        uuid=uuid,
-        name=name,
-        group_id="default",
-        labels=labels or ["Person"],
-        created_at=created_at or datetime(2026, 3, 15, tzinfo=timezone.utc),
-        name_embedding=None,
-        summary=summary,
-        attributes=attributes or {},
-    )
-
-
-def _make_entity_edge(
-    uuid="edge-1",
-    name="values",
-    fact="Serah values directness",
-    source_node_uuid="node-1",
-    target_node_uuid="node-2",
-    valid_at=None,
-    invalid_at=None,
-    created_at=None,
-    episodes=None,
-    attributes=None,
-):
-    return EntityEdge(
-        uuid=uuid,
-        group_id="default",
-        source_node_uuid=source_node_uuid,
-        target_node_uuid=target_node_uuid,
-        created_at=created_at or datetime(2026, 3, 15, tzinfo=timezone.utc),
-        name=name,
-        fact=fact,
-        fact_embedding=None,
-        episodes=episodes or [],
-        expired_at=None,
-        valid_at=valid_at,
-        invalid_at=invalid_at,
-        attributes=attributes or {},
-    )
+from helpers import make_entity_edge, make_entity_node
 
 
 # ---------------------------------------------------------------------------
@@ -96,9 +43,9 @@ class TestRecallResults:
         """recall() returns a dict with results list, count, and query echo."""
         from vesper.tools.recall import recall
 
-        node1 = _make_entity_node(uuid="node-1", name="Serah")
-        node2 = _make_entity_node(uuid="node-2", name="directness", labels=["Position"])
-        edge1 = _make_entity_edge(
+        node1 = make_entity_node(uuid="node-1", name="Serah")
+        node2 = make_entity_node(uuid="node-2", name="directness", labels=["Position"])
+        edge1 = make_entity_edge(
             uuid="edge-1",
             fact="Serah values directness",
             source_node_uuid="node-1",
@@ -195,6 +142,21 @@ class TestRecallFilters:
         assert ComparisonOperator.greater_than_equal in operators
         assert ComparisonOperator.less_than_equal in operators
 
+    async def test_recall_invalid_time_range_returns_error(self, mock_service):
+        """Invalid time_range returns error dict, not an exception."""
+        from vesper.tools.recall import recall
+
+        result = await recall(
+            service=mock_service,
+            query="test",
+            time_range="not-a-valid-range",
+        )
+
+        assert result["error"] == "invalid_time_range"
+        assert "message" in result
+        # Service should not have been called
+        mock_service.recall.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Result formatting
@@ -205,9 +167,9 @@ class TestRecallFormatting:
         """Edge results resolve source/target node UUIDs to entity names."""
         from vesper.tools.recall import recall
 
-        node1 = _make_entity_node(uuid="node-1", name="Serah")
-        node2 = _make_entity_node(uuid="node-2", name="directness", labels=["Position"])
-        edge1 = _make_entity_edge(
+        node1 = make_entity_node(uuid="node-1", name="Serah")
+        node2 = make_entity_node(uuid="node-2", name="directness", labels=["Position"])
+        edge1 = make_entity_edge(
             source_node_uuid="node-1",
             target_node_uuid="node-2",
             fact="Serah values directness",
@@ -231,12 +193,12 @@ class TestRecallFormatting:
         from vesper.tools.recall import recall
 
         # Edge references node-99 which is NOT in the nodes list
-        edge1 = _make_entity_edge(
+        edge1 = make_entity_edge(
             source_node_uuid="node-1",
             target_node_uuid="node-99",
             fact="Serah knows someone",
         )
-        node1 = _make_entity_node(uuid="node-1", name="Serah")
+        node1 = make_entity_node(uuid="node-1", name="Serah")
         mock_service.recall.return_value = SearchResults(
             edges=[edge1],
             edge_reranker_scores=[0.85],
@@ -255,9 +217,9 @@ class TestRecallFormatting:
         """Results are sorted by reranker score, highest first."""
         from vesper.tools.recall import recall
 
-        edge_low = _make_entity_edge(uuid="edge-low", fact="low score edge")
-        edge_high = _make_entity_edge(uuid="edge-high", fact="high score edge")
-        node1 = _make_entity_node(uuid="node-1", name="topic", labels=["Position"])
+        edge_low = make_entity_edge(uuid="edge-low", fact="low score edge")
+        edge_high = make_entity_edge(uuid="edge-high", fact="high score edge")
+        node1 = make_entity_node(uuid="node-1", name="topic", labels=["Position"])
         mock_service.recall.return_value = SearchResults(
             edges=[edge_low, edge_high],
             edge_reranker_scores=[0.3, 0.9],

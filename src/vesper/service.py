@@ -145,6 +145,11 @@ class VesperService:
 
         Returns the best match or None if nothing relevant found.
         Uses semantic search so fuzzy matching works.
+
+        Note: if no exact name match is found, falls back to the top
+        semantic result. This means a query for an entity that doesn't
+        exist may return the closest match rather than None. Callers
+        needing strict matching should check the returned node's name.
         """
         results = await self._graphiti.search_(
             query=name,
@@ -157,10 +162,6 @@ class VesperService:
                 return node
         # Fall back to best match if any nodes returned
         return results.nodes[0] if results.nodes else None
-
-    async def get_entity(self, uuid: str) -> EntityNode:
-        """Get an entity node by UUID. Raises NodeNotFoundError."""
-        return await EntityNode.get_by_uuid(self._graphiti.driver, uuid)
 
     async def get_entity_by_uuid(self, uuid: str) -> EntityNode:
         """Get an entity node by UUID. Raises NodeNotFoundError."""
