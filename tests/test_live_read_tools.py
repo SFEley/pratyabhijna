@@ -41,10 +41,18 @@ pytestmark = [
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def service():
-    """A real VesperService connected to Neo4j."""
+    """A real VesperService connected to Neo4j.
+
+    Clears all graph data before yielding so each test run
+    starts from a clean slate.
+    """
     config = VesperConfig.from_env("test")
     svc = VesperService(config)
     await svc.start()
+
+    # Wipe the graph so tests don't leak state between runs
+    await svc._graphiti.driver.execute_query("MATCH (n) DETACH DELETE n")
+
     yield svc
     await svc.stop()
 
