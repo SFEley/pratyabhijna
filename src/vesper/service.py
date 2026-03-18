@@ -5,8 +5,18 @@ and shutdown. Provides the service layer between MCP tools
 and graphiti-core.
 """
 
+from __future__ import annotations
+
 from graphiti_core import Graphiti
 from graphiti_core.driver.neo4j_driver import Neo4jDriver
+from graphiti_core.edges import EntityEdge
+from graphiti_core.errors import EdgeNotFoundError, NodeNotFoundError
+from graphiti_core.nodes import EntityNode, EpisodicNode
+from graphiti_core.search.search_config import SearchResults
+from graphiti_core.search.search_config_recipes import (
+    COMBINED_HYBRID_SEARCH_CROSS_ENCODER,
+)
+from graphiti_core.search.search_filters import SearchFilters
 
 from vesper.config import VesperConfig
 from vesper.entity_types import VESPER_ENTITY_TYPES
@@ -110,3 +120,72 @@ class VesperService:
     def entity_types(self) -> dict:
         """Entity type registry for use with add_episode()."""
         return VESPER_ENTITY_TYPES
+
+    # --- Read operations (Phase 4) ---
+
+    async def recall(
+        self,
+        query: str,
+        search_filter: SearchFilters | None = None,
+        num_results: int = 10,
+    ) -> SearchResults:
+        """Hybrid search across the knowledge graph.
+
+        Uses Graphiti's advanced search with cross-encoder reranking.
+        Returns full SearchResults with edges, nodes, and scores.
+        """
+        return await self._graphiti.search_(
+            query=query,
+            config=COMBINED_HYBRID_SEARCH_CROSS_ENCODER,
+            search_filter=search_filter,
+        )
+
+    async def get_entity_by_name(self, name: str) -> EntityNode | None:
+        """Find an entity node by name via search.
+
+        Returns the best match or None if nothing relevant found.
+        Uses semantic search so fuzzy matching works.
+
+        Note: if no exact name match is found, falls back to the top
+        semantic result. This means a query for an entity that doesn't
+        exist may return the closest match rather than None. Callers
+        needing strict matching should check the returned node's name.
+        """
+        results = await self._graphiti.search_(
+            query=name,
+            config=COMBINED_HYBRID_SEARCH_CROSS_ENCODER,
+            search_filter=SearchFilters(node_labels=None),
+        )
+        # Look for an exact or near-exact name match in returned nodes
+        for node in results.nodes:
+            if node.name.lower() == name.lower():
+                return node
+        # Fall back to best match if any nodes returned
+        return results.nodes[0] if results.nodes else None
+
+    async def get_entity_by_uuid(self, uuid: str) -> EntityNode:
+        """Get an entity node by UUID. Raises NodeNotFoundError."""
+        return await EntityNode.get_by_uuid(self._graphiti.driver, uuid)
+
+    async def get_edge(self, uuid: str) -> EntityEdge:
+        """Get an entity edge by UUID. Raises EdgeNotFoundError."""
+        return await EntityEdge.get_by_uuid(self._graphiti.driver, uuid)
+
+    async def get_edges_for_node(self, node_uuid: str) -> list[EntityEdge]:
+        """Get all entity edges connected to a node (incoming + outgoing)."""
+        driver = self._graphiti.driver
+        return await driver.entity_edge_ops.get_by_node_uuid(
+            driver, node_uuid
+        )
+
+    async def get_episodes_for_node(self, node_uuid: str) -> list[EpisodicNode]:
+        """Get all episodes that mention a given entity node."""
+        return await EpisodicNode.get_by_entity_node_uuid(
+            self._graphiti.driver, node_uuid
+        )
+
+    async def get_episodes_by_uuids(self, uuids: list[str]) -> list[EpisodicNode]:
+        """Get episodic nodes by their UUIDs."""
+        if not uuids:
+            return []
+        return await EpisodicNode.get_by_uuids(self._graphiti.driver, uuids)

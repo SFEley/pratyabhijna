@@ -41,14 +41,25 @@ def make_handler(service: VesperService):
 
     async def handle_correct_memory(payload: dict[str, Any]) -> None:
         now = datetime.now(timezone.utc)
-        # Store correction as an episode. Graphiti's entity extraction
-        # will detect contradictions and set invalid_at on superseded edges.
+        search_terms = payload.get("search_terms", "")
+
+        # Build extraction hint so Graphiti focuses on the right entities.
+        # Without this, a generic correction like "X is actually Y" might
+        # not resolve to the intended nodes.
+        extraction_hint = (
+            f"Focus entity extraction on: {search_terms}. "
+            "This is a correction — look for existing entities matching "
+            "these terms and update or invalidate contradicted edges."
+        ) if search_terms else None
+
         await service._graphiti.add_episode(
             name=f"correction:{now.isoformat()}",
             episode_body=payload["content"],
             source_description="correction",
             reference_time=now,
             entity_types=service.entity_types,
+            **({"custom_extraction_instructions": extraction_hint}
+               if extraction_hint else {}),
         )
         # TODO Phase 5: if correction touches identity entities, mark synthesis stale
 

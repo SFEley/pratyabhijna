@@ -64,7 +64,7 @@ def create_server(
 
         return await _correct(queue=queue, content=content, search_terms=search_terms)
 
-    # --- Phase 4: read tools (stubs until Phase 4) ---
+    # --- Phase 4: read tools ---
 
     @server.tool()
     async def recall(
@@ -73,21 +73,35 @@ def create_server(
         time_range: str | None = None,
     ) -> dict:
         """Search memory with semantic + keyword + graph traversal."""
-        raise NotImplementedError("recall is not yet implemented (Phase 4)")
+        if service is None:
+            raise RuntimeError("recall requires a connected service")
+        from vesper.tools.recall import recall as _recall
+
+        return await _recall(
+            service=service, query=query, memory_type=memory_type, time_range=time_range,
+        )
 
     @server.tool()
     async def history(
         entity_name: str,
     ) -> dict:
         """Temporal evolution of an entity or topic."""
-        raise NotImplementedError("history is not yet implemented (Phase 4)")
+        if service is None:
+            raise RuntimeError("history requires a connected service")
+        from vesper.tools.history import history as _history
+
+        return await _history(service=service, entity_name=entity_name)
 
     @server.tool()
     async def inspect(
         uuid: str,
     ) -> dict:
         """Detailed view of a memory node or edge with connections."""
-        raise NotImplementedError("inspect is not yet implemented (Phase 4)")
+        if service is None:
+            raise RuntimeError("inspect requires a connected service")
+        from vesper.tools.inspect import inspect as _inspect
+
+        return await _inspect(service=service, uuid=uuid)
 
     # --- Phase 5: context (stub until Phase 5) ---
 
