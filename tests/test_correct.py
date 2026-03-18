@@ -15,22 +15,7 @@ from uuid import UUID
 
 import pytest
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-async def _wait_for(condition, timeout=2.0, interval=0.02):
-    """Poll ``condition()`` (sync or async) until truthy, or raise on timeout."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        result = condition()
-        if asyncio.iscoroutine(result):
-            result = await result
-        if result:
-            return result
-        await asyncio.sleep(interval)
-    raise TimeoutError("Condition not met within timeout")
+from helpers import wait_for
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +138,7 @@ class TestCorrectHandler:
             search_terms="Serah pronouns",
         )
 
-        await _wait_for(lambda: mock_service._graphiti.add_episode.called)
+        await wait_for(lambda: mock_service._graphiti.add_episode.called)
         call_kwargs = mock_service._graphiti.add_episode.call_args
         # Correction content should be passed through
         assert "Serah's pronouns are she/her" in str(call_kwargs)

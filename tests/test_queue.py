@@ -11,6 +11,8 @@ from uuid import UUID
 
 import pytest
 
+from helpers import wait_for
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -23,19 +25,6 @@ async def _noop_handler(payload: dict) -> None:
 async def _failing_handler(payload: dict) -> None:
     """Handler that always raises."""
     raise RuntimeError("boom")
-
-
-async def _wait_for(condition, timeout=2.0, interval=0.02):
-    """Poll ``condition()`` (sync or async) until truthy, or raise on timeout."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        result = condition()
-        if asyncio.iscoroutine(result):
-            result = await result
-        if result:
-            return result
-        await asyncio.sleep(interval)
-    raise TimeoutError("Condition not met within timeout")
 
 
 # ---------------------------------------------------------------------------
@@ -88,8 +77,9 @@ class TestEnqueue:
         await queue.start()
         task_id = await queue.enqueue("test", {"key": "value"})
         task = await queue.get_task(task_id)
-        assert task["status"] == "pending"
-        assert task["attempts"] == 0
+        # Worker may claim the task before we check, so accept either state
+        assert task["status"] in ("pending", "running", "completed")
+        assert task["attempts"] <= 1
 
     async def test_enqueue_stores_payload(self, queue):
         queue.register("test", _noop_handler)
@@ -125,14 +115,14 @@ class TestProcessing:
         await queue.start()
         task_id = await queue.enqueue("test", {})
 
-        await _wait_for(lambda: queue.get_task(task_id),
+        await wait_for(lambda: queue.get_task(task_id),
                         timeout=2.0)
         # Poll until completed
         async def is_done():
             t = await queue.get_task(task_id)
             return t and t["status"] == "completed"
 
-        await _wait_for(is_done)
+        await wait_for(is_done)
         task = await queue.get_task(task_id)
         assert task["status"] == "completed"
         assert task["completed_at"] is not None
@@ -153,7 +143,7 @@ class TestProcessing:
             t = await queue.get_task(task_id)
             return t and t["status"] == "completed"
 
-        await _wait_for(is_done)
+        await wait_for(is_done)
         assert len(received) == 1
         assert received[0] == sent
 
@@ -178,7 +168,7 @@ class TestProcessing:
                     return False
             return True
 
-        await _wait_for(all_done)
+        await wait_for(all_done)
         assert order == [0, 1, 2]
 
     async def test_sequential_processing(self, queue):
@@ -199,14 +189,14 @@ class TestProcessing:
         await queue.enqueue("test", {"id": "B", "wait": False})
 
         # Wait until task A has started
-        await _wait_for(lambda: ("start", "A") in events)
+        await wait_for(lambda: ("start", "A") in events)
         # Task B should NOT have started yet
         assert ("start", "B") not in events
 
         gate.set()  # Release task A
 
         # Now wait for both to complete
-        await _wait_for(lambda: ("end", "B") in events)
+        await wait_for(lambda: ("end", "B") in events)
         assert events == [("start", "A"), ("end", "A"),
                           ("start", "B"), ("end", "B")]
 
@@ -233,7 +223,7 @@ class TestFailureAndRetry:
             t = await queue.get_task(task_id)
             return t and t["status"] == "completed"
 
-        await _wait_for(is_done)
+        await wait_for(is_done)
         assert call_count == 2
 
     async def test_retries_up_to_max(self, queue):
@@ -252,7 +242,7 @@ class TestFailureAndRetry:
             t = await queue.get_task(task_id)
             return t and t["status"] == "dead_letter"
 
-        await _wait_for(is_dead)
+        await wait_for(is_dead)
         assert call_count == 3  # max_retries=3
 
     async def test_dead_letter_after_max_attempts(self, queue):
@@ -264,10 +254,11 @@ class TestFailureAndRetry:
             t = await queue.get_task(task_id)
             return t and t["status"] == "dead_letter"
 
-        await _wait_for(is_dead)
+        await wait_for(is_dead)
         task = await queue.get_task(task_id)
         assert task["status"] == "dead_letter"
-        assert task["completed_at"] is not None
+        assert task["attempts"] == task["max_attempts"]
+        assert task["completed_at"] is None  # dead letters didn't complete
 
     async def test_dead_letter_not_retried(self, queue):
         call_count = 0
@@ -285,7 +276,7 @@ class TestFailureAndRetry:
             t = await queue.get_task(task_id)
             return t and t["status"] == "dead_letter"
 
-        await _wait_for(is_dead)
+        await wait_for(is_dead)
         before = call_count
         await asyncio.sleep(0.2)  # Give it time to wrongly retry
         assert call_count == before
@@ -299,7 +290,7 @@ class TestFailureAndRetry:
             t = await queue.get_task(task_id)
             return t and t["status"] == "dead_letter"
 
-        await _wait_for(is_dead)
+        await wait_for(is_dead)
         task = await queue.get_task(task_id)
         assert "boom" in task["error"]
 
@@ -316,7 +307,7 @@ class TestFailureAndRetry:
             return (t1 and t1["status"] == "dead_letter" and
                     t2 and t2["status"] == "dead_letter")
 
-        await _wait_for(both_dead, timeout=5.0)
+        await wait_for(both_dead, timeout=5.0)
         dead = await queue.dead_letters()
         dead_ids = {d["id"] for d in dead}
         assert id1 in dead_ids
@@ -366,7 +357,7 @@ class TestPersistence:
             t = await q2.get_task(task_id)
             return t and t["status"] == "completed"
 
-        await _wait_for(is_done)
+        await wait_for(is_done)
         assert received == [{"survived": True}]
         await q2.stop()
 
@@ -415,7 +406,7 @@ class TestPersistence:
             t = await q2.get_task(task_id)
             return t and t["status"] == "completed"
 
-        await _wait_for(is_done)
+        await wait_for(is_done)
         assert recovered == [{"recover": True}]
         await q2.stop()
 
@@ -432,27 +423,33 @@ class TestStatusQueries:
 
     async def test_depth_counts_pending_and_running(self, queue):
         gate = asyncio.Event()
+        started = asyncio.Event()
 
         async def blocking(payload: dict) -> None:
+            started.set()
             await gate.wait()
 
         queue.register("test", blocking)
         await queue.start()
 
-        await queue.enqueue("test", {"n": 1})
-        await queue.enqueue("test", {"n": 2})
+        id1 = await queue.enqueue("test", {"n": 1})
+        id2 = await queue.enqueue("test", {"n": 2})
 
         # Wait for first task to start running
-        async def one_running():
-            # One should be running, one pending
-            return await queue.depth() == 2
-
-        await _wait_for(one_running)
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        # One running, one pending → depth 2
         assert await queue.depth() == 2
 
         gate.set()  # Let tasks finish
-        # Cleanup: wait for processing to complete
-        await _wait_for(lambda: queue.depth(), timeout=2.0)
+
+        # Wait for both to complete
+        async def both_done():
+            t1 = await queue.get_task(id1)
+            t2 = await queue.get_task(id2)
+            return (t1["status"] == "completed" and t2["status"] == "completed")
+
+        await wait_for(both_done)
+        assert await queue.depth() == 0
 
     async def test_depth_excludes_completed_and_dead(self, queue):
         queue.register("good", _noop_handler)
@@ -468,7 +465,7 @@ class TestStatusQueries:
             return (g and g["status"] == "completed" and
                     b and b["status"] == "dead_letter")
 
-        await _wait_for(both_done, timeout=5.0)
+        await wait_for(both_done, timeout=5.0)
         assert await queue.depth() == 0
 
     async def test_last_write_none_when_empty(self, queue):
@@ -484,13 +481,13 @@ class TestStatusQueries:
         async def first_done():
             t = await queue.get_task(id1)
             return t and t["status"] == "completed"
-        await _wait_for(first_done)
+        await wait_for(first_done)
 
         id2 = await queue.enqueue("test", {"n": 2})
         async def second_done():
             t = await queue.get_task(id2)
             return t and t["status"] == "completed"
-        await _wait_for(second_done)
+        await wait_for(second_done)
 
         last = await queue.last_write()
         assert last is not None
@@ -519,7 +516,7 @@ class TestLifecycle:
             t = await queue.get_task(task_id)
             return t and t["status"] == "running"
 
-        await _wait_for(is_running)
+        await wait_for(is_running)
 
         # Stop should wait for the task to finish
         await queue.stop()
@@ -546,4 +543,4 @@ class TestLifecycle:
             t = await queue.get_task(task_id)
             return t and t["status"] == "completed"
 
-        await _wait_for(is_done)
+        await wait_for(is_done)

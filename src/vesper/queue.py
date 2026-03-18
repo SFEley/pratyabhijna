@@ -176,21 +176,34 @@ class WorkQueue:
             await self._process(task)
 
     async def _claim_next(self) -> dict | None:
-        """Atomically claim the oldest pending task."""
+        """Atomically claim the oldest pending task.
+
+        Uses a single UPDATE with a subquery so the transition from
+        'pending' to 'running' is one statement. If another worker
+        claimed the row first (multi-worker scenario), the subquery
+        finds no 'pending' row and the UPDATE touches zero rows.
+        After committing, we fetch the claimed task by status.
+        """
+        cursor = await self._db.execute(
+            """UPDATE tasks
+               SET status = 'running', updated_at = ?
+               WHERE id = (
+                   SELECT id FROM tasks
+                   WHERE status = 'pending'
+                   ORDER BY created_at
+                   LIMIT 1
+               )""",
+            (_now(),),
+        )
+        if cursor.rowcount == 0:
+            return None
+        await self._db.commit()
+
         async with self._db.execute(
-            "SELECT * FROM tasks WHERE status = 'pending' ORDER BY created_at LIMIT 1"
+            "SELECT * FROM tasks WHERE status = 'running' ORDER BY updated_at DESC LIMIT 1"
         ) as cursor:
             row = await cursor.fetchone()
-            if not row:
-                return None
-            task = dict(row)
-
-        await self._db.execute(
-            "UPDATE tasks SET status = 'running', updated_at = ? WHERE id = ? AND status = 'pending'",
-            (_now(), task["id"]),
-        )
-        await self._db.commit()
-        return task
+            return dict(row) if row else None
 
     async def _process(self, task: dict) -> None:
         """Run handler, mark completed or handle failure."""
@@ -220,8 +233,8 @@ class WorkQueue:
         if attempts >= max_attempts:
             await self._db.execute(
                 "UPDATE tasks SET status = 'dead_letter', attempts = ?, "
-                "error = ?, updated_at = ?, completed_at = ? WHERE id = ?",
-                (attempts, error_text, now, now, task_id),
+                "error = ?, updated_at = ? WHERE id = ?",
+                (attempts, error_text, now, task_id),
             )
         else:
             await self._db.execute(

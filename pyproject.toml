@@ -26,6 +26,7 @@ packages = ["src/vesper"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["tests"]
 markers = [
     "focus: mark test to run when --focus is used",
 ]

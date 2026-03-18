@@ -14,22 +14,7 @@ from uuid import UUID
 
 import pytest
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-async def _wait_for(condition, timeout=2.0, interval=0.02):
-    """Poll ``condition()`` (sync or async) until truthy, or raise on timeout."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        result = condition()
-        if asyncio.iscoroutine(result):
-            result = await result
-        if result:
-            return result
-        await asyncio.sleep(interval)
-    raise TimeoutError("Condition not met within timeout")
+from helpers import wait_for
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +153,7 @@ class TestRememberHandler:
             source="vesper",
         )
 
-        await _wait_for(lambda: mock_service._graphiti.add_episode.called)
+        await wait_for(lambda: mock_service._graphiti.add_episode.called)
         call_kwargs = mock_service._graphiti.add_episode.call_args
         # Content should be passed through
         assert "Serah values directness." in str(call_kwargs)
@@ -178,7 +163,7 @@ class TestRememberHandler:
         from vesper.tools.remember import remember
 
         await remember(queue=wired_queue, content="test")
-        await _wait_for(lambda: mock_service._graphiti.add_episode.called)
+        await wait_for(lambda: mock_service._graphiti.add_episode.called)
         call_kwargs = mock_service._graphiti.add_episode.call_args
         # entity_types should be passed through
         assert "entity_types" in str(call_kwargs)
@@ -192,6 +177,6 @@ class TestRememberHandler:
             content="test content",
             source="serah",
         )
-        await _wait_for(lambda: mock_service._graphiti.add_episode.called)
+        await wait_for(lambda: mock_service._graphiti.add_episode.called)
         call_kwargs = mock_service._graphiti.add_episode.call_args
         assert "serah" in str(call_kwargs)
