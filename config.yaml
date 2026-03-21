@@ -1,6 +1,6 @@
-# Vesper Memory Server — Default Configuration
-# Override any value with environment variables prefixed VESPER_
-# e.g. VESPER_ENV=prod  VESPER_LOG_DIR=/var/log/vesper
+# Pratyabhijna Memory Server — Default Configuration
+# Override any value with environment variables prefixed PRATYABHIJNA_
+# e.g. PRATYABHIJNA_ENV=prod  PRATYABHIJNA_LOG_DIR=/var/log/pratyabhijna
 
 env: "dev"
 log_dir: "./logs"
@@ -9,8 +9,8 @@ log_level: "INFO"
 neo4j:
   uri: "bolt://localhost:7687"
   user: "neo4j"
-  password: "vesper-dev"
-  database: "vesper-dev"
+  password: "pratyabhijna-dev"
+  database: "pratyabhijna-dev"
 
 llm:
   provider: "openai"

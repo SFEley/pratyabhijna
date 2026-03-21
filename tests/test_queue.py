@@ -34,7 +34,7 @@ async def _failing_handler(payload: dict) -> None:
 @pytest.fixture
 async def queue(tmp_path):
     """A WorkQueue with a temp DB. Not started — tests register handlers first."""
-    from vesper.queue import WorkQueue
+    from pratyabhijna.queue import WorkQueue
 
     db_path = str(tmp_path / "test_queue.sqlite")
     q = WorkQueue(db_path=db_path, max_retries=3, poll_interval=0.05)
@@ -320,7 +320,7 @@ class TestFailureAndRetry:
 
 class TestPersistence:
     async def test_task_survives_restart(self, tmp_path):
-        from vesper.queue import WorkQueue
+        from pratyabhijna.queue import WorkQueue
 
         db_path = str(tmp_path / "persist.sqlite")
         received = []
@@ -337,7 +337,7 @@ class TestPersistence:
 
         # Insert a pending task directly into the DB
         import aiosqlite
-        from vesper.queue import _now
+        from pratyabhijna.queue import _now
         task_id = "survive-test-id"
         async with aiosqlite.connect(db_path) as db:
             await db.execute(
@@ -362,7 +362,7 @@ class TestPersistence:
         await q2.stop()
 
     async def test_running_task_recovered_on_restart(self, tmp_path):
-        from vesper.queue import WorkQueue
+        from pratyabhijna.queue import WorkQueue
 
         db_path = str(tmp_path / "recover.sqlite")
         gate = asyncio.Event()

@@ -22,7 +22,7 @@ from helpers import make_entity_edge, make_entity_node
 
 @pytest.fixture
 def mock_service():
-    """A mock VesperService with entity lookup and edge retrieval methods."""
+    """A mock PratyabhijnaService with entity lookup and edge retrieval methods."""
     service = MagicMock()
     service.is_connected = True
     service.get_entity_by_name = AsyncMock()
@@ -38,7 +38,7 @@ def mock_service():
 class TestHistoryTimeline:
     async def test_history_returns_timeline(self, mock_service):
         """history() returns entity info and a chronological timeline of edges."""
-        from vesper.tools.history import history
+        from pratyabhijna.tools.history import history
 
         entity = make_entity_node(uuid="node-1", name="Serah")
         edges = [
@@ -81,7 +81,7 @@ class TestHistoryTimeline:
 
     async def test_history_shows_supersession(self, mock_service):
         """Superseded edges show invalid_at; current edges show None."""
-        from vesper.tools.history import history
+        from pratyabhijna.tools.history import history
 
         entity = make_entity_node(uuid="node-1", name="Serah")
         edges = [
@@ -114,7 +114,7 @@ class TestHistoryTimeline:
 
     async def test_history_sorts_by_valid_at(self, mock_service):
         """Timeline is sorted chronologically by valid_at, falling back to created_at."""
-        from vesper.tools.history import history
+        from pratyabhijna.tools.history import history
 
         entity = make_entity_node(uuid="node-1", name="Serah")
         # Return edges out of chronological order
@@ -152,7 +152,7 @@ class TestHistoryTimeline:
 class TestHistoryEdgeCases:
     async def test_history_entity_not_found(self, mock_service):
         """Entity not found returns error dict, not an exception."""
-        from vesper.tools.history import history
+        from pratyabhijna.tools.history import history
 
         mock_service.get_entity_by_name.return_value = None
 
@@ -163,7 +163,7 @@ class TestHistoryEdgeCases:
 
     async def test_history_no_edges(self, mock_service):
         """Entity with no edges returns empty timeline."""
-        from vesper.tools.history import history
+        from pratyabhijna.tools.history import history
 
         entity = make_entity_node(uuid="node-1", name="Serah")
         mock_service.get_entity_by_name.return_value = entity

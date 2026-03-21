@@ -24,7 +24,7 @@ from helpers import wait_for
 
 @pytest.fixture
 def mock_service():
-    """A mock VesperService with a mock graphiti client."""
+    """A mock PratyabhijnaService with a mock graphiti client."""
     service = MagicMock()
     service.is_connected = True
     service._graphiti = AsyncMock()
@@ -39,8 +39,8 @@ def mock_service():
 @pytest.fixture
 async def wired_queue(tmp_path, mock_service):
     """A real WorkQueue with correct handler registered and started."""
-    from vesper.queue import WorkQueue
-    from vesper.tools.correct import make_handler
+    from pratyabhijna.queue import WorkQueue
+    from pratyabhijna.tools.correct import make_handler
 
     db_path = str(tmp_path / "test_correct.sqlite")
     q = WorkQueue(db_path=db_path, max_retries=3, poll_interval=0.05)
@@ -58,7 +58,7 @@ async def wired_queue(tmp_path, mock_service):
 class TestCorrectReturn:
     async def test_correct_returns_task_id(self, wired_queue):
         """correct() returns a dict with a valid UUID task_id and status 'queued'."""
-        from vesper.tools.correct import correct
+        from pratyabhijna.tools.correct import correct
 
         result = await correct(
             queue=wired_queue,
@@ -76,7 +76,7 @@ class TestCorrectReturn:
 class TestCorrectEnqueue:
     async def test_correct_enqueues_correction_task(self, wired_queue):
         """correct() creates a task with type 'correct_memory'."""
-        from vesper.tools.correct import correct
+        from pratyabhijna.tools.correct import correct
 
         result = await correct(
             queue=wired_queue,
@@ -88,7 +88,7 @@ class TestCorrectEnqueue:
 
     async def test_correct_payload_includes_content_and_search_terms(self, wired_queue):
         """Task payload contains content and search_terms."""
-        from vesper.tools.correct import correct
+        from pratyabhijna.tools.correct import correct
 
         result = await correct(
             queue=wired_queue,
@@ -111,7 +111,7 @@ class TestCorrectEnqueue:
 
         mock_service._graphiti.add_episode = slow_add_episode
 
-        from vesper.tools.correct import correct
+        from pratyabhijna.tools.correct import correct
 
         result = await correct(
             queue=wired_queue,
@@ -130,7 +130,7 @@ class TestCorrectEnqueue:
 class TestCorrectHandler:
     async def test_handler_calls_add_episode(self, wired_queue, mock_service):
         """After processing, graphiti.add_episode is called with correction content."""
-        from vesper.tools.correct import correct
+        from pratyabhijna.tools.correct import correct
 
         await correct(
             queue=wired_queue,

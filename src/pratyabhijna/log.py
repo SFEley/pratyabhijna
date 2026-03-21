@@ -1,12 +1,12 @@
-"""Vesper logging configuration.
+"""Pratyabhijna logging configuration.
 
 Call configure_logging(config) once at server startup to initialise the
 root logger. Use get_logger(__name__) in each module to obtain a named
 logger that inherits the root configuration.
 
-Routing rules (VESPER_ENV):
+Routing rules (PRATYABHIJNA_ENV):
   dev / test   → StreamHandler → stdout
-  prod         → RotatingFileHandler → VESPER_LOG_DIR/vesper.log
+  prod         → RotatingFileHandler → PRATYABHIJNA_LOG_DIR/pratyabhijna.log
   anything else → StreamHandler → stdout (safe fallback)
 """
 
@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from vesper.config import VesperConfig
+    from pratyabhijna.config import PratyabhijnaConfig
 
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
@@ -27,8 +27,8 @@ _MAX_BYTES = 10 * 1024 * 1024
 _BACKUP_COUNT = 5
 
 
-def configure_logging(config: "VesperConfig") -> None:
-    """Configure the root logger based on the Vesper config.
+def configure_logging(config: "PratyabhijnaConfig") -> None:
+    """Configure the root logger based on the Pratyabhijna config.
 
     Safe to call multiple times (each call adds exactly one handler).
     In tests, use the isolated_root_logger fixture to prevent leakage.
@@ -37,7 +37,7 @@ def configure_logging(config: "VesperConfig") -> None:
         log_dir = Path(config.log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
         handler: logging.Handler = logging.handlers.RotatingFileHandler(
-            log_dir / "vesper.log",
+            log_dir / "pratyabhijna.log",
             maxBytes=_MAX_BYTES,
             backupCount=_BACKUP_COUNT,
             encoding="utf-8",

@@ -1,4 +1,4 @@
-# Vesper test configuration.
+# Pratyabhijna test configuration.
 # Secrets (API keys, passwords) go in .env.test, not here.
 
 neo4j:

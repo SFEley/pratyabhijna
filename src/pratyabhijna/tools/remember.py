@@ -10,8 +10,8 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from vesper.queue import WorkQueue
-    from vesper.service import VesperService
+    from pratyabhijna.queue import WorkQueue
+    from pratyabhijna.service import PratyabhijnaService
 
 
 async def remember(
@@ -37,7 +37,7 @@ async def remember(
     return {"task_id": task_id, "status": "queued"}
 
 
-def make_handler(service: VesperService):
+def make_handler(service: PratyabhijnaService):
     """Create the add_episode queue handler bound to a service instance."""
 
     async def handle_add_episode(payload: dict[str, Any]) -> None:

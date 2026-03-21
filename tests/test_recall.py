@@ -27,7 +27,7 @@ from helpers import make_entity_edge, make_entity_node
 
 @pytest.fixture
 def mock_service():
-    """A mock VesperService with recall method."""
+    """A mock PratyabhijnaService with recall method."""
     service = MagicMock()
     service.is_connected = True
     service.recall = AsyncMock()
@@ -41,7 +41,7 @@ def mock_service():
 class TestRecallResults:
     async def test_recall_returns_results(self, mock_service):
         """recall() returns a dict with results list, count, and query echo."""
-        from vesper.tools.recall import recall
+        from pratyabhijna.tools.recall import recall
 
         node1 = make_entity_node(uuid="node-1", name="Serah")
         node2 = make_entity_node(uuid="node-2", name="directness", labels=["Position"])
@@ -72,7 +72,7 @@ class TestRecallResults:
 
     async def test_recall_empty_results(self, mock_service):
         """Empty search returns results: [], count: 0 — not an error."""
-        from vesper.tools.recall import recall
+        from pratyabhijna.tools.recall import recall
 
         mock_service.recall.return_value = SearchResults()
 
@@ -90,7 +90,7 @@ class TestRecallResults:
 class TestRecallFilters:
     async def test_recall_with_type_filter(self, mock_service):
         """memory_type='Person' passes node_labels=['Person'] to service."""
-        from vesper.tools.recall import recall
+        from pratyabhijna.tools.recall import recall
 
         mock_service.recall.return_value = SearchResults()
 
@@ -103,7 +103,7 @@ class TestRecallFilters:
 
     async def test_recall_with_time_range_relative(self, mock_service):
         """time_range='7d' builds a created_at filter >= 7 days ago."""
-        from vesper.tools.recall import recall
+        from pratyabhijna.tools.recall import recall
 
         mock_service.recall.return_value = SearchResults()
         before = datetime.now(timezone.utc) - timedelta(days=7, seconds=5)
@@ -122,7 +122,7 @@ class TestRecallFilters:
 
     async def test_recall_with_time_range_absolute(self, mock_service):
         """time_range='2025-01-01..2025-03-01' builds a date range filter."""
-        from vesper.tools.recall import recall
+        from pratyabhijna.tools.recall import recall
 
         mock_service.recall.return_value = SearchResults()
 
@@ -144,7 +144,7 @@ class TestRecallFilters:
 
     async def test_recall_invalid_time_range_returns_error(self, mock_service):
         """Invalid time_range returns error dict, not an exception."""
-        from vesper.tools.recall import recall
+        from pratyabhijna.tools.recall import recall
 
         result = await recall(
             service=mock_service,
@@ -165,7 +165,7 @@ class TestRecallFilters:
 class TestRecallFormatting:
     async def test_recall_edge_results_include_entity_names(self, mock_service):
         """Edge results resolve source/target node UUIDs to entity names."""
-        from vesper.tools.recall import recall
+        from pratyabhijna.tools.recall import recall
 
         node1 = make_entity_node(uuid="node-1", name="Serah")
         node2 = make_entity_node(uuid="node-2", name="directness", labels=["Position"])
@@ -190,7 +190,7 @@ class TestRecallFormatting:
 
     async def test_recall_edge_missing_node_gets_null_name(self, mock_service):
         """Edge referencing a node not in results gets name: None."""
-        from vesper.tools.recall import recall
+        from pratyabhijna.tools.recall import recall
 
         # Edge references node-99 which is NOT in the nodes list
         edge1 = make_entity_edge(
@@ -215,7 +215,7 @@ class TestRecallFormatting:
 
     async def test_recall_results_sorted_by_score(self, mock_service):
         """Results are sorted by reranker score, highest first."""
-        from vesper.tools.recall import recall
+        from pratyabhijna.tools.recall import recall
 
         edge_low = make_entity_edge(uuid="edge-low", fact="low score edge")
         edge_high = make_entity_edge(uuid="edge-high", fact="high score edge")

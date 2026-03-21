@@ -1,4 +1,4 @@
-# Vesper development configuration.
+# Pratyabhijna development configuration.
 # Secrets (API keys, passwords) go in .env.dev, not here.
 
 neo4j:

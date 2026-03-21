@@ -12,11 +12,11 @@ from typing import TYPE_CHECKING
 from graphiti_core.errors import EdgeNotFoundError, NodeNotFoundError
 
 if TYPE_CHECKING:
-    from vesper.service import VesperService
+    from pratyabhijna.service import PratyabhijnaService
 
 
 async def inspect(
-    service: VesperService,
+    service: PratyabhijnaService,
     uuid: str,
 ) -> dict:
     """Get full detail for a node or edge by UUID.
@@ -24,7 +24,7 @@ async def inspect(
     Tries node lookup first, falls back to edge lookup.
 
     Args:
-        service: The VesperService instance.
+        service: The PratyabhijnaService instance.
         uuid: UUID of the entity node or edge.
 
     Returns:

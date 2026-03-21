@@ -18,11 +18,11 @@ from graphiti_core.search.search_config_recipes import (
 )
 from graphiti_core.search.search_filters import SearchFilters
 
-from vesper.config import VesperConfig
-from vesper.entity_types import VESPER_ENTITY_TYPES
+from pratyabhijna.config import PratyabhijnaConfig
+from pratyabhijna.entity_types import PRATYABHIJNA_ENTITY_TYPES
 
 
-def _build_llm_client(config: VesperConfig):
+def _build_llm_client(config: PratyabhijnaConfig):
     """Construct LLM client from config."""
     llm = config.llm
     if llm.provider == "anthropic":
@@ -42,7 +42,7 @@ def _build_llm_client(config: VesperConfig):
     raise ValueError(f"Unsupported LLM provider: {llm.provider}")
 
 
-def _build_embedder(config: VesperConfig):
+def _build_embedder(config: PratyabhijnaConfig):
     """Construct embedding client from config."""
     emb = config.embedding
     if emb.provider == "voyageai":
@@ -63,7 +63,7 @@ def _build_embedder(config: VesperConfig):
     raise ValueError(f"Unsupported embedding provider: {emb.provider}")
 
 
-def _build_cross_encoder(config: VesperConfig):
+def _build_cross_encoder(config: PratyabhijnaConfig):
     """Construct cross-encoder (reranker) from config.
 
     Uses the same provider as the embedder — if you're using Voyage
@@ -71,7 +71,7 @@ def _build_cross_encoder(config: VesperConfig):
     """
     emb = config.embedding
     if emb.provider == "voyageai":
-        from vesper.reranker import VoyageRerankerClient
+        from pratyabhijna.reranker import VoyageRerankerClient
 
         return VoyageRerankerClient(api_key=emb.api_key or None)
     if emb.provider == "openai":
@@ -81,10 +81,10 @@ def _build_cross_encoder(config: VesperConfig):
     raise ValueError(f"No cross-encoder available for provider: {emb.provider}")
 
 
-class VesperService:
-    """Wraps graphiti-core client with Vesper-specific lifecycle."""
+class PratyabhijnaService:
+    """Wraps graphiti-core client with Pratyabhijna-specific lifecycle."""
 
-    def __init__(self, config: VesperConfig):
+    def __init__(self, config: PratyabhijnaConfig):
         self.config = config
         self._graphiti = None
 
@@ -119,7 +119,7 @@ class VesperService:
     @property
     def entity_types(self) -> dict:
         """Entity type registry for use with add_episode()."""
-        return VESPER_ENTITY_TYPES
+        return PRATYABHIJNA_ENTITY_TYPES
 
     # --- Read operations (Phase 4) ---
 

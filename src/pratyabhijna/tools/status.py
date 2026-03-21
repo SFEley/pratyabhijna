@@ -9,12 +9,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from vesper.queue import WorkQueue
-    from vesper.service import VesperService
+    from pratyabhijna.queue import WorkQueue
+    from pratyabhijna.service import PratyabhijnaService
 
 
 async def status(
-    service: VesperService | None = None,
+    service: PratyabhijnaService | None = None,
     queue: WorkQueue | None = None,
 ) -> dict:
     """Return system health info.

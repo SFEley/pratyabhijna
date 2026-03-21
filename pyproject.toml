@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "vesper"
+name = "pratyabhijna"
 version = "0.1.0"
-description = "Vesper memory system — MCP server for persistent semantic memory"
+description = "Pratyabhijna memory system — MCP server for persistent semantic memory"
 requires-python = ">=3.10,<4"
 dependencies = [
     "aiosqlite>=0.20",
@@ -21,7 +21,7 @@ dev = [
     "pytest-asyncio>=0.24",
 ]
 [tool.hatch.build.targets.wheel]
-packages = ["src/vesper"]
+packages = ["src/pratyabhijna"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

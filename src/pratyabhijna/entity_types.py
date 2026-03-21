@@ -1,4 +1,4 @@
-"""Vesper custom entity types for the Graphiti knowledge graph.
+"""Pratyabhijna custom entity types for the Graphiti knowledge graph.
 
 Each class is a plain Pydantic BaseModel subclass — no EntityNode inheritance
 needed. Graphiti accepts these as extraction hints via add_episode(). Field
@@ -8,7 +8,7 @@ group_id, labels, created_at, name_embedding, summary, attributes.
 All fields are optional with sensible defaults so Graphiti can populate them
 from episode content without requiring upfront values.
 
-All types are general-purpose — none are exclusive to Vesper or Serah.
+All types are general-purpose — none are exclusive to Pratyabhijna or Serah.
 Relationships between entities (who holds a Position, who participated in
 an Event) are represented as Graphiti edges, not entity properties.
 Qualities that vary by holder (confidence, importance) are edge properties.
@@ -103,7 +103,7 @@ class Thread(BaseModel):
     notes: Optional[str] = None
 
 
-VESPER_ENTITY_TYPES: dict[str, type[BaseModel]] = {
+PRATYABHIJNA_ENTITY_TYPES: dict[str, type[BaseModel]] = {
     "Person": Person,
     "Event": Event,
     "Place": Place,

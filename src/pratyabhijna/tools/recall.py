@@ -18,7 +18,7 @@ from graphiti_core.search.search_filters import (
 )
 
 if TYPE_CHECKING:
-    from vesper.service import VesperService
+    from pratyabhijna.service import PratyabhijnaService
 
 
 def _parse_time_range(time_range: str) -> list[list[DateFilter]]:
@@ -68,7 +68,7 @@ def _parse_time_range(time_range: str) -> list[list[DateFilter]]:
 
 
 async def recall(
-    service: VesperService,
+    service: PratyabhijnaService,
     query: str,
     memory_type: str | None = None,
     time_range: str | None = None,
@@ -76,7 +76,7 @@ async def recall(
     """Search the knowledge graph and return ranked results.
 
     Args:
-        service: The VesperService instance.
+        service: The PratyabhijnaService instance.
         query: Natural language search query.
         memory_type: Optional entity type filter (e.g. "Person", "Observation").
         time_range: Optional time filter — relative ("7d") or absolute

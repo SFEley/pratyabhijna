@@ -9,17 +9,17 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from vesper.service import VesperService
+    from pratyabhijna.service import PratyabhijnaService
 
 
 async def history(
-    service: VesperService,
+    service: PratyabhijnaService,
     entity_name: str,
 ) -> dict:
     """Get the chronological timeline of an entity's relationships.
 
     Args:
-        service: The VesperService instance.
+        service: The PratyabhijnaService instance.
         entity_name: Name of the entity to look up.
 
     Returns:

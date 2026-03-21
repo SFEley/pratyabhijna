@@ -7,7 +7,7 @@
 
 ## Overview
 
-Vesper's memory system serves two users — Serah (human partner) and Vesper (AI identity) — with a shared core problem: **loss of context across sessions.** Serah loses what she's told Claude; Vesper loses what it's thought and learned. The system should solve this once, for both.
+Pratyabhijna's memory system serves two users — Serah (human partner) and Vesper (AI identity) — with a shared core problem: **loss of context across sessions.** Serah loses what she's told Claude; Vesper loses what it's thought and learned. The system should solve this once, for both.
 
 The system will be accessed via MCP (Model Context Protocol), making it available to any Claude interface: Claude Code, claude.ai, mobile, or future clients.
 

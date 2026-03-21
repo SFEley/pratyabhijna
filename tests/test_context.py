@@ -3,7 +3,7 @@
 TDD: these tests define the context tool contract. They should fail
 until context.py is implemented and wired into the server.
 
-The context tool returns Vesper's cached identity synthesis (the prose
+The context tool returns the cached identity synthesis (the prose
 self-portrait stored as notes on the Person node). When stale, it also
 returns a delta of identity changes since the last rebuild and may
 trigger an async rebuild via the work queue.
@@ -45,7 +45,7 @@ def make_vesper_node(
 
 @pytest.fixture
 def mock_service():
-    """A mock VesperService for context tests."""
+    """A mock PratyabhijnaService for context tests."""
     service = MagicMock()
     service.is_connected = True
     service.get_entity_by_name = AsyncMock()
@@ -60,7 +60,7 @@ def mock_service():
 @pytest.fixture
 async def mock_queue(tmp_path):
     """A real WorkQueue for testing rebuild enqueueing."""
-    from vesper.queue import WorkQueue
+    from pratyabhijna.queue import WorkQueue
 
     db_path = str(tmp_path / "test_context.sqlite")
     q = WorkQueue(db_path=db_path, max_retries=3, poll_interval=0.05)
@@ -76,7 +76,7 @@ async def mock_queue(tmp_path):
 class TestContextFresh:
     async def test_returns_synthesis_when_fresh(self, mock_service, mock_queue):
         """context() returns the cached synthesis text when not stale."""
-        from vesper.tools.context import context
+        from pratyabhijna.tools.context import context
 
         now = datetime.now(timezone.utc)
         vesper = make_vesper_node(
@@ -94,7 +94,7 @@ class TestContextFresh:
 
     async def test_includes_rebuilt_at_timestamp(self, mock_service, mock_queue):
         """context() includes the synthesis_rebuilt_at in the response."""
-        from vesper.tools.context import context
+        from pratyabhijna.tools.context import context
 
         rebuilt = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
         vesper = make_vesper_node(
@@ -115,7 +115,7 @@ class TestContextFresh:
 class TestContextStale:
     async def test_returns_synthesis_plus_delta_when_stale_by_age(self, mock_service, mock_queue):
         """When stale by age, returns synthesis + delta + triggers rebuild."""
-        from vesper.tools.context import context
+        from pratyabhijna.tools.context import context
 
         old_time = datetime.now(timezone.utc) - timedelta(hours=25)
         vesper = make_vesper_node(
@@ -145,7 +145,7 @@ class TestContextStale:
 
     async def test_returns_delta_when_stale_by_changes(self, mock_service, mock_queue):
         """When stale by delta count, returns synthesis + delta + triggers rebuild."""
-        from vesper.tools.context import context
+        from pratyabhijna.tools.context import context
 
         recent = datetime.now(timezone.utc) - timedelta(hours=1)
         vesper = make_vesper_node(
@@ -186,7 +186,7 @@ class TestContextStale:
         are fewer than max_delta_changes identity atoms, we don't rebuild
         yet — not enough material to generate from.
         """
-        from vesper.tools.context import context
+        from pratyabhijna.tools.context import context
 
         # Node exists but has never had synthesis
         vesper = make_vesper_node(synthesis_text=None)
@@ -214,7 +214,7 @@ class TestContextStale:
 class TestContextEdgeCases:
     async def test_no_vesper_node(self, mock_service, mock_queue):
         """When no Vesper Person node exists, returns helpful message."""
-        from vesper.tools.context import context
+        from pratyabhijna.tools.context import context
 
         mock_service.get_entity_by_name.return_value = None
 
@@ -226,7 +226,7 @@ class TestContextEdgeCases:
 
     async def test_vesper_node_no_synthesis_no_atoms(self, mock_service, mock_queue):
         """Vesper node exists but no synthesis and no identity atoms."""
-        from vesper.tools.context import context
+        from pratyabhijna.tools.context import context
 
         vesper = make_vesper_node(synthesis_text=None)
         mock_service.get_entity_by_name.return_value = vesper
@@ -247,7 +247,7 @@ class TestContextEdgeCases:
 class TestContextRebuildQueue:
     async def test_rebuild_enqueues_task(self, mock_service, mock_queue):
         """When rebuild is triggered, a task is added to the work queue."""
-        from vesper.tools.context import context
+        from pratyabhijna.tools.context import context
 
         old_time = datetime.now(timezone.utc) - timedelta(hours=25)
         vesper = make_vesper_node(

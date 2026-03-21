@@ -1,11 +1,11 @@
-# Vesper Entity Types
+# Pratyabhijna Entity Types
 
 Custom entity types passed to Graphiti as extraction hints via `add_episode()`.
 Each is a plain Pydantic `BaseModel` subclass — Graphiti populates fields from
 episode content and stores instances as nodes in the knowledge graph with
 bi-temporal edges connecting them.
 
-All types are general-purpose. None are exclusive to Vesper or to Serah —
+All types are general-purpose. None are exclusive to Pratyabhijna or to Serah —
 a Position can be held by anyone, an Observation can be about anyone,
 an Event can involve anyone. The types describe *kinds of things*, not
 *whose things*.

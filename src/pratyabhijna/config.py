@@ -1,14 +1,14 @@
-"""Vesper configuration.
+"""Pratyabhijna configuration.
 
 Loads from per-environment YAML + dotenv files, with env var overrides.
 
 Resolution order (highest priority first):
-  1. Environment variables (VESPER_ prefix, __ for nesting)
+  1. Environment variables (PRATYABHIJNA_ prefix, __ for nesting)
   2. .env.{env} file (secrets — gitignored)
   3. config/{env}.yaml (structural config — version-controlled)
   4. Field defaults in this module
 
-Select the environment with VESPER_ENV (default: "dev").
+Select the environment with PRATYABHIJNA_ENV (default: "dev").
 """
 
 import os
@@ -52,8 +52,8 @@ class SynthesisConfig(BaseModel):
     max_delta_changes: int = 3
 
 
-class VesperConfig(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="VESPER_", env_nested_delimiter="__")
+class PratyabhijnaConfig(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="PRATYABHIJNA_", env_nested_delimiter="__")
 
     env: str = "dev"
     log_dir: str = "./logs"
@@ -74,7 +74,7 @@ class VesperConfig(BaseSettings):
         )
 
     @classmethod
-    def from_yaml(cls, path: Path) -> "VesperConfig":
+    def from_yaml(cls, path: Path) -> "PratyabhijnaConfig":
         """Load config from a specific YAML file, with env var overrides."""
         import yaml
 
@@ -84,7 +84,7 @@ class VesperConfig(BaseSettings):
         return cls(**data)
 
     @classmethod
-    def from_env(cls, env: str | None = None, root: Path | None = None) -> "VesperConfig":
+    def from_env(cls, env: str | None = None, root: Path | None = None) -> "PratyabhijnaConfig":
         """Load config for the given environment.
 
         Reads config/{env}.yaml for structural settings, then loads
@@ -92,14 +92,14 @@ class VesperConfig(BaseSettings):
 
         Args:
             env: Environment name (dev/test/prod). Falls back to
-                 VESPER_ENV, then "dev".
+                 PRATYABHIJNA_ENV, then "dev".
             root: Server root directory. Defaults to the server/
                   directory containing this package.
         """
         import yaml
         from dotenv import load_dotenv
 
-        env = env or os.getenv("VESPER_ENV", "dev")
+        env = env or os.getenv("PRATYABHIJNA_ENV", "dev")
         root = root or _SERVER_ROOT
 
         # Load secrets from .env.{env} into the process environment.

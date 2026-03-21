@@ -23,7 +23,7 @@ from helpers import wait_for
 
 @pytest.fixture
 def mock_service():
-    """A mock VesperService with a mock graphiti client."""
+    """A mock PratyabhijnaService with a mock graphiti client."""
     service = MagicMock()
     service.is_connected = True
     service._graphiti = AsyncMock()
@@ -38,8 +38,8 @@ def mock_service():
 @pytest.fixture
 async def wired_queue(tmp_path, mock_service):
     """A real WorkQueue with remember handler registered and started."""
-    from vesper.queue import WorkQueue
-    from vesper.tools.remember import make_handler
+    from pratyabhijna.queue import WorkQueue
+    from pratyabhijna.tools.remember import make_handler
 
     db_path = str(tmp_path / "test_remember.sqlite")
     q = WorkQueue(db_path=db_path, max_retries=3, poll_interval=0.05)
@@ -57,7 +57,7 @@ async def wired_queue(tmp_path, mock_service):
 class TestRememberReturn:
     async def test_remember_returns_task_id(self, wired_queue):
         """remember() returns a dict with a valid UUID task_id and status 'queued'."""
-        from vesper.tools.remember import remember
+        from pratyabhijna.tools.remember import remember
 
         result = await remember(
             queue=wired_queue,
@@ -68,7 +68,7 @@ class TestRememberReturn:
 
     async def test_remember_default_memory_type(self, wired_queue):
         """memory_type defaults to 'observation'."""
-        from vesper.tools.remember import remember
+        from pratyabhijna.tools.remember import remember
 
         result = await remember(queue=wired_queue, content="test")
         task = await wired_queue.get_task(result["task_id"])
@@ -77,7 +77,7 @@ class TestRememberReturn:
 
     async def test_remember_default_source(self, wired_queue):
         """source defaults to 'vesper'."""
-        from vesper.tools.remember import remember
+        from pratyabhijna.tools.remember import remember
 
         result = await remember(queue=wired_queue, content="test")
         task = await wired_queue.get_task(result["task_id"])
@@ -92,7 +92,7 @@ class TestRememberReturn:
 class TestRememberEnqueue:
     async def test_remember_enqueues_add_episode_task(self, wired_queue):
         """remember() creates a task with type 'add_episode'."""
-        from vesper.tools.remember import remember
+        from pratyabhijna.tools.remember import remember
 
         result = await remember(queue=wired_queue, content="test content")
         task = await wired_queue.get_task(result["task_id"])
@@ -101,7 +101,7 @@ class TestRememberEnqueue:
 
     async def test_remember_payload_includes_content_and_type(self, wired_queue):
         """Task payload contains content, memory_type, and source."""
-        from vesper.tools.remember import remember
+        from pratyabhijna.tools.remember import remember
 
         result = await remember(
             queue=wired_queue,
@@ -126,7 +126,7 @@ class TestRememberEnqueue:
 
         mock_service._graphiti.add_episode = slow_add_episode
 
-        from vesper.tools.remember import remember
+        from pratyabhijna.tools.remember import remember
 
         result = await remember(queue=wired_queue, content="test")
         # We got a result back — the tool returned
@@ -144,7 +144,7 @@ class TestRememberEnqueue:
 class TestRememberHandler:
     async def test_handler_calls_add_episode(self, wired_queue, mock_service):
         """After processing, graphiti.add_episode is called with content and entity_types."""
-        from vesper.tools.remember import remember
+        from pratyabhijna.tools.remember import remember
 
         await remember(
             queue=wired_queue,
@@ -160,7 +160,7 @@ class TestRememberHandler:
 
     async def test_handler_passes_entity_types(self, wired_queue, mock_service):
         """Handler passes entity_types from the service to add_episode."""
-        from vesper.tools.remember import remember
+        from pratyabhijna.tools.remember import remember
 
         await remember(queue=wired_queue, content="test")
         await wait_for(lambda: mock_service._graphiti.add_episode.called)
@@ -170,7 +170,7 @@ class TestRememberHandler:
 
     async def test_handler_passes_source(self, wired_queue, mock_service):
         """Source attribution is included in the add_episode call."""
-        from vesper.tools.remember import remember
+        from pratyabhijna.tools.remember import remember
 
         await remember(
             queue=wired_queue,

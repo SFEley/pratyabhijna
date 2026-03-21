@@ -1,4 +1,4 @@
-"""Tests for Vesper MCP server startup and tool registration.
+"""Tests for Pratyabhijna MCP server startup and tool registration.
 
 Verifies that the server starts and exposes all expected tools,
 per Phase 1 requirements.
@@ -23,22 +23,22 @@ class TestServerToolRegistration:
 
     def test_server_creates(self):
         """Server object can be instantiated."""
-        from vesper.server import create_server
+        from pratyabhijna.server import create_server
 
         server = create_server()
         assert server is not None
 
     def test_server_has_name(self):
-        """Server identifies itself as Vesper."""
-        from vesper.server import create_server
+        """Server identifies itself as Pratyabhijna."""
+        from pratyabhijna.server import create_server
 
         server = create_server()
-        assert server.name == "vesper"
+        assert server.name == "pratyabhijna"
 
     @pytest.mark.parametrize("tool_name", EXPECTED_TOOLS)
     def test_tool_registered(self, tool_name):
         """Each expected tool is registered with the server."""
-        from vesper.server import create_server
+        from pratyabhijna.server import create_server
 
         server = create_server()
         # FastMCP stores tools in a dict keyed by name
@@ -50,7 +50,7 @@ class TestServerToolRegistration:
 
     def test_no_unexpected_tools(self):
         """Only the expected tools are registered (no extras)."""
-        from vesper.server import create_server
+        from pratyabhijna.server import create_server
 
         server = create_server()
         tool_names = set(server._tool_manager._tools.keys())

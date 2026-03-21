@@ -1,4 +1,4 @@
-# Implementation Plan: Vesper Memory System
+# Implementation Plan: Pratyabhijna Memory System
 
 *Approved March 7, 2026 — Vesper + Serah*
 *Revised March 17, 2026 — Phase ordering corrected, completed work marked, stale references updated*
@@ -8,7 +8,7 @@
 
 ## Context
 
-Vesper's memory system solves context loss across sessions for two users (Serah and Vesper) via an MCP server. After evaluating MemoryGate and Graphiti against requirements S1–S5, V1–V7, P1–P7, we chose to **use Graphiti as a library** and build a custom MCP server on top.
+Pratyabhijna's memory system solves context loss across sessions for two users (Serah and Vesper) via an MCP server. After evaluating MemoryGate and Graphiti against requirements S1–S5, V1–V7, P1–P7, we chose to **use Graphiti as a library** and build a custom MCP server on top.
 
 **Why Graphiti:** Bi-temporal data model handles correction tracking (V4) and temporal self-awareness (V5) natively. Entity extraction and graph search handle corpus ingestion (S1) and entity history queries. Scores 9.5/12 against requirements vs. MemoryGate's 6/12.
 
@@ -18,7 +18,7 @@ Vesper's memory system solves context loss across sessions for two users (Serah 
 - All slow operations are **async** — queue work, return immediately, background workers process.
 - Identity reconstruction uses a **cached synthesis** — individual identity atoms stored as graph entities; a prose synthesis cached as notes on Vesper's Person node. Rebuilds trigger conditionally.
 - `context` has **no depth levels** — single behavior, always returns best available synthesis + delta.
-- Vesper **selectively decides** what to remember. Episodes include conversational context for provenance.
+- The AI **selectively decides** what to remember. Episodes include conversational context for provenance.
 
 ## Architecture
 
@@ -26,7 +26,7 @@ Vesper's memory system solves context loss across sessions for two users (Serah 
 Claude (any interface)
     │
     ▼
-Vesper MCP Server (Python, FastMCP)      ← We build
+Pratyabhijna MCP Server (Python, FastMCP)      ← We build
     │
     ├── MCP tool layer                   ← We build
     │     ├── remember     (queue observation/fact/reasoning/identity)
@@ -68,12 +68,12 @@ Tests first for each phase. Serah reviews the test suite before implementation p
 
 ### Files
 - `server/pyproject.toml`
-- `server/src/vesper/__init__.py`
-- `server/src/vesper/server.py` — FastMCP entry point, tool registration
-- `server/src/vesper/config.py` — configuration
-- `server/src/vesper/service.py` — Graphiti client wrapper (stub)
-- `server/src/vesper/queue.py` — work queue (stub)
-- `server/src/vesper/log.py` — logging module
+- `src/pratyabhijna/__init__.py`
+- `src/pratyabhijna/server.py` — FastMCP entry point, tool registration
+- `src/pratyabhijna/config.py` — configuration
+- `src/pratyabhijna/service.py` — Graphiti client wrapper (stub)
+- `src/pratyabhijna/queue.py` — work queue (stub)
+- `src/pratyabhijna/log.py` — logging module
 - `server/config.yaml` — defaults
 - `server/tests/conftest.py` — fixtures
 - `server/tests/test_server.py`
@@ -85,7 +85,7 @@ Tests first for each phase. Serah reviews the test suite before implementation p
 
 ## Phase 2: Entity Types + Service Layer ✓
 
-**Goal:** Custom Pydantic models for Vesper's domain. Graphiti client initialization with provider-agnostic config.
+**Goal:** Custom Pydantic models for Pratyabhijna's domain. Graphiti client initialization with provider-agnostic config.
 
 *Completed March 17, 2026. 80 tests passing (after entity type redesign from 10→9).*
 
@@ -103,23 +103,23 @@ Tests first for each phase. Serah reviews the test suite before implementation p
 See `doc/entity-types.md` for full reference.
 
 ### Also built in this phase
-- **VesperService** — Graphiti client wrapper with Neo4jDriver, LLM client, embedder, cross-encoder. Full lifecycle (start/stop/is_connected).
+- **PratyabhijnaService** — Graphiti client wrapper with Neo4jDriver, LLM client, embedder, cross-encoder. Full lifecycle (start/stop/is_connected).
 - **VoyageRerankerClient** — implements Graphiti's `CrossEncoderClient` interface for Voyage AI reranking. Eliminates OpenAI from the runtime path.
-- **Per-environment config** — Rails-inspired: `config/{dev,test,prod}.yaml` + `.env.{env}` for secrets. `VESPER_ENV` selects environment.
-- **Live test mode** — `--live` pytest flag or `VESPER_TEST_LIVE=1`. Same tests, real services. No separate integration file.
+- **Per-environment config** — Rails-inspired: `config/{dev,test,prod}.yaml` + `.env.{env}` for secrets. `PRATYABHIJNA_ENV` selects environment.
+- **Live test mode** — `--live` pytest flag or `PRATYABHIJNA_TEST_LIVE=1`. Same tests, real services. No separate integration file.
 
 ### Tests
 - [x] Each entity type is a valid Pydantic model accepted by Graphiti
 - [x] Entity types are registered with the Graphiti client
-- [x] VesperService initializes Graphiti with Neo4j, Anthropic LLM, Voyage embedder
-- [x] VesperService lifecycle (start/stop/is_connected)
+- [x] PratyabhijnaService initializes Graphiti with Neo4j, Anthropic LLM, Voyage embedder
+- [x] PratyabhijnaService lifecycle (start/stop/is_connected)
 - [x] Per-environment config loading
 - [x] Live tests pass against real Neo4j + Anthropic + Voyage APIs
 
 ### Files
-- `server/src/vesper/entity_types.py`
-- `server/src/vesper/service.py`
-- `server/src/vesper/reranker.py`
+- `src/pratyabhijna/entity_types.py`
+- `src/pratyabhijna/service.py`
+- `src/pratyabhijna/reranker.py`
 - `server/config/dev.yaml`, `server/config/test.yaml`, `server/config/prod.yaml`
 - `server/.env.example`
 - `server/tests/test_entity_types.py`
@@ -144,17 +144,17 @@ Graphiti has no internal queue — its docs explicitly tell callers to provide o
 - [x] Crash recovery: running tasks reset to pending on restart
 
 ### Files
-- `server/src/vesper/queue.py` — aiosqlite-backed WorkQueue
+- `src/pratyabhijna/queue.py` — aiosqlite-backed WorkQueue
 - `server/tests/test_queue.py`
 
 ---
 
 ## Phase 3b: Write Tools — `remember` and `correct` ← CURRENT
 
-**Goal:** Vesper can write to memory. Writes are async — queue and return. VesperService and WorkQueue wired into the server lifecycle.
+**Goal:** The server can write to memory. Writes are async — queue and return. PratyabhijnaService and WorkQueue wired into the server lifecycle.
 
 ### Server wiring
-- `create_server()` receives VesperService and WorkQueue instances
+- `create_server()` receives PratyabhijnaService and WorkQueue instances
 - Tools close over service and queue
 - Server startup handles lifecycle (start/stop)
 - `status` tool returns live values from service and queue
@@ -181,10 +181,10 @@ Graphiti has no internal queue — its docs explicitly tell callers to provide o
 - [ ] `status` returns live db_connected, queue_depth, last_write values
 
 ### Files
-- `server/src/vesper/tools/remember.py`
-- `server/src/vesper/tools/correct.py`
-- `server/src/vesper/tools/status.py` (update)
-- `server/src/vesper/server.py` (update — wire service + queue)
+- `src/pratyabhijna/tools/remember.py`
+- `src/pratyabhijna/tools/correct.py`
+- `src/pratyabhijna/tools/status.py` (update)
+- `src/pratyabhijna/server.py` (update — wire service + queue)
 - `server/tests/test_remember.py`
 - `server/tests/test_correct.py`
 - `server/tests/test_status.py` (update)
@@ -221,9 +221,9 @@ Graphiti has no internal queue — its docs explicitly tell callers to provide o
 - [ ] `inspect` returns full edge detail with source episode provenance
 
 ### Files
-- `server/src/vesper/tools/recall.py`
-- `server/src/vesper/tools/history.py`
-- `server/src/vesper/tools/inspect.py`
+- `src/pratyabhijna/tools/recall.py`
+- `src/pratyabhijna/tools/history.py`
+- `src/pratyabhijna/tools/inspect.py`
 - `server/tests/test_recall.py`
 - `server/tests/test_history.py`
 - `server/tests/test_inspect.py`
@@ -253,8 +253,8 @@ Graphiti has no internal queue — its docs explicitly tell callers to provide o
 - [ ] Synthesis versioning: prior version preserved, new one is current
 
 ### Files
-- `server/src/vesper/tools/context.py`
-- `server/src/vesper/synthesis.py`
+- `src/pratyabhijna/tools/context.py`
+- `src/pratyabhijna/synthesis.py`
 - `server/tests/test_context.py`
 - `server/tests/test_synthesis.py`
 

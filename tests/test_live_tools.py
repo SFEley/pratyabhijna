@@ -15,11 +15,11 @@ Requires:
 import pytest
 import pytest_asyncio
 
-from vesper.config import VesperConfig
-from vesper.service import VesperService
-from vesper.tools.recall import recall
-from vesper.tools.history import history
-from vesper.tools.inspect import inspect
+from pratyabhijna.config import PratyabhijnaConfig
+from pratyabhijna.service import PratyabhijnaService
+from pratyabhijna.tools.recall import recall
+from pratyabhijna.tools.history import history
+from pratyabhijna.tools.inspect import inspect
 
 
 # ---------------------------------------------------------------------------
@@ -41,13 +41,13 @@ pytestmark = [
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def service():
-    """A real VesperService connected to Neo4j.
+    """A real PratyabhijnaService connected to Neo4j.
 
     Clears all graph data before yielding so each test run
     starts from a clean slate.
     """
-    config = VesperConfig.from_env("test")
-    svc = VesperService(config)
+    config = PratyabhijnaConfig.from_env("test")
+    svc = PratyabhijnaService(config)
     await svc.start()
 
     # Wipe the graph so tests don't leak state between runs
@@ -111,12 +111,12 @@ async def seeded_service(service):
 class TestLiveWrite:
     async def test_remember_end_to_end(self, seeded_service):
         """remember() enqueues and the handler calls add_episode for real."""
-        from vesper.queue import WorkQueue
-        from vesper.tools.remember import make_handler, remember
+        from pratyabhijna.queue import WorkQueue
+        from pratyabhijna.tools.remember import make_handler, remember
 
         from helpers import wait_for
 
-        db_path = "/tmp/vesper_live_test_queue.sqlite"
+        db_path = "/tmp/pratyabhijna_live_test_queue.sqlite"
         queue = WorkQueue(db_path=db_path, max_retries=1, poll_interval=0.1)
         handler = make_handler(seeded_service)
         queue.register("add_episode", handler)
@@ -164,12 +164,12 @@ class TestLiveWrite:
 
     async def test_correct_end_to_end(self, seeded_service):
         """correct() enqueues a correction that Graphiti processes."""
-        from vesper.queue import WorkQueue
-        from vesper.tools.correct import correct, make_handler
+        from pratyabhijna.queue import WorkQueue
+        from pratyabhijna.tools.correct import correct, make_handler
 
         from helpers import wait_for
 
-        db_path = "/tmp/vesper_live_test_correct_queue.sqlite"
+        db_path = "/tmp/pratyabhijna_live_test_correct_queue.sqlite"
         queue = WorkQueue(db_path=db_path, max_retries=1, poll_interval=0.1)
         handler = make_handler(seeded_service)
         queue.register("correct_memory", handler)

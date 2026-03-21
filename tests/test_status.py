@@ -22,7 +22,7 @@ class TestStatusTool:
     @pytest.mark.asyncio
     async def test_status_returns_dict(self):
         """status() returns a dictionary of system info."""
-        from vesper.tools.status import status
+        from pratyabhijna.tools.status import status
 
         result = await status()
         assert isinstance(result, dict)
@@ -30,7 +30,7 @@ class TestStatusTool:
     @pytest.mark.asyncio
     async def test_status_includes_db_connected(self):
         """status() reports whether the graph DB is connected."""
-        from vesper.tools.status import status
+        from pratyabhijna.tools.status import status
 
         result = await status()
         assert "db_connected" in result
@@ -39,7 +39,7 @@ class TestStatusTool:
     @pytest.mark.asyncio
     async def test_status_includes_queue_depth(self):
         """status() reports the number of pending tasks in the work queue."""
-        from vesper.tools.status import status
+        from pratyabhijna.tools.status import status
 
         result = await status()
         assert "queue_depth" in result
@@ -52,7 +52,7 @@ class TestStatusTool:
 
         Returns None if no writes have occurred.
         """
-        from vesper.tools.status import status
+        from pratyabhijna.tools.status import status
 
         result = await status()
         assert "last_write" in result
@@ -62,7 +62,7 @@ class TestStatusTool:
     @pytest.mark.asyncio
     async def test_status_includes_version(self):
         """status() reports the server version."""
-        from vesper.tools.status import status
+        from pratyabhijna.tools.status import status
 
         result = await status()
         assert "version" in result
@@ -82,7 +82,7 @@ class TestStatusWired:
 
     async def test_status_returns_live_db_state(self):
         """db_connected reflects service.is_connected."""
-        from vesper.tools.status import status
+        from pratyabhijna.tools.status import status
 
         service = MagicMock()
         service.is_connected = True
@@ -99,8 +99,8 @@ class TestStatusWired:
 
     async def test_status_returns_live_queue_depth(self, tmp_path):
         """queue_depth reflects the actual queue depth."""
-        from vesper.queue import WorkQueue
-        from vesper.tools.status import status
+        from pratyabhijna.queue import WorkQueue
+        from pratyabhijna.tools.status import status
 
         q = WorkQueue(db_path=str(tmp_path / "status_test.sqlite"), poll_interval=0.05)
         q.register("test", _noop_handler)
@@ -126,7 +126,7 @@ class TestStatusWired:
 
     async def test_status_returns_live_last_write(self):
         """last_write reflects queue.last_write()."""
-        from vesper.tools.status import status
+        from pratyabhijna.tools.status import status
 
         service = MagicMock()
         service.is_connected = True

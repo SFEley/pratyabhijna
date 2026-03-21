@@ -1,0 +1,18 @@
+# Claude Code local settings (not project content)
+.claude/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.envrc
+
+# Environment secrets (never commit these)
+.env.*
+!.env.example
+
+# Runtime data
+data/
+logs/

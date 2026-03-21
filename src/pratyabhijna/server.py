@@ -1,4 +1,4 @@
-"""Vesper MCP server entry point.
+"""Pratyabhijna MCP server entry point.
 
 Creates a FastMCP server with all seven tools registered.
 Tools are wired to service and queue when provided.
@@ -11,27 +11,27 @@ from typing import TYPE_CHECKING
 from mcp.server.fastmcp import FastMCP
 
 if TYPE_CHECKING:
-    from vesper.queue import WorkQueue
-    from vesper.service import VesperService
+    from pratyabhijna.queue import WorkQueue
+    from pratyabhijna.service import PratyabhijnaService
 
 
 def create_server(
-    service: VesperService | None = None,
+    service: PratyabhijnaService | None = None,
     queue: WorkQueue | None = None,
 ) -> FastMCP:
-    """Create and configure the Vesper MCP server.
+    """Create and configure the Pratyabhijna MCP server.
 
     When service and queue are provided, write tools and status
     return live values. Otherwise tools return stubs or raise.
     """
-    server = FastMCP("vesper")
+    server = FastMCP("pratyabhijna")
 
     # --- Phase 1: status ---
 
     @server.tool()
     async def status() -> dict:
         """System orientation — DB health, queue depth, last write time."""
-        from vesper.tools.status import status as _status
+        from pratyabhijna.tools.status import status as _status
 
         return await _status(service=service, queue=queue)
 
@@ -46,7 +46,7 @@ def create_server(
         """Queue an observation, fact, reasoning, or identity item for processing."""
         if queue is None:
             raise RuntimeError("remember requires a running work queue")
-        from vesper.tools.remember import remember as _remember
+        from pratyabhijna.tools.remember import remember as _remember
 
         return await _remember(
             queue=queue, content=content, memory_type=memory_type, source=source,
@@ -60,7 +60,7 @@ def create_server(
         """Queue a correction with temporal supersession."""
         if queue is None:
             raise RuntimeError("correct requires a running work queue")
-        from vesper.tools.correct import correct as _correct
+        from pratyabhijna.tools.correct import correct as _correct
 
         return await _correct(queue=queue, content=content, search_terms=search_terms)
 
@@ -75,7 +75,7 @@ def create_server(
         """Search memory with semantic + keyword + graph traversal."""
         if service is None:
             raise RuntimeError("recall requires a connected service")
-        from vesper.tools.recall import recall as _recall
+        from pratyabhijna.tools.recall import recall as _recall
 
         return await _recall(
             service=service, query=query, memory_type=memory_type, time_range=time_range,
@@ -88,7 +88,7 @@ def create_server(
         """Temporal evolution of an entity or topic."""
         if service is None:
             raise RuntimeError("history requires a connected service")
-        from vesper.tools.history import history as _history
+        from pratyabhijna.tools.history import history as _history
 
         return await _history(service=service, entity_name=entity_name)
 
@@ -99,7 +99,7 @@ def create_server(
         """Detailed view of a memory node or edge with connections."""
         if service is None:
             raise RuntimeError("inspect requires a connected service")
-        from vesper.tools.inspect import inspect as _inspect
+        from pratyabhijna.tools.inspect import inspect as _inspect
 
         return await _inspect(service=service, uuid=uuid)
 

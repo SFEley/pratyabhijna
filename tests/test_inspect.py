@@ -24,7 +24,7 @@ from helpers import make_entity_edge, make_entity_node, make_episodic_node
 
 @pytest.fixture
 def mock_service():
-    """A mock VesperService with entity/edge lookup methods."""
+    """A mock PratyabhijnaService with entity/edge lookup methods."""
     service = MagicMock()
     service.is_connected = True
     service.get_entity_by_uuid = AsyncMock()
@@ -41,7 +41,7 @@ def mock_service():
 class TestInspectEntity:
     async def test_inspect_entity(self, mock_service):
         """UUID resolving to a node returns full entity detail."""
-        from vesper.tools.inspect import inspect
+        from pratyabhijna.tools.inspect import inspect
 
         entity = make_entity_node(
             uuid="node-1",
@@ -80,7 +80,7 @@ class TestInspectEntity:
 
     async def test_inspect_entity_edges_show_direction(self, mock_service):
         """Connected edges are marked as outgoing or incoming."""
-        from vesper.tools.inspect import inspect
+        from pratyabhijna.tools.inspect import inspect
 
         entity = make_entity_node(uuid="node-1", name="Serah")
         edges = [
@@ -116,7 +116,7 @@ class TestInspectEntity:
 class TestInspectEdge:
     async def test_inspect_edge(self, mock_service):
         """UUID resolving to an edge returns full edge detail."""
-        from vesper.tools.inspect import inspect
+        from pratyabhijna.tools.inspect import inspect
 
         # get_entity_by_uuid raises NodeNotFoundError — it's an edge, not a node
         mock_service.get_entity_by_uuid.side_effect = NodeNotFoundError("edge-1")
@@ -157,7 +157,7 @@ class TestInspectEdge:
 
     async def test_inspect_edge_resolves_entities(self, mock_service):
         """Edge source/target UUIDs are resolved to entity names and labels."""
-        from vesper.tools.inspect import inspect
+        from pratyabhijna.tools.inspect import inspect
 
         mock_service.get_entity_by_uuid.side_effect = NodeNotFoundError("edge-1")
         edge = make_entity_edge(
@@ -188,7 +188,7 @@ class TestInspectEdge:
 
     async def test_inspect_edge_with_episodes(self, mock_service):
         """Edge episode UUIDs are fetched and returned with content."""
-        from vesper.tools.inspect import inspect
+        from pratyabhijna.tools.inspect import inspect
 
         mock_service.get_entity_by_uuid.side_effect = NodeNotFoundError("edge-1")
         edge = make_entity_edge(
@@ -229,7 +229,7 @@ class TestInspectEdge:
 class TestInspectNotFound:
     async def test_inspect_not_found(self, mock_service):
         """UUID matching neither node nor edge returns error dict."""
-        from vesper.tools.inspect import inspect
+        from pratyabhijna.tools.inspect import inspect
 
         mock_service.get_entity_by_uuid.side_effect = NodeNotFoundError("unknown-uuid")
         mock_service.get_edge.side_effect = EdgeNotFoundError("unknown-uuid")

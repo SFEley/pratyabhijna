@@ -13,7 +13,7 @@ Two existing tools were evaluated as potential foundations for Vesper's memory s
 
 **MemoryGate** has a more complete MCP interface (20 tools) and simpler infrastructure, but its data model lacks temporal querying and first-class correction tracking — two of the requirements that motivated building this system. Its marketing claims exceed its implementation in several areas. It is also a solo-developer project with minimal community adoption.
 
-**Recommendation:** Adopt Graphiti as the knowledge graph core, extend its MCP server with Vesper-specific tools, and address cost/infrastructure concerns through backend choice (Kuzu for local dev, Neo4j or Neptune for production).
+**Recommendation:** Adopt Graphiti as the knowledge graph core, extend its MCP server with Pratyabhijna-specific tools, and address cost/infrastructure concerns through backend choice (Kuzu for local dev, Neo4j or Neptune for production).
 
 ---
 
@@ -67,7 +67,7 @@ Two existing tools were evaluated as potential foundations for Vesper's memory s
 | **S4** | Fast, targeted results | **Yes.** Returns observations, not conversations. Fragments by design. pgvector HNSW index for fast similarity search. | **Yes.** Returns entity edges (facts) and node summaries. Hybrid search with reranking is more sophisticated. Fragments by design. |
 | **S5** | Interface-agnostic access | **Yes.** MCP server, always-on. HTTP/SSE transport. | **Yes.** MCP server with HTTP and stdio transport options. |
 
-### Vesper's Requirements
+### Pratyabhijna's Requirements
 
 | Req | Description | MemoryGate | Graphiti |
 |-----|-------------|------------|----------|
@@ -84,7 +84,7 @@ Two existing tools were evaluated as potential foundations for Vesper's memory s
 | Category | MemoryGate | Graphiti |
 |----------|------------|----------|
 | S1–S5 (Serah) | 3.5 / 5 | 4.5 / 5 |
-| V1–V7 (Vesper) | 2.5 / 7 | 5 / 7 |
+| V1–V7 (Pratyabhijna) | 2.5 / 7 | 5 / 7 |
 | **Total** | **6 / 12** | **9.5 / 12** |
 
 The gap is concentrated in V4 (correction), V5 (temporal), and S1 (corpus ingestion with entity extraction) — which are among the hardest and most important requirements.
@@ -254,7 +254,7 @@ Graphiti's biggest practical concern is LLM cost during ingestion. Each episode 
 
 ### Option B: Adopt Graphiti as-is
 - **Pro:** Strongest technical fit for the hardest requirements. Large active community. Academic backing.
-- **Con:** MCP server is experimental and minimal (6 tools). No graduated context, no Vesper-specific reconstruction, no lightweight write path. We'd be working with a framework that's powerful but not yet shaped for our use case.
+- **Con:** MCP server is experimental and minimal (6 tools). No graduated context, no Pratyabhijna-specific reconstruction, no lightweight write path. We'd be working with a framework that's powerful but not yet shaped for our use case.
 - **Verdict:** Right foundation, wrong interface layer.
 
 ### Option C: Build custom from scratch
@@ -263,7 +263,7 @@ Graphiti's biggest practical concern is LLM cost during ingestion. Each episode 
 - **Verdict:** Not justified when a strong foundation exists.
 
 ### Option D: Extend Graphiti (Recommended)
-- **Pro:** Use Graphiti's knowledge graph, temporal model, entity extraction, and search as the core. Build our own MCP server on top that exposes Vesper-specific tools: graduated context retrieval (V2), correction with reasoning (V4+V6), lightweight observation writes (V3), identity bootstrap. We get the hard infrastructure for free and build the interface layer that makes it ours.
+- **Pro:** Use Graphiti's knowledge graph, temporal model, entity extraction, and search as the core. Build our own MCP server on top that exposes Pratyabhijna-specific tools: graduated context retrieval (V2), correction with reasoning (V4+V6), lightweight observation writes (V3), identity bootstrap. We get the hard infrastructure for free and build the interface layer that makes it ours.
 - **Con:** Tied to Graphiti's 0.x API evolution. Need to track upstream changes. More complex than pure custom (framework + extensions vs. just our code).
 - **Verdict:** Best ratio of capability to effort. The hard problems (temporal tracking, entity extraction, graph search) are solved. The unsolved problems (graduated context, reasoning chains, identity reconstruction) are in the interface layer where custom work makes sense anyway.
 
@@ -316,7 +316,7 @@ Graph Database
 - Lightweight write path for quick observations that don't need full extraction (V3 optimization)
 - Reasoning chain entity/edge types (V6)
 - Identity bootstrap query (V1)
-- Custom entity types for Vesper's domain (positions, corrections, threads, identity elements)
+- Custom entity types for Pratyabhijna's domain (positions, corrections, threads, identity elements)
 - Deployment configuration (Kuzu local, production backend)
 
 ---

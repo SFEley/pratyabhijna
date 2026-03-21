@@ -1,4 +1,4 @@
-"""Shared test helpers for Vesper memory server tests."""
+"""Shared test helpers for Pratyabhijna memory server tests."""
 
 import asyncio
 from datetime import datetime, timezone

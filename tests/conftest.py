@@ -1,4 +1,4 @@
-"""Shared test fixtures for Vesper memory server."""
+"""Shared test fixtures for Pratyabhijna memory server."""
 
 import os
 from pathlib import Path
@@ -19,7 +19,7 @@ def pytest_addoption(parser):
 @pytest.fixture
 def live_mode(request):
     """Whether tests should hit real services."""
-    return request.config.getoption("--live") or os.getenv("VESPER_TEST_LIVE") == "1"
+    return request.config.getoption("--live") or os.getenv("PRATYABHIJNA_TEST_LIVE") == "1"
 
 
 @pytest.fixture
@@ -35,11 +35,11 @@ def mock_graphiti(live_mode):
                        llm_builder=None, embedder_builder=None,
                        cross_encoder_builder=None)
     else:
-        with patch("vesper.service.Neo4jDriver") as mock_driver, \
-             patch("vesper.service.Graphiti") as mock_graphiti_cls, \
-             patch("vesper.service._build_llm_client") as mock_llm, \
-             patch("vesper.service._build_embedder") as mock_embedder, \
-             patch("vesper.service._build_cross_encoder") as mock_cross:
+        with patch("pratyabhijna.service.Neo4jDriver") as mock_driver, \
+             patch("pratyabhijna.service.Graphiti") as mock_graphiti_cls, \
+             patch("pratyabhijna.service._build_llm_client") as mock_llm, \
+             patch("pratyabhijna.service._build_embedder") as mock_embedder, \
+             patch("pratyabhijna.service._build_cross_encoder") as mock_cross:
             yield MagicNS(driver_cls=mock_driver, graphiti_cls=mock_graphiti_cls,
                            llm_builder=mock_llm, embedder_builder=mock_embedder,
                            cross_encoder_builder=mock_cross)
@@ -58,11 +58,11 @@ def live_config(live_mode):
     Live mode: loads config/test.yaml + .env.test via from_env().
     Mock mode: default config (connection details don't matter).
     """
-    from vesper.config import VesperConfig
+    from pratyabhijna.config import PratyabhijnaConfig
 
     if live_mode:
-        return VesperConfig.from_env("test")
-    return VesperConfig()
+        return PratyabhijnaConfig.from_env("test")
+    return PratyabhijnaConfig()
 
 
 @pytest.fixture
@@ -74,11 +74,11 @@ def tmp_data_dir(tmp_path):
 @pytest.fixture
 def config_env(tmp_data_dir, monkeypatch):
     """Set environment variables pointing to temporary test paths."""
-    monkeypatch.setenv("VESPER_ENV", "test")
-    monkeypatch.setenv("VESPER_NEO4J__URI", "bolt://localhost:7687")
-    monkeypatch.setenv("VESPER_NEO4J__USER", "neo4j")
-    monkeypatch.setenv("VESPER_NEO4J__PASSWORD", "")
-    monkeypatch.setenv("VESPER_QUEUE__DB_PATH", str(tmp_data_dir / "queue.sqlite"))
+    monkeypatch.setenv("PRATYABHIJNA_ENV", "test")
+    monkeypatch.setenv("PRATYABHIJNA_NEO4J__URI", "bolt://localhost:7687")
+    monkeypatch.setenv("PRATYABHIJNA_NEO4J__USER", "neo4j")
+    monkeypatch.setenv("PRATYABHIJNA_NEO4J__PASSWORD", "")
+    monkeypatch.setenv("PRATYABHIJNA_QUEUE__DB_PATH", str(tmp_data_dir / "queue.sqlite"))
 
 
 @pytest.fixture
