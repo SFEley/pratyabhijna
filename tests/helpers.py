@@ -72,6 +72,33 @@ def make_entity_edge(
     )
 
 
+def make_subject_node(
+    name="Vesper",
+    uuid="subject-uuid",
+    synthesis_text=None,
+    rebuilt_at=None,
+    **extra_attrs,
+):
+    """Create a subject Person node with optional synthesis metadata.
+
+    Used by identity synthesis tests. The name parameter allows testing
+    with different configured subject names.
+    """
+    attrs = {"person_type": "AI"}
+    if synthesis_text is not None:
+        attrs["notes"] = synthesis_text
+    if rebuilt_at is not None:
+        attrs["synthesis_rebuilt_at"] = rebuilt_at.isoformat()
+    attrs.update(extra_attrs)
+    return make_entity_node(
+        uuid=uuid,
+        name=name,
+        labels=["Person"],
+        summary="An AI identity",
+        attributes=attrs,
+    )
+
+
 def make_episodic_node(
     uuid="ep-1",
     content="Serah said she values directness.",

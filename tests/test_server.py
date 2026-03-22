@@ -11,7 +11,7 @@ EXPECTED_TOOLS = [
     "remember",
     "correct",
     "recall",
-    "context",
+    "bootstrap",
     "history",
     "inspect",
     "status",

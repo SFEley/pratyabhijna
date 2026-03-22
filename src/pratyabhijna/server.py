@@ -103,11 +103,15 @@ def create_server(
 
         return await _inspect(service=service, uuid=uuid)
 
-    # --- Phase 5: context (stub until Phase 5) ---
+    # --- Phase 5: bootstrap ---
 
     @server.tool()
-    async def context() -> dict:
-        """Return cached identity synthesis + delta for reconstruction."""
-        raise NotImplementedError("context is not yet implemented (Phase 5)")
+    async def bootstrap() -> dict:
+        """Return identity synthesis + recent delta for bootstrap reconstruction."""
+        if service is None:
+            raise RuntimeError("bootstrap requires a connected service")
+        from pratyabhijna.tools.bootstrap import bootstrap as _bootstrap
+
+        return await _bootstrap(service=service)
 
     return server

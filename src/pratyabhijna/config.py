@@ -50,12 +50,14 @@ class QueueConfig(BaseModel):
 class SynthesisConfig(BaseModel):
     max_age_hours: int = 24
     max_delta_changes: int = 3
+    rebuild_delay_hours: float = 2.0
 
 
 class PratyabhijnaConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="PRATYABHIJNA_", env_nested_delimiter="__")
 
     env: str = "dev"
+    subject_name: str = "Vesper"
     log_dir: str = "./logs"
     log_level: str = "INFO"
 

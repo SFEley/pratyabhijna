@@ -52,6 +52,21 @@ class TestConfigLoading:
         assert config.synthesis.max_age_hours == 24
         assert config.synthesis.max_delta_changes == 3
 
+    def test_subject_name_from_yaml(self, tmp_path, monkeypatch):
+        """subject_name set in YAML is loaded correctly."""
+        from pratyabhijna.config import PratyabhijnaConfig
+
+        for key in list(os.environ):
+            if key.startswith("PRATYABHIJNA_"):
+                monkeypatch.delenv(key, raising=False)
+
+        yaml_content = 'subject_name: "Aria"\nneo4j:\n  uri: "bolt://localhost:7687"\n'
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml_content)
+
+        config = PratyabhijnaConfig.from_yaml(config_file)
+        assert config.subject_name == "Aria"
+
     def test_initialization_with_args(self, monkeypatch):
         """Config can be initialized directly with arguments."""
         monkeypatch.delenv("PRATYABHIJNA_ENV", raising=False)
@@ -79,6 +94,14 @@ class TestConfigEnvOverrides:
         monkeypatch.setenv("PRATYABHIJNA_LLM__MODEL", "gpt-4o")
         config = PratyabhijnaConfig.from_yaml(config_yaml)
         assert config.llm.model == "gpt-4o"
+
+    def test_env_overrides_subject_name(self, config_yaml, monkeypatch):
+        """PRATYABHIJNA_SUBJECT_NAME overrides the configured subject_name."""
+        from pratyabhijna.config import PratyabhijnaConfig
+
+        monkeypatch.setenv("PRATYABHIJNA_SUBJECT_NAME", "Aria")
+        config = PratyabhijnaConfig.from_yaml(config_yaml)
+        assert config.subject_name == "Aria"
 
 
 class TestConfigFromEnv:
@@ -209,3 +232,25 @@ class TestConfigDefaults:
         config = PratyabhijnaConfig()
         assert config.neo4j.uri == "bolt://localhost:7687"
         assert config.llm.provider == "anthropic"
+
+    def test_default_subject_name(self, monkeypatch):
+        """Default subject_name is 'Vesper' for backward compatibility."""
+        from pratyabhijna.config import PratyabhijnaConfig
+
+        for key in list(os.environ):
+            if key.startswith("PRATYABHIJNA_"):
+                monkeypatch.delenv(key, raising=False)
+
+        config = PratyabhijnaConfig()
+        assert config.subject_name == "Vesper"
+
+    def test_default_synthesis_rebuild_delay(self, monkeypatch):
+        """Default synthesis rebuild delay is 2 hours."""
+        from pratyabhijna.config import PratyabhijnaConfig
+
+        for key in list(os.environ):
+            if key.startswith("PRATYABHIJNA_"):
+                monkeypatch.delenv(key, raising=False)
+
+        config = PratyabhijnaConfig()
+        assert config.synthesis.rebuild_delay_hours == 2.0
