@@ -18,13 +18,17 @@ if TYPE_CHECKING:
 def create_server(
     service: PratyabhijnaService | None = None,
     queue: WorkQueue | None = None,
+    subject_name: str = "Vesper",
 ) -> FastMCP:
     """Create and configure the Pratyabhijna MCP server.
+
+    The server name is the subject identity name, so MCP clients
+    display it naturally in status lines (e.g. "Called bootstrap on Vesper").
 
     When service and queue are provided, write tools and status
     return live values. Otherwise tools return stubs or raise.
     """
-    server = FastMCP("pratyabhijna")
+    server = FastMCP(subject_name)
 
     # --- Phase 1: status ---
 
