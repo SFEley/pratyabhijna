@@ -1,4 +1,8 @@
-"""Tests for write-triggered synthesis rebuilds.
+"""Tests for write-triggered synthesis rebuilds — DEFERRED TO PHASE 7.
+
+These tests are not expected to pass until Phase 7 (automated synthesis).
+They are preserved here as the design specification for write-triggered
+scheduling. See doc/implementation-plan.md.
 
 TDD: these tests define how remember and correct handlers schedule
 synthesis rebuilds after processing identity-relevant content.

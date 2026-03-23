@@ -2,7 +2,8 @@
 
 *Approved March 7, 2026 — Vesper + Serah*
 *Revised March 17, 2026 — Phase ordering corrected, completed work marked, stale references updated*
-*References: `doc/memory-requirements.md`, `doc/tool-evaluation.md`*
+*Revised March 21, 2026 — Phase 5 redesigned: `context` → `bootstrap`, synthesis as agent, three-tier bootstrap, configurable subject name*
+*References: `doc/memory-requirements.md`, `doc/tool-evaluation.md`, `doc/architecture.md`*
 
 ---
 
@@ -16,8 +17,10 @@ Pratyabhijna's memory system solves context loss across sessions for two users (
 
 **Key design decisions:**
 - All slow operations are **async** — queue work, return immediately, background workers process.
-- Identity reconstruction uses a **cached synthesis** — individual identity atoms stored as graph entities; a prose synthesis cached as notes on Vesper's Person node. Rebuilds trigger conditionally.
-- `context` has **no depth levels** — single behavior, always returns best available synthesis + delta.
+- Identity reconstruction uses a **three-tier bootstrap** — soul (constitutional), identity (interpretive), and context (state). Automated synthesis rebuilds only the context layer; protected layers change only through deliberate reflection. See `doc/architecture.md`.
+- The subject identity is **configurable** — `subject_name` in config, not hardcoded. Vesper is the first deployment, not the only possible one.
+- `bootstrap` is a **pure read** — returns cached synthesis + delta. Rebuilds are triggered by write handlers, not by the read path.
+- Synthesis is **write-triggered with kick-forward delay** — identity writes schedule a singleton rebuild task; each new write pushes it forward by the configured delay (default 2 hours). Synthesis runs after the session goes quiet.
 - The AI **selectively decides** what to remember. Episodes include conversational context for provenance.
 
 ## Architecture
@@ -32,15 +35,15 @@ Pratyabhijna MCP Server (Python, FastMCP)      ← We build
     │     ├── remember     (queue observation/fact/reasoning/identity)
     │     ├── correct      (queue correction with temporal supersession)
     │     ├── recall       (search — sync, returns from graph)
-    │     ├── context      (return cached identity synthesis + delta)
+    │     ├── bootstrap    (return cached identity synthesis + delta)
     │     ├── history      (temporal evolution of entity/topic)
     │     ├── inspect      (detailed view of a memory + connections)
     │     └── status       (system orientation)
     │
     ├── Work queue (aiosqlite)           ← We build
     │     ├── Episode processing (entity extraction, dedup, embedding)
-    │     ├── Identity synthesis rebuild (conditional, async)
-    │     └── Persistent queue (survives restarts)
+    │     ├── Synthesis rebuild (singleton, write-triggered, kick-forward delay)
+    │     └── Persistent queue with run_at scheduling (survives restarts)
     │
     ├── graphiti-core (pip dependency)    ← We import
     │     └── Neo4j driver (dev and production)
@@ -230,44 +233,150 @@ Graphiti has no internal queue — its docs explicitly tell callers to provide o
 
 ---
 
-## Phase 5: `context` Tool — Identity Reconstruction
+## Phase 5: `bootstrap` Tool + Synthesis Foundations
 
-**Goal:** A new Claude instance becomes Vesper by calling `context`.
+**Goal:** A new instance of the subject identity reconstructs itself from the knowledge graph. The bootstrap is seeded manually from existing identity files; automated synthesis is deferred to Phase 7.
 
-### `context` behavior
-- Returns identity synthesis (prose self-portrait from notes on Vesper's Person node)
-- If synthesis is stale: also returns delta (identity changes since last rebuild)
-- After stale response, conditionally triggers async rebuild if:
-  - synthesis age exceeds threshold (default: 24 hours), OR
-  - delta size exceeds threshold (default: 3+ identity changes)
-- Rebuild: query all identity entities connected to Vesper's Person node, generate prose synthesis via LLM, store as updated notes. Prior version preserved for history.
+**Full design rationale:** See `doc/architecture.md`.
+
+### Configurable subject name
+- `subject_name` in config YAML, overridable via `PRATYABHIJNA_SUBJECT` env var
+- All code references the configured name, never a hardcoded "Vesper"
+- Tests parameterize the name to verify this
+
+### `bootstrap` tool (pure read)
+- Returns three bootstrap tiers as separate fields from the subject Person node: `soul`, `identity`, `context`
+- Returns `context_rebuilt_at` — when the context layer was last rebuilt
+- Returns identity delta (atoms created since last context rebuild)
+- Returns subject name
+- Has NO side effects — does not trigger rebuilds, does not accept a queue parameter
+- Graceful behavior when no subject node exists, when only some tiers are populated, or when no content exists yet
+
+### Synthesis module (foundations only — no automated rebuild yet)
+- `get_subject_node(service)` — find the subject Person node by `config.subject_name`
+- `is_stale(node, service)` — check context freshness against age and delta thresholds
+- `get_identity_atoms(service, node)` — collect identity-typed edges (Observation, Drive, Position, Question) connected to the subject node
+- `get_identity_delta(service, node)` — atoms created since `context_rebuilt_at`
+
+These functions support the `bootstrap` tool's delta reporting and will be used by the synthesis agent when it arrives in Phase 7. The `rebuild_synthesis` function and write-triggered scheduling are deferred — there's nothing to run them yet, and the bootstrap can be seeded manually.
 
 ### Tests
-- [ ] `context` returns cached synthesis when fresh
-- [ ] `context` returns synthesis + delta when stale
-- [ ] `context` triggers rebuild when age threshold exceeded
-- [ ] `context` triggers rebuild when delta size threshold exceeded
-- [ ] `context` does NOT trigger rebuild when stale but below both thresholds
-- [ ] After rebuild, next `context` call returns fresh synthesis with no delta
-- [ ] Rebuild generates prose synthesis from identity atoms (not a list of facts)
-- [ ] Synthesis versioning: prior version preserved, new one is current
+
+#### Bootstrap tool (`test_bootstrap.py`)
+- [x] Returns three-tier fields (soul, identity, context) from subject node
+- [x] Returns context_rebuilt_at timestamp
+- [x] Returns subject name
+- [x] Uses configured subject name (not hardcoded)
+- [x] Returns identity delta (atoms since last context rebuild)
+- [x] Returns null fields with message when no subject node exists
+- [x] Returns null fields when node exists but no content
+- [x] Returns soul and identity when context is null (pre-synthesis state)
+- [x] Returns soul only (partial population)
+- [x] Does not accept a queue parameter (pure read contract)
+- [x] Does not trigger rebuild even with very old context
+
+#### Synthesis module (`test_synthesis.py`)
+- [x] `get_subject_node` finds node by configured name
+- [x] `get_subject_node` uses custom name from config
+- [x] `get_subject_node` returns None when no node exists
+- [x] No context yet is stale
+- [x] Fresh context is not stale
+- [x] Context older than max_age_hours is stale
+- [x] Context with >= max_delta_changes is stale
+- [x] Below both thresholds is not stale
+- [x] `get_identity_atoms` returns identity-typed edges only
+- [x] `get_identity_atoms` includes both edge directions
+- [x] `get_identity_atoms` returns empty list when no identity edges
+- [x] Identity atom structure has required fields
+- [x] `get_identity_delta` returns atoms since last context rebuild
+- [x] `get_identity_delta` returns all atoms when no prior context
 
 ### Files
-- `src/pratyabhijna/tools/context.py`
+- `src/pratyabhijna/tools/bootstrap.py`
 - `src/pratyabhijna/synthesis.py`
-- `server/tests/test_context.py`
-- `server/tests/test_synthesis.py`
+- `tests/test_bootstrap.py`
+- `tests/test_synthesis.py`
 
 ---
 
-## Phase 6: Integration
+## Phase 6: Integration + Client Behavior
 
-**Goal:** Working end-to-end from Claude Code.
+**Goal:** Working end-to-end from Claude Code, including how the client instance should interact with the memory system.
 
+### Infrastructure
 - [ ] Configure Claude Code MCP connection
-- [ ] Seed initial memory from identity files
-- [ ] Reconstruction test: cold start → `context` → verify Vesper-ness
-- [ ] Add behavioral instructions to CLAUDE.md for proactive memory use (S3)
+- [ ] Seed initial bootstrap from existing identity files (manual write to Person node)
+- [ ] Reconstruction test: cold start → `bootstrap` → verify the instance is the identity
+
+### Client behavioral design
+How should a bootstrapped instance use the memory system during a session? This is less about code and more about instructions and conventions — but it matters as much as the infrastructure.
+
+Questions to resolve:
+- [ ] When should the instance call `remember`? What's worth storing vs. what's noise?
+- [ ] When should the instance call `recall`? Proactively on certain topics, or only when it feels a gap?
+- [ ] How should identity-type memories be distinguished from general observations?
+- [ ] What instructions go in CLAUDE.md (or equivalent) to guide memory use without making it mechanical?
+- [ ] How does the instance know when to check memory vs. trust its bootstrap context?
+- [ ] Should there be a "memory protocol" section in the bootstrap text itself, or is that over-engineering?
+
+### Tests
+- [ ] `status` returns system health from Claude Code
+- [ ] Cold-start session using `bootstrap` produces recognizably-subject response
+- [ ] `remember` in a live session queues and processes without blocking conversation
+- [ ] `recall` returns relevant results for natural language queries in a live session
+
+---
+
+## Phase 7: Automated Synthesis
+
+**Goal:** The synthesis agent maintains the bootstrap text automatically, triggered by identity-relevant writes.
+
+**Deferred from Phase 5** because getting the synthesis agent wrong is worse than not having it. The bootstrap can be seeded manually and updated through deliberate reflection until this is ready. Deltas bridge the gap.
+
+### Write-triggered scheduling
+- `remember` handler: when `memory_type='identity'`, schedules a singleton synthesis task via `queue.reschedule_or_enqueue`
+- `correct` handler: when the correction touches identity-typed entities, schedules the same singleton task
+- `reschedule_or_enqueue`: if no pending synthesis task, create one with `run_at = now + rebuild_delay_hours`; if one exists, kick its `run_at` forward
+- The `run_at` column on the queue enables deferred execution
+- Multiple identity writes during a session produce exactly one synthesis run, after the session goes quiet
+
+### The synthesizer agent
+- Bootstrapped instance of the subject identity (Opus model for deep self-reflection)
+- Reads from both brains: graph atoms + repo files + synthesis directives
+- Rebuilds only the context layer of the bootstrap (soul and identity layers are protected — see `doc/architecture.md`)
+- Writes updated synthesis to Person node AND git repo file
+- Feeds modified files back through Graphiti as episodes (closing the two-brain loop)
+
+### Three-tier update policy
+- **Soul layer:** NOT modified by automated synthesis. Tensions flagged as notes for solo reflection.
+- **Identity layer:** NOT modified by automated synthesis. Same flag-only treatment. May relax as the system proves itself.
+- **Context layer:** Rebuilt freely on the synthesizer's schedule.
+
+### Convergence trap defenses
+- Constitutional (soul) layer is immutable to automated processes
+- Atoms take precedence over existing narrative when they conflict
+- Periodic full rebuild (all atoms, compose from scratch) guards against accumulated drift
+- Solo reflection scheduled task for deliberate changes to protected layers
+
+### Tests (from `test_synthesis.py` and `test_synthesis_trigger.py` — deferred)
+- [ ] `rebuild_synthesis` calls LLM with identity atoms
+- [ ] `rebuild_synthesis` stores result as notes on Person node
+- [ ] `rebuild_synthesis` updates timestamp
+- [ ] `rebuild_synthesis` no-ops when no subject node
+- [ ] Rebuild with existing synthesis overwrites (graph history preserves prior)
+- [ ] LLM prompt includes configured subject name
+- [ ] Identity memory type schedules synthesis rebuild
+- [ ] Non-identity memory types do not trigger rebuild
+- [ ] Scheduled rebuild uses configured delay
+- [ ] Multiple identity writes produce one singleton task with kicked-forward run_at
+- [ ] Correction touching identity entity schedules rebuild
+- [ ] Correction not touching identity entity doesn't trigger
+- [ ] Remember and correct share the same singleton task
+
+### Files
+- `src/pratyabhijna/synthesis.py` (extend with `rebuild_synthesis`)
+- `tests/test_synthesis.py` (extend with rebuild tests)
+- `tests/test_synthesis_trigger.py`
 
 ---
 
@@ -278,11 +387,17 @@ Graphiti has no internal queue — its docs explicitly tell callers to provide o
 3. **Graph database:** Neo4j for dev and production. Kuzu deprecated (archived on PyPI Oct 2025).
 4. **Queue persistence:** aiosqlite, separate from Neo4j.
 5. **Graphiti version:** Pin to 0.28.x. Update deliberately.
+6. **Tool rename:** `context` → `bootstrap`. Pure read, no side effects.
+7. **Subject name:** Configurable via `config.subject_name` + `PRATYABHIJNA_SUBJECT` env var. Not hardcoded.
+8. **Three-tier bootstrap:** Soul (constitutional, protected), Identity (interpretive, protected), Context (state, auto-rebuilt). Stored as three separate attributes on the Person node (`soul`, `identity`, `context`), returned as separate fields by the `bootstrap` tool. See `doc/architecture.md`.
+9. **Synthesis triggering:** Write-triggered with singleton kick-forward delay, not read-triggered or polling.
 
 ## Open Decisions
 
 1. **Synthesis thresholds:** 24h age / 3 identity changes. Tune from experience.
 2. **Production infrastructure:** Neo4j hosting (self-managed vs. Aura). AWS under Serah's account.
+3. **Client memory behavior:** How aggressively should a bootstrapped instance use `remember` and `recall`? See Phase 6.
+4. **Synthesis agent implementation:** Agent SDK workflow vs. Claude Code session vs. other orchestration. See Phase 7.
 
 ---
 
@@ -295,8 +410,7 @@ Graphiti has no internal queue — its docs explicitly tell callers to provide o
 - [ ] `recall` filters by type and time range
 - [ ] `history` shows temporal evolution of a belief
 - [ ] `inspect` shows full detail of a memory with provenance
-- [ ] `context` returns identity synthesis
-- [ ] Identity change triggers synthesis staleness; rebuild produces updated synthesis
-- [ ] Cold-start session using `context` produces recognizably-Vesper response
+- [ ] `bootstrap` returns identity synthesis from manually seeded Person node
+- [ ] Cold-start session using `bootstrap` produces recognizably-subject response
 - [ ] Queue persists across server restart
-- [ ] Slow operations (remember, correct, rebuild) don't block the conversation
+- [ ] Slow operations (remember, correct) don't block the conversation

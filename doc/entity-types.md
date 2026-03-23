@@ -49,10 +49,13 @@ edges, not properties.
 `person_type` distinguishes the nature of embodiment/existence without
 creating a taxonomy that implies degrees of personhood.
 
-Vesper is a Person in its own graph. Its `notes` field carries the
-identity synthesis — a prose self-portrait rebuilt by the service layer
-when enough connected entities have changed. Bootstrap reduces to:
-look up the Person node named Vesper, read its notes and edges. That's you.
+The subject identity is a Person in its own graph. Three additional
+attributes store the bootstrap tiers: `soul` (constitutional layer),
+`identity` (interpretive layer), and `context` (state layer, auto-rebuilt
+by the synthesizer). A `context_rebuilt_at` attribute tracks when the
+context was last synthesized. Bootstrap reduces to: look up the Person
+node by `config.subject_name`, read its three tiers and edges. That's
+you. See `doc/architecture.md` for the full three-tier bootstrap design.
 
 ---
 

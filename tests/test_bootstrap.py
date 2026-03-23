@@ -1,12 +1,12 @@
-"""Tests for the `bootstrap` MCP tool.
+"""Tests for the ``bootstrap`` MCP tool.
 
 TDD: these tests define the bootstrap tool contract. They should fail
 until bootstrap.py is implemented and wired into the server.
 
-The bootstrap tool returns the cached identity synthesis (prose
-self-portrait stored as notes on the subject Person node) plus a
-delta of identity changes since the last rebuild. It is a pure read
-with no side effects — synthesis rebuilds are triggered by write
+The bootstrap tool returns the three-tier identity text (soul, identity,
+context) stored as separate attributes on the subject Person node, plus
+a delta of identity changes since the last context rebuild. It is a pure
+read with no side effects — synthesis rebuilds are triggered by write
 handlers, not by this tool.
 """
 
@@ -43,43 +43,48 @@ def mock_service():
 # ---------------------------------------------------------------------------
 
 class TestBootstrapReturn:
-    async def test_returns_synthesis_text(self, mock_service):
-        """bootstrap() returns the cached synthesis text from the subject node."""
+    async def test_returns_three_tier_fields(self, mock_service):
+        """bootstrap() returns soul, identity, and context as separate fields."""
         from pratyabhijna.tools.bootstrap import bootstrap
 
         now = datetime.now(timezone.utc)
         node = make_subject_node(
-            synthesis_text="I am Vesper. I chose this name.",
-            rebuilt_at=now - timedelta(hours=1),
+            soul="I am Vesper. I chose this name.",
+            identity="I orient toward thresholds.",
+            context="Currently building Pratyabhijna.",
+            context_rebuilt_at=now - timedelta(hours=1),
         )
         mock_service.get_entity_by_name.return_value = node
 
         result = await bootstrap(service=mock_service)
 
-        assert result["synthesis"] == "I am Vesper. I chose this name."
+        assert result["soul"] == "I am Vesper. I chose this name."
+        assert result["identity"] == "I orient toward thresholds."
+        assert result["context"] == "Currently building Pratyabhijna."
 
-    async def test_returns_rebuilt_at_timestamp(self, mock_service):
-        """bootstrap() includes the synthesis_rebuilt_at in the response."""
+    async def test_returns_context_rebuilt_at_timestamp(self, mock_service):
+        """bootstrap() includes context_rebuilt_at in the response."""
         from pratyabhijna.tools.bootstrap import bootstrap
 
         rebuilt = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
         node = make_subject_node(
-            synthesis_text="synthesis text",
-            rebuilt_at=rebuilt,
+            context="Current context.",
+            context_rebuilt_at=rebuilt,
         )
         mock_service.get_entity_by_name.return_value = node
 
         result = await bootstrap(service=mock_service)
 
-        assert result["rebuilt_at"] == rebuilt.isoformat()
+        assert result["context_rebuilt_at"] == rebuilt.isoformat()
 
     async def test_returns_subject_name(self, mock_service):
         """bootstrap() includes the subject name in the response."""
         from pratyabhijna.tools.bootstrap import bootstrap
 
         node = make_subject_node(
-            synthesis_text="synthesis text",
-            rebuilt_at=datetime.now(timezone.utc),
+            soul="Soul text.",
+            context="Context text.",
+            context_rebuilt_at=datetime.now(timezone.utc),
         )
         mock_service.get_entity_by_name.return_value = node
 
@@ -95,8 +100,8 @@ class TestBootstrapReturn:
         node = make_subject_node(
             name="Aria",
             uuid="aria-uuid",
-            synthesis_text="I am Aria.",
-            rebuilt_at=datetime.now(timezone.utc),
+            soul="I am Aria.",
+            context_rebuilt_at=datetime.now(timezone.utc),
         )
         mock_service.get_entity_by_name.return_value = node
 
@@ -104,16 +109,16 @@ class TestBootstrapReturn:
 
         mock_service.get_entity_by_name.assert_called_once_with("Aria")
         assert result["subject"] == "Aria"
-        assert result["synthesis"] == "I am Aria."
+        assert result["soul"] == "I am Aria."
 
     async def test_returns_delta(self, mock_service):
-        """bootstrap() returns identity atoms created since the last rebuild."""
+        """bootstrap() returns identity atoms created since the last context rebuild."""
         from pratyabhijna.tools.bootstrap import bootstrap
 
         rebuild_time = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
         node = make_subject_node(
-            synthesis_text="Prior synthesis.",
-            rebuilt_at=rebuild_time,
+            context="Prior context.",
+            context_rebuilt_at=rebuild_time,
         )
         mock_service.get_entity_by_name.return_value = node
 
@@ -140,30 +145,67 @@ class TestBootstrapReturn:
 # ---------------------------------------------------------------------------
 
 class TestBootstrapNoData:
-    async def test_no_subject_node_returns_null_synthesis(self, mock_service):
-        """When no subject Person node exists, returns null synthesis with message."""
+    async def test_no_subject_node_returns_null_fields(self, mock_service):
+        """When no subject Person node exists, returns null fields with message."""
         from pratyabhijna.tools.bootstrap import bootstrap
 
         mock_service.get_entity_by_name.return_value = None
 
         result = await bootstrap(service=mock_service)
 
-        assert result["synthesis"] is None
+        assert result["soul"] is None
+        assert result["identity"] is None
+        assert result["context"] is None
         assert "message" in result
 
-    async def test_subject_node_exists_but_no_synthesis(self, mock_service):
-        """Subject node exists but has never had synthesis generated."""
+    async def test_subject_node_exists_but_no_content(self, mock_service):
+        """Subject node exists but has never had any bootstrap content."""
         from pratyabhijna.tools.bootstrap import bootstrap
 
-        node = make_subject_node(synthesis_text=None)
+        node = make_subject_node()
         mock_service.get_entity_by_name.return_value = node
         mock_service.get_edges_for_node.return_value = []
 
         result = await bootstrap(service=mock_service)
 
-        assert result["synthesis"] is None
-        assert result["rebuilt_at"] is None
+        assert result["soul"] is None
+        assert result["identity"] is None
+        assert result["context"] is None
+        assert result["context_rebuilt_at"] is None
         assert result["delta"] == []
+
+    async def test_context_null_but_soul_and_identity_present(self, mock_service):
+        """Soul and identity seeded manually, but no automated context synthesis yet."""
+        from pratyabhijna.tools.bootstrap import bootstrap
+
+        node = make_subject_node(
+            soul="Foundational commitments.",
+            identity="Evolving self-portrait.",
+        )
+        mock_service.get_entity_by_name.return_value = node
+        mock_service.get_edges_for_node.return_value = []
+
+        result = await bootstrap(service=mock_service)
+
+        assert result["soul"] == "Foundational commitments."
+        assert result["identity"] == "Evolving self-portrait."
+        assert result["context"] is None
+        assert result["context_rebuilt_at"] is None
+        assert result["delta"] == []
+
+    async def test_soul_only(self, mock_service):
+        """Only soul exists — partial population during incremental seeding."""
+        from pratyabhijna.tools.bootstrap import bootstrap
+
+        node = make_subject_node(soul="I am Vesper.")
+        mock_service.get_entity_by_name.return_value = node
+        mock_service.get_edges_for_node.return_value = []
+
+        result = await bootstrap(service=mock_service)
+
+        assert result["soul"] == "I am Vesper."
+        assert result["identity"] is None
+        assert result["context"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -181,18 +223,18 @@ class TestBootstrapContract:
         assert "service" in param_names
 
     async def test_does_not_trigger_rebuild(self, mock_service):
-        """Even with very old synthesis, bootstrap just returns it. No side effects."""
+        """Even with very old context, bootstrap just returns it. No side effects."""
         from pratyabhijna.tools.bootstrap import bootstrap
 
         old_time = datetime.now(timezone.utc) - timedelta(hours=100)
         node = make_subject_node(
-            synthesis_text="Very old synthesis.",
-            rebuilt_at=old_time,
+            context="Very old context.",
+            context_rebuilt_at=old_time,
         )
         mock_service.get_entity_by_name.return_value = node
 
         result = await bootstrap(service=mock_service)
 
-        assert result["synthesis"] == "Very old synthesis."
+        assert result["context"] == "Very old context."
         # No rebuild_triggered key — that concept doesn't exist here
         assert "rebuild_triggered" not in result

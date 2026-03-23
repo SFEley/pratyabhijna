@@ -75,20 +75,28 @@ def make_entity_edge(
 def make_subject_node(
     name="Vesper",
     uuid="subject-uuid",
-    synthesis_text=None,
-    rebuilt_at=None,
+    soul=None,
+    identity=None,
+    context=None,
+    context_rebuilt_at=None,
     **extra_attrs,
 ):
-    """Create a subject Person node with optional synthesis metadata.
+    """Create a subject Person node with optional three-tier bootstrap fields.
 
-    Used by identity synthesis tests. The name parameter allows testing
+    Used by identity synthesis tests. The three text fields correspond to
+    the bootstrap tiers: soul (constitutional), identity (interpretive),
+    context (state, auto-rebuilt). The name parameter allows testing
     with different configured subject names.
     """
     attrs = {"person_type": "AI"}
-    if synthesis_text is not None:
-        attrs["notes"] = synthesis_text
-    if rebuilt_at is not None:
-        attrs["synthesis_rebuilt_at"] = rebuilt_at.isoformat()
+    if soul is not None:
+        attrs["soul"] = soul
+    if identity is not None:
+        attrs["identity"] = identity
+    if context is not None:
+        attrs["context"] = context
+    if context_rebuilt_at is not None:
+        attrs["context_rebuilt_at"] = context_rebuilt_at.isoformat()
     attrs.update(extra_attrs)
     return make_entity_node(
         uuid=uuid,

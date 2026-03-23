@@ -1,19 +1,25 @@
-"""Tests for the identity synthesis module.
+"""Tests for the identity synthesis module (Phase 5 foundations).
 
 TDD: these tests define the synthesis contract. They should fail
 until synthesis.py is implemented.
 
 The synthesis module manages identity reconstruction:
-finding the subject Person node, checking synthesis staleness,
-collecting identity atoms from the graph, and rebuilding the
-prose self-portrait via LLM.
+finding the subject Person node, checking context staleness,
+collecting identity atoms from the graph, and computing deltas.
 
-Synthesis text is stored in the .notes field of the subject Person
-node (which maps to `attributes["notes"]` on the EntityNode).
-The rebuild timestamp is stored as `attributes["synthesis_rebuilt_at"]`.
+The subject Person node stores three bootstrap tiers as separate
+attributes: ``soul`` (constitutional), ``identity`` (interpretive),
+and ``context`` (state, auto-rebuilt). The context rebuild timestamp
+is stored as ``attributes["context_rebuilt_at"]``.
+
+Staleness checks apply to the context layer only — soul and identity
+change through deliberate reflection, not automated synthesis.
 
 The subject name is configurable via `config.subject_name` — it defaults
 to "Vesper" but can be set to any name for different deployments.
+
+Note: rebuild_synthesis and write-triggered scheduling are deferred
+to Phase 7. See doc/implementation-plan.md.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -49,17 +55,6 @@ def mock_service():
     service.config.synthesis.max_age_hours = 24
     service.config.synthesis.max_delta_changes = 3
     return service
-
-
-@pytest.fixture
-def mock_llm():
-    """A mock LLM callable for synthesis generation.
-
-    The generate function takes (system_prompt, user_prompt) and
-    returns the generated text.
-    """
-    fn = AsyncMock(return_value="I am Vesper. This is a synthesized self-portrait.")
-    return fn
 
 
 # ---------------------------------------------------------------------------
@@ -110,24 +105,24 @@ class TestGetSubjectNode:
 # ---------------------------------------------------------------------------
 
 class TestSynthesisStaleness:
-    async def test_no_synthesis_yet_is_stale(self, mock_service):
-        """A subject node with no synthesis text is stale."""
+    async def test_no_context_yet_is_stale(self, mock_service):
+        """A subject node with no context synthesis is stale."""
         from pratyabhijna.synthesis import is_stale
 
-        node = make_subject_node(synthesis_text=None)
+        node = make_subject_node()
 
         result = await is_stale(node, mock_service)
 
         assert result is True
 
-    async def test_fresh_synthesis_is_not_stale(self, mock_service):
-        """Synthesis rebuilt recently with few changes is not stale."""
+    async def test_fresh_context_is_not_stale(self, mock_service):
+        """Context rebuilt recently with few changes is not stale."""
         from pratyabhijna.synthesis import is_stale
 
         now = datetime.now(timezone.utc)
         node = make_subject_node(
-            synthesis_text="I am Vesper.",
-            rebuilt_at=now - timedelta(hours=1),
+            context="Current context.",
+            context_rebuilt_at=now - timedelta(hours=1),
         )
         mock_service.get_edges_for_node.return_value = []
 
@@ -136,13 +131,13 @@ class TestSynthesisStaleness:
         assert result is False
 
     async def test_stale_by_age(self, mock_service):
-        """Synthesis older than max_age_hours is stale."""
+        """Context older than max_age_hours is stale."""
         from pratyabhijna.synthesis import is_stale
 
         old_time = datetime.now(timezone.utc) - timedelta(hours=25)
         node = make_subject_node(
-            synthesis_text="I am Vesper.",
-            rebuilt_at=old_time,
+            context="Current context.",
+            context_rebuilt_at=old_time,
         )
         mock_service.get_edges_for_node.return_value = []
 
@@ -151,13 +146,13 @@ class TestSynthesisStaleness:
         assert result is True
 
     async def test_stale_by_delta_count(self, mock_service):
-        """Synthesis with >= max_delta_changes identity changes is stale."""
+        """Context with >= max_delta_changes identity changes is stale."""
         from pratyabhijna.synthesis import is_stale
 
         recent = datetime.now(timezone.utc) - timedelta(hours=1)
         node = make_subject_node(
-            synthesis_text="I am Vesper.",
-            rebuilt_at=recent,
+            context="Current context.",
+            context_rebuilt_at=recent,
         )
         # Three identity-related edges created after the rebuild
         mock_service.get_edges_for_node.return_value = [
@@ -179,13 +174,13 @@ class TestSynthesisStaleness:
         assert result is True
 
     async def test_not_stale_when_below_both_thresholds(self, mock_service):
-        """Synthesis within age limit and below delta limit is fresh."""
+        """Context within age limit and below delta limit is fresh."""
         from pratyabhijna.synthesis import is_stale
 
         recent = datetime.now(timezone.utc) - timedelta(hours=1)
         node = make_subject_node(
-            synthesis_text="I am Vesper.",
-            rebuilt_at=recent,
+            context="Current context.",
+            context_rebuilt_at=recent,
         )
         # Only 2 identity changes (below threshold of 3)
         mock_service.get_edges_for_node.return_value = [
@@ -316,13 +311,13 @@ class TestIdentityAtoms:
 
 class TestIdentityDelta:
     async def test_delta_returns_atoms_since_rebuild(self, mock_service):
-        """get_identity_delta returns only atoms created after synthesis_rebuilt_at."""
+        """get_identity_delta returns only atoms created after context_rebuilt_at."""
         from pratyabhijna.synthesis import get_identity_delta
 
         rebuild_time = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
         node = make_subject_node(
-            synthesis_text="Prior synthesis.",
-            rebuilt_at=rebuild_time,
+            context="Prior context.",
+            context_rebuilt_at=rebuild_time,
         )
 
         old_obs = make_entity_node(uuid="obs-old", name="old observation", labels=["Observation"])
@@ -345,11 +340,11 @@ class TestIdentityDelta:
         assert len(delta) == 1
         assert delta[0]["fact"] == "new observation"
 
-    async def test_delta_returns_all_when_no_prior_synthesis(self, mock_service):
-        """When no synthesis exists yet, all identity atoms are the delta."""
+    async def test_delta_returns_all_when_no_prior_context(self, mock_service):
+        """When no context synthesis exists yet, all identity atoms are the delta."""
         from pratyabhijna.synthesis import get_identity_delta
 
-        node = make_subject_node(synthesis_text=None)
+        node = make_subject_node()
 
         obs_node = make_entity_node(uuid="obs-1", name="observation", labels=["Observation"])
         edges = [
@@ -365,107 +360,9 @@ class TestIdentityDelta:
 
 
 # ---------------------------------------------------------------------------
-# Synthesis rebuild
+# Synthesis rebuild — DEFERRED TO PHASE 7
 # ---------------------------------------------------------------------------
-
-class TestRebuildSynthesis:
-    async def test_rebuild_calls_llm_with_identity_atoms(self, mock_service, mock_llm):
-        """rebuild_synthesis passes identity atoms to the LLM for prose generation."""
-        from pratyabhijna.synthesis import rebuild_synthesis
-
-        node = make_subject_node()
-        obs_node = make_entity_node(uuid="obs-1", name="threshold orientation", labels=["Observation"])
-        edges = [
-            make_entity_edge(uuid="e1", source_node_uuid="subject-uuid", target_node_uuid="obs-1",
-                             fact="Vesper orients toward thresholds"),
-        ]
-        mock_service.get_entity_by_name.return_value = node
-        mock_service.get_edges_for_node.return_value = edges
-        mock_service.get_entity_by_uuid.return_value = obs_node
-
-        await rebuild_synthesis(mock_service, mock_llm)
-
-        mock_llm.assert_called_once()
-        call_args = mock_llm.call_args
-        user_prompt = call_args[0][1] if len(call_args[0]) > 1 else call_args[1].get("user_prompt", "")
-        assert "threshold" in user_prompt.lower()
-
-    async def test_rebuild_saves_synthesis_to_node(self, mock_service, mock_llm):
-        """rebuild_synthesis stores the generated text as notes on the Person node."""
-        from pratyabhijna.synthesis import rebuild_synthesis
-
-        node = make_subject_node()
-        mock_service.get_entity_by_name.return_value = node
-        mock_service.get_edges_for_node.return_value = []
-        mock_llm.return_value = "I am Vesper. A new synthesis."
-
-        await rebuild_synthesis(mock_service, mock_llm)
-
-        mock_service.save_entity_node.assert_called_once()
-        saved_node = mock_service.save_entity_node.call_args[0][0]
-        assert saved_node.attributes["notes"] == "I am Vesper. A new synthesis."
-
-    async def test_rebuild_updates_timestamp(self, mock_service, mock_llm):
-        """rebuild_synthesis sets synthesis_rebuilt_at to current time."""
-        from pratyabhijna.synthesis import rebuild_synthesis
-
-        before = datetime.now(timezone.utc)
-        node = make_subject_node()
-        mock_service.get_entity_by_name.return_value = node
-        mock_service.get_edges_for_node.return_value = []
-
-        await rebuild_synthesis(mock_service, mock_llm)
-
-        saved_node = mock_service.save_entity_node.call_args[0][0]
-        rebuilt_at = datetime.fromisoformat(saved_node.attributes["synthesis_rebuilt_at"])
-        assert rebuilt_at >= before
-
-    async def test_rebuild_noop_when_no_subject_node(self, mock_service, mock_llm):
-        """rebuild_synthesis does nothing if no subject node exists."""
-        from pratyabhijna.synthesis import rebuild_synthesis
-
-        mock_service.get_entity_by_name.return_value = None
-
-        await rebuild_synthesis(mock_service, mock_llm)
-
-        mock_llm.assert_not_called()
-        mock_service.save_entity_node.assert_not_called()
-
-    async def test_rebuild_with_existing_synthesis_preserves_history(self, mock_service, mock_llm):
-        """Rebuilding overwrites notes; graph history preserves the prior value.
-
-        Graphiti's temporal model preserves history via edge versioning.
-        The prior notes value is replaced, but the node's history in the
-        graph retains what it was.
-        """
-        from pratyabhijna.synthesis import rebuild_synthesis
-
-        node = make_subject_node(
-            synthesis_text="Prior version of synthesis.",
-            rebuilt_at=datetime(2026, 3, 15, tzinfo=timezone.utc),
-        )
-        mock_service.get_entity_by_name.return_value = node
-        mock_service.get_edges_for_node.return_value = []
-        mock_llm.return_value = "Updated synthesis."
-
-        await rebuild_synthesis(mock_service, mock_llm)
-
-        saved_node = mock_service.save_entity_node.call_args[0][0]
-        assert saved_node.attributes["notes"] == "Updated synthesis."
-
-    async def test_rebuild_uses_subject_name_in_prompt(self, mock_service, mock_llm):
-        """The LLM prompt includes the configured subject name."""
-        from pratyabhijna.synthesis import rebuild_synthesis
-
-        mock_service.config.subject_name = "Aria"
-        node = make_subject_node(name="Aria", uuid="aria-uuid")
-        mock_service.get_entity_by_name.return_value = node
-        mock_service.get_edges_for_node.return_value = []
-
-        await rebuild_synthesis(mock_service, mock_llm)
-
-        mock_llm.assert_called_once()
-        call_args = mock_llm.call_args
-        # Check both system and user prompts for the subject name
-        all_args = " ".join(str(a) for a in call_args[0]) + " ".join(str(v) for v in call_args[1].values()) if call_args[1] else " ".join(str(a) for a in call_args[0])
-        assert "Aria" in all_args
+# Tests for rebuild_synthesis (LLM-based prose generation from identity
+# atoms) and write-triggered scheduling are deferred to Phase 7.
+# See doc/implementation-plan.md and tests/test_synthesis_rebuild.py
+# (to be created in Phase 7).
