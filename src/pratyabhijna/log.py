@@ -5,9 +5,12 @@ root logger. Use get_logger(__name__) in each module to obtain a named
 logger that inherits the root configuration.
 
 Routing rules (PRATYABHIJNA_ENV):
-  dev / test   → StreamHandler → stdout
-  prod         → RotatingFileHandler → PRATYABHIJNA_LOG_DIR/pratyabhijna.log
+  dev / prod   → RotatingFileHandler → log_dir/pratyabhijna.log
+  test         → StreamHandler → stdout (no MCP transport conflict)
   anything else → StreamHandler → stdout (safe fallback)
+
+Note: dev uses file logging because MCP stdio transport owns stdout.
+Writing log lines to stdout would corrupt the JSON-RPC stream.
 """
 
 import logging
@@ -33,7 +36,7 @@ def configure_logging(config: "PratyabhijnaConfig") -> None:
     Safe to call multiple times (each call adds exactly one handler).
     In tests, use the isolated_root_logger fixture to prevent leakage.
     """
-    if config.env == "prod":
+    if config.env in ("dev", "prod"):
         log_dir = Path(config.log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
         handler: logging.Handler = logging.handlers.RotatingFileHandler(

@@ -40,25 +40,25 @@ def _new_handler() -> logging.Handler:
 class TestLoggingDestination:
     """configure_logging routes output to the correct destination."""
 
-    def test_dev_env_uses_stream_handler(self):
-        """In dev env, a StreamHandler is added to the root logger."""
+    def test_dev_env_uses_rotating_file_handler(self, tmp_path):
+        """In dev env, a RotatingFileHandler is used (stdout is MCP stdio)."""
         from pratyabhijna.config import PratyabhijnaConfig
         from pratyabhijna.log import configure_logging
 
-        configure_logging(PratyabhijnaConfig(env="dev"))
+        configure_logging(PratyabhijnaConfig(env="dev", log_dir=str(tmp_path)))
+
+        assert isinstance(_new_handler(), logging.handlers.RotatingFileHandler)
+
+    def test_dev_log_file_is_in_configured_dir(self, tmp_path):
+        """In dev env, the log file is created within log_dir."""
+        from pratyabhijna.config import PratyabhijnaConfig
+        from pratyabhijna.log import configure_logging
+
+        configure_logging(PratyabhijnaConfig(env="dev", log_dir=str(tmp_path)))
 
         handler = _new_handler()
-        assert isinstance(handler, logging.StreamHandler)
-        assert not isinstance(handler, logging.handlers.RotatingFileHandler)
-
-    def test_dev_env_logs_to_stdout(self):
-        """In dev env, the StreamHandler writes to stdout."""
-        from pratyabhijna.config import PratyabhijnaConfig
-        from pratyabhijna.log import configure_logging
-
-        configure_logging(PratyabhijnaConfig(env="dev"))
-
-        assert _new_handler().stream is sys.stdout
+        assert isinstance(handler, logging.handlers.RotatingFileHandler)
+        assert Path(handler.baseFilename).parent == tmp_path
 
     def test_test_env_uses_stream_handler(self):
         """In test env, logging goes to stdout (same as dev)."""

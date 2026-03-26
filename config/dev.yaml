@@ -18,6 +18,9 @@ queue:
   db_path: "./data/queue.sqlite"
   max_retries: 3
 
+log_level: "DEBUG"
+log_dir: "./logs"
+
 synthesis:
   max_age_hours: 24
   max_delta_changes: 3
