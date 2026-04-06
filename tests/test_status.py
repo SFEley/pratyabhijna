@@ -89,6 +89,8 @@ class TestStatusWired:
         queue = MagicMock()
         queue.depth = AsyncMock(return_value=0)
         queue.last_write = AsyncMock(return_value=None)
+        queue.dead_letters = AsyncMock(return_value=[])
+        queue.last_error = AsyncMock(return_value=None)
 
         result = await status(service=service, queue=queue)
         assert result["db_connected"] is True
@@ -133,6 +135,66 @@ class TestStatusWired:
         queue = MagicMock()
         queue.depth = AsyncMock(return_value=0)
         queue.last_write = AsyncMock(return_value="2026-03-17T10:00:00+00:00")
+        queue.dead_letters = AsyncMock(return_value=[])
+        queue.last_error = AsyncMock(return_value=None)
 
         result = await status(service=service, queue=queue)
         assert result["last_write"] == "2026-03-17T10:00:00+00:00"
+
+    async def test_status_includes_dead_letters_count(self, tmp_path):
+        """dead_letters reflects the number of dead-lettered tasks."""
+        from pratyabhijna.queue import WorkQueue
+        from pratyabhijna.tools.status import status
+
+        async def failing(payload: dict) -> None:
+            raise RuntimeError("fail")
+
+        q = WorkQueue(
+            db_path=str(tmp_path / "status_dead.sqlite"),
+            max_retries=1,
+            poll_interval=0.05,
+        )
+        q.register("test", failing)
+        await q.start()
+
+        service = MagicMock()
+        service.is_connected = True
+
+        # No dead letters yet
+        result = await status(service=service, queue=q)
+        assert result["dead_letters"] == 0
+        assert result["last_error"] is None
+
+        from helpers import wait_for
+
+        task_id = await q.enqueue("test", {})
+
+        async def is_dead():
+            t = await q.get_task(task_id)
+            return t and t["status"] == "dead_letter"
+
+        await wait_for(is_dead)
+
+        result = await status(service=service, queue=q)
+        assert result["dead_letters"] == 1
+        assert result["last_error"] is not None
+        assert result["last_error"]["task_id"] == task_id
+        assert "fail" in result["last_error"]["error"]
+
+        await q.stop()
+
+    async def test_status_dead_letters_zero_on_clean_queue(self):
+        """dead_letters is 0 when the queue has no failures."""
+        from pratyabhijna.tools.status import status
+
+        service = MagicMock()
+        service.is_connected = True
+        queue = MagicMock()
+        queue.depth = AsyncMock(return_value=0)
+        queue.last_write = AsyncMock(return_value=None)
+        queue.dead_letters = AsyncMock(return_value=[])
+        queue.last_error = AsyncMock(return_value=None)
+
+        result = await status(service=service, queue=queue)
+        assert result["dead_letters"] == 0
+        assert result["last_error"] is None

@@ -18,6 +18,10 @@ from uuid import uuid4
 
 import aiosqlite
 
+from pratyabhijna.log import get_logger
+
+_log = get_logger(__name__)
+
 TaskHandler = Callable[[dict[str, Any]], Awaitable[None]]
 
 _SCHEMA = """\
@@ -156,6 +160,17 @@ class WorkQueue:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
+    async def last_error(self) -> dict | None:
+        """Return task_id, error text, and updated_at of most recent dead-letter, or None."""
+        async with self._db.execute(
+            "SELECT id, error, updated_at FROM tasks WHERE status = 'dead_letter' "
+            "ORDER BY updated_at DESC LIMIT 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return {"task_id": row[0], "error": row[1], "updated_at": row[2]}
+
     # --- Internal ---
 
     async def _recover_crashed(self) -> None:
@@ -208,6 +223,7 @@ class WorkQueue:
     async def _process(self, task: dict) -> None:
         """Run handler, mark completed or handle failure."""
         handler = self._handlers[task["task_type"]]
+        _log.debug("processing task %s:%s", task["task_type"], task["id"])
         try:
             payload = json.loads(task["payload"])
             await handler(payload)
@@ -223,6 +239,7 @@ class WorkQueue:
             (now, now, task_id),
         )
         await self._db.commit()
+        _log.debug("task %s completed", task_id)
 
     async def _handle_failure(
         self, task_id: str, attempts: int, max_attempts: int, error: Exception
@@ -236,10 +253,14 @@ class WorkQueue:
                 "error = ?, updated_at = ? WHERE id = ?",
                 (attempts, error_text, now, task_id),
             )
+            _log.error("task %s dead-lettered after %d attempts: %s", task_id, attempts, error)
         else:
             await self._db.execute(
                 "UPDATE tasks SET status = 'pending', attempts = ?, "
                 "error = ?, updated_at = ? WHERE id = ?",
                 (attempts, error_text, now, task_id),
+            )
+            _log.warning(
+                "task %s failed (attempt %d/%d): %s", task_id, attempts, max_attempts, error
             )
         await self._db.commit()

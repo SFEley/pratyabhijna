@@ -544,3 +544,100 @@ class TestLifecycle:
             return t and t["status"] == "completed"
 
         await wait_for(is_done)
+
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+class TestLogging:
+    async def test_warning_logged_on_retry(self, queue, caplog):
+        """A WARNING is emitted when a task fails but has retries remaining."""
+        import logging
+
+        call_count = 0
+
+        async def fail_once(payload: dict) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("first attempt fails")
+
+        queue.register("test", fail_once)
+        await queue.start()
+        task_id = await queue.enqueue("test", {})
+
+        async def is_done():
+            t = await queue.get_task(task_id)
+            return t and t["status"] == "completed"
+
+        with caplog.at_level(logging.WARNING, logger="pratyabhijna.queue"):
+            await wait_for(is_done)
+
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any(task_id in r.message for r in warning_records)
+        assert any("first attempt fails" in r.message for r in warning_records)
+
+    async def test_error_logged_on_dead_letter(self, queue, caplog):
+        """An ERROR is emitted when a task is dead-lettered."""
+        import logging
+
+        queue.register("test", _failing_handler)
+        await queue.start()
+        task_id = await queue.enqueue("test", {})
+
+        async def is_dead():
+            t = await queue.get_task(task_id)
+            return t and t["status"] == "dead_letter"
+
+        with caplog.at_level(logging.ERROR, logger="pratyabhijna.queue"):
+            await wait_for(is_dead)
+
+        error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert any(task_id in r.message for r in error_records)
+        assert any("dead-lettered" in r.message for r in error_records)
+
+    async def test_debug_logged_on_completion(self, queue, caplog):
+        """A DEBUG message is emitted when a task completes successfully."""
+        import logging
+
+        queue.register("test", _noop_handler)
+        await queue.start()
+        task_id = await queue.enqueue("test", {})
+
+        async def is_done():
+            t = await queue.get_task(task_id)
+            return t and t["status"] == "completed"
+
+        with caplog.at_level(logging.DEBUG, logger="pratyabhijna.queue"):
+            await wait_for(is_done)
+
+        debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any(task_id in r.message and "completed" in r.message for r in debug_records)
+
+
+# ---------------------------------------------------------------------------
+# last_error query
+# ---------------------------------------------------------------------------
+
+class TestLastError:
+    async def test_last_error_none_when_no_dead_letters(self, queue):
+        queue.register("test", _noop_handler)
+        await queue.start()
+        assert await queue.last_error() is None
+
+    async def test_last_error_returns_most_recent(self, queue):
+        queue.register("test", _failing_handler)
+        await queue.start()
+        task_id = await queue.enqueue("test", {})
+
+        async def is_dead():
+            t = await queue.get_task(task_id)
+            return t and t["status"] == "dead_letter"
+
+        await wait_for(is_dead)
+        err = await queue.last_error()
+        assert err is not None
+        assert err["task_id"] == task_id
+        assert "boom" in err["error"]
+        assert "updated_at" in err

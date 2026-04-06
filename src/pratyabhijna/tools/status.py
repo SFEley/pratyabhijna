@@ -23,11 +23,14 @@ async def status(
     Otherwise returns stubs (backward compat with Phase 1).
     """
     if service is not None and queue is not None:
+        dead = await queue.dead_letters()
         return {
             "version": "0.1.0",
             "db_connected": service.is_connected,
             "queue_depth": await queue.depth(),
             "last_write": await queue.last_write(),
+            "dead_letters": len(dead),
+            "last_error": await queue.last_error(),
         }
 
     return {
