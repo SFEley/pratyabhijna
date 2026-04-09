@@ -24,9 +24,13 @@ after updating the identity files to sync changes.
 
 ## Configure Claude Code
 
-Add the MCP server to the project-level settings:
+The repo includes `.mcp.json` at the root, which Claude Code picks up automatically
+when you open this project. No manual configuration needed for project-level use.
 
-**File:** `~/pratyabhijna/.claude/settings.json`
+### Promoting to user-level
+
+When ready for cross-repo use, add the server to `~/.claude/settings.json`
+so it is available in all Claude Code sessions:
 
 ```json
 {
@@ -42,13 +46,6 @@ Add the MCP server to the project-level settings:
   }
 }
 ```
-
-This makes the server available when working in the pratyabhijna repo.
-
-### Promoting to user-level
-
-When ready for cross-repo use, move the config to `~/.claude/settings.json`
-so the MCP server is available in all Claude Code sessions.
 
 ## Verify
 

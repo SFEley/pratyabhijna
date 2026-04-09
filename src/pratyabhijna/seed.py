@@ -64,7 +64,7 @@ async def seed_subject(
         await node.save(service._graphiti.driver)
         action = "updated"
 
-    log.info("Seed %s: %s subject node '%s'", action, subject_name, action)
+    log.info("Seed %s: subject node '%s'", action, subject_name)
     return {
         "subject": subject_name,
         "action": action,
