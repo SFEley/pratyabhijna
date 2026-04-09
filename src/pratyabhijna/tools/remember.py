@@ -9,9 +9,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from pratyabhijna.log import get_logger
+
 if TYPE_CHECKING:
     from pratyabhijna.queue import WorkQueue
     from pratyabhijna.service import PratyabhijnaService
+
+_log = get_logger(__name__)
 
 
 async def remember(
@@ -42,6 +46,11 @@ def make_handler(service: PratyabhijnaService):
 
     async def handle_add_episode(payload: dict[str, Any]) -> None:
         now = datetime.now(timezone.utc)
+        _log.info(
+            "add_episode starting (type=%s, len=%d)",
+            payload["memory_type"],
+            len(payload["content"]),
+        )
         await service._graphiti.add_episode(
             name=f"{payload['memory_type']}:{now.isoformat()}",
             episode_body=payload["content"],
@@ -49,6 +58,7 @@ def make_handler(service: PratyabhijnaService):
             reference_time=now,
             entity_types=service.entity_types,
         )
+        _log.info("add_episode complete (type=%s)", payload["memory_type"])
         # TODO Phase 5: if memory_type == "identity", mark synthesis stale
 
     return handle_add_episode

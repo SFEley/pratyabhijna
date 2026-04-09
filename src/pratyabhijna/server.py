@@ -19,6 +19,7 @@ def create_server(
     service: PratyabhijnaService | None = None,
     queue: WorkQueue | None = None,
     subject_name: str = "Vesper",
+    lifespan=None,
 ) -> FastMCP:
     """Create and configure the Pratyabhijna MCP server.
 
@@ -27,8 +28,11 @@ def create_server(
 
     When service and queue are provided, write tools and status
     return live values. Otherwise tools return stubs or raise.
+
+    The optional lifespan async context manager handles service and
+    queue startup/shutdown when running as a standalone server.
     """
-    server = FastMCP(subject_name)
+    server = FastMCP(subject_name, lifespan=lifespan)
 
     # --- Phase 1: status ---
 

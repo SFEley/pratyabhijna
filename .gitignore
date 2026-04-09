@@ -1,5 +1,6 @@
 # Claude Code local settings (not project content)
 .claude/
+.DS_Store
 
 # Python
 .venv/

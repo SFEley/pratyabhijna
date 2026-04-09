@@ -17,6 +17,10 @@ embedding:
 queue:
   db_path: "./data/queue.sqlite"
   max_retries: 3
+  poll_interval: 15
+
+log_level: "INFO"
+log_dir: "./logs"
 
 synthesis:
   max_age_hours: 24

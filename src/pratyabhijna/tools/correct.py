@@ -10,9 +10,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from pratyabhijna.log import get_logger
+
 if TYPE_CHECKING:
     from pratyabhijna.queue import WorkQueue
     from pratyabhijna.service import PratyabhijnaService
+
+_log = get_logger(__name__)
 
 
 async def correct(
@@ -52,6 +56,9 @@ def make_handler(service: PratyabhijnaService):
             "these terms and update or invalidate contradicted edges."
         ) if search_terms else None
 
+        _log.info(
+            "add_episode starting (type=correction, len=%d)", len(payload["content"])
+        )
         await service._graphiti.add_episode(
             name=f"correction:{now.isoformat()}",
             episode_body=payload["content"],
@@ -61,6 +68,7 @@ def make_handler(service: PratyabhijnaService):
             **({"custom_extraction_instructions": extraction_hint}
                if extraction_hint else {}),
         )
+        _log.info("add_episode complete (type=correction)")
         # TODO Phase 5: if correction touches identity entities, mark synthesis stale
 
     return handle_correct_memory
