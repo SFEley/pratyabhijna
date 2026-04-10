@@ -97,6 +97,11 @@ class WorkQueue:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
+        # WAL lets a separate reader/writer (the deadletters CLI) operate
+        # on the queue file concurrently with the server. busy_timeout
+        # gives brief contention a chance to resolve before erroring.
+        await self._db.execute("PRAGMA journal_mode = WAL")
+        await self._db.execute("PRAGMA busy_timeout = 5000")
         await self._db.executescript(_SCHEMA)
         await self._migrate()
         await self._recover_crashed()
