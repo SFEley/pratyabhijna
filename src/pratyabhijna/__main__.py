@@ -102,6 +102,17 @@ def main():
         config.queue.poll_interval,
     )
     lifespan = build_lifespan(service, queue)
+    # When running behind a reverse proxy (server.url set), disable FastMCP's
+    # DNS rebinding protection — the proxy forwards Host: <external-domain>,
+    # which the localhost allowlist would reject. Bearer token auth covers us.
+    from mcp.server.fastmcp.server import TransportSecuritySettings
+
+    transport_security = (
+        TransportSecuritySettings(enable_dns_rebinding_protection=False)
+        if config.server.url
+        else None  # let FastMCP auto-configure for localhost
+    )
+
     server = create_server(
         service=service,
         queue=queue,
@@ -111,6 +122,7 @@ def main():
         auth=auth,
         host="127.0.0.1",
         port=config.server.port,
+        transport_security=transport_security,
     )
 
     if config.server.url:

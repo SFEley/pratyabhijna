@@ -27,6 +27,7 @@ def create_server(
     auth: AuthSettings | None = None,
     host: str = "127.0.0.1",
     port: int = 3000,
+    transport_security=None,
 ) -> FastMCP:
     """Create and configure the Pratyabhijna MCP server.
 
@@ -46,6 +47,7 @@ def create_server(
         auth=auth,
         host=host,
         port=port,
+        transport_security=transport_security,
     )
 
     # --- Phase 1: status ---
