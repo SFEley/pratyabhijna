@@ -31,7 +31,12 @@ async def _noop_handler(payload: dict) -> None:
 async def queue(tmp_path):
     """A WorkQueue with temp DB. Not started — tests register handlers first."""
     db_path = str(tmp_path / "test_scheduling.sqlite")
-    q = WorkQueue(db_path=db_path, max_retries=3, poll_interval=0.05)
+    q = WorkQueue(
+        db_path=db_path,
+        max_retries=3,
+        poll_interval=0.05,
+        backoff_base_seconds=0.01,
+    )
     yield q
     if q.is_running:
         await q.stop()

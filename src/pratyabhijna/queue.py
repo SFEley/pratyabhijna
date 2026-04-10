@@ -6,12 +6,21 @@ a single background worker processes them sequentially.
 
 Graphiti requires episodes be added one at a time, each fully awaited
 before the next. The worker loop enforces this.
+
+Tasks carry an optional ``run_at`` timestamp. The worker skips any task
+whose ``run_at`` is still in the future, which supports two use cases:
+
+1. Deferred/singleton scheduling for synthesis rebuilds (write handlers
+   call ``reschedule_or_enqueue`` to kick a future task forward).
+2. Exponential backoff on retries — ``_handle_failure`` pushes ``run_at``
+   forward by ``attempts² × backoff_base_seconds`` so transient upstream
+   failures (rate limits, brief outages) have time to resolve.
 """
 
 import asyncio
 import json
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
@@ -35,10 +44,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     error        TEXT,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL,
-    completed_at TEXT
+    completed_at TEXT,
+    run_at       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_run_at ON tasks(run_at);
 """
 
 
@@ -46,13 +57,27 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _iso(dt: datetime) -> str:
+    """Serialize a datetime as ISO-8601 UTC. Naive datetimes assumed UTC."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
 class WorkQueue:
     """Persistent task queue for async memory operations."""
 
-    def __init__(self, db_path: str, max_retries: int = 3, poll_interval: float = 0.5):
+    def __init__(
+        self,
+        db_path: str,
+        max_retries: int = 10,
+        poll_interval: float = 0.5,
+        backoff_base_seconds: float = 60.0,
+    ):
         self.db_path = db_path
         self.max_retries = max_retries
         self.poll_interval = poll_interval
+        self.backoff_base_seconds = backoff_base_seconds
         self._handlers: dict[str, TaskHandler] = {}
         self._db: aiosqlite.Connection | None = None
         self._worker_task: asyncio.Task | None = None
@@ -73,9 +98,30 @@ class WorkQueue:
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(_SCHEMA)
+        await self._migrate()
         await self._recover_crashed()
         self._running = True
         self._worker_task = asyncio.create_task(self._worker_loop())
+
+    async def _migrate(self) -> None:
+        """Apply in-place schema upgrades for existing databases.
+
+        ``CREATE TABLE IF NOT EXISTS`` does not add columns to a table
+        that already exists, so any column added after the first release
+        needs an explicit ``ALTER TABLE``. Each migration checks current
+        columns via ``PRAGMA table_info`` and is a no-op when already
+        applied.
+        """
+        async with self._db.execute("PRAGMA table_info(tasks)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+
+        if "run_at" not in columns:
+            await self._db.execute("ALTER TABLE tasks ADD COLUMN run_at TEXT")
+            await self._db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_run_at ON tasks(run_at)"
+            )
+            await self._db.commit()
+            _log.info("migrated queue schema: added run_at column")
 
     async def stop(self, timeout: float = 10.0) -> None:
         """Signal worker to stop, wait for current task, close DB."""
@@ -106,8 +152,17 @@ class WorkQueue:
 
     # --- Enqueueing ---
 
-    async def enqueue(self, task_type: str, payload: dict[str, Any]) -> str:
+    async def enqueue(
+        self,
+        task_type: str,
+        payload: dict[str, Any],
+        run_at: datetime | None = None,
+    ) -> str:
         """Insert a pending task. Returns task ID (UUID).
+
+        If ``run_at`` is given, the worker will not claim the task until
+        that time has passed. ``None`` (the default) means run as soon
+        as the worker is free.
 
         Raises ValueError if task_type has no registered handler.
         """
@@ -116,14 +171,71 @@ class WorkQueue:
 
         task_id = str(uuid4())
         now = _now()
+        run_at_iso = _iso(run_at) if run_at is not None else None
         await self._db.execute(
             """INSERT INTO tasks (id, task_type, payload, status, attempts,
-                                  max_attempts, created_at, updated_at)
-               VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)""",
-            (task_id, task_type, json.dumps(payload), self.max_retries, now, now),
+                                  max_attempts, created_at, updated_at, run_at)
+               VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, ?)""",
+            (
+                task_id,
+                task_type,
+                json.dumps(payload),
+                self.max_retries,
+                now,
+                now,
+                run_at_iso,
+            ),
         )
         await self._db.commit()
         return task_id
+
+    async def reschedule_or_enqueue(
+        self,
+        task_type: str,
+        payload: dict[str, Any],
+        run_at: datetime,
+    ) -> str:
+        """Singleton scheduling: ensure exactly one pending task of this type.
+
+        If a pending task of ``task_type`` already exists, update its
+        ``run_at`` (and payload) in place and return its id. Otherwise
+        insert a new task. Running and completed tasks are ignored —
+        a running task does not block creating a new pending one, and
+        completed tasks are inert.
+
+        Used by write handlers to schedule identity synthesis rebuilds:
+        rapid successive writes kick the same rebuild forward instead
+        of piling up redundant rebuild tasks.
+        """
+        if task_type not in self._handlers:
+            raise ValueError(
+                f"Cannot reschedule_or_enqueue '{task_type}': no handler registered"
+            )
+
+        run_at_iso = _iso(run_at)
+        now = _now()
+
+        async with self._db.execute(
+            """SELECT id FROM tasks
+               WHERE task_type = ? AND status = 'pending'
+               ORDER BY created_at
+               LIMIT 1""",
+            (task_type,),
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if row is not None:
+            task_id = row[0]
+            await self._db.execute(
+                """UPDATE tasks
+                   SET run_at = ?, payload = ?, updated_at = ?
+                   WHERE id = ?""",
+                (run_at_iso, json.dumps(payload), now, task_id),
+            )
+            await self._db.commit()
+            return task_id
+
+        return await self.enqueue(task_type, payload, run_at=run_at)
 
     # --- Status queries ---
 
@@ -191,24 +303,27 @@ class WorkQueue:
             await self._process(task)
 
     async def _claim_next(self) -> dict | None:
-        """Atomically claim the oldest pending task.
+        """Atomically claim the oldest eligible pending task.
 
-        Uses a single UPDATE with a subquery so the transition from
-        'pending' to 'running' is one statement. If another worker
+        A task is eligible when its ``run_at`` is NULL or has already
+        passed. Uses a single UPDATE with a subquery so the transition
+        from 'pending' to 'running' is one statement. If another worker
         claimed the row first (multi-worker scenario), the subquery
-        finds no 'pending' row and the UPDATE touches zero rows.
+        finds no eligible row and the UPDATE touches zero rows.
         After committing, we fetch the claimed task by status.
         """
+        now = _now()
         cursor = await self._db.execute(
             """UPDATE tasks
                SET status = 'running', updated_at = ?
                WHERE id = (
                    SELECT id FROM tasks
                    WHERE status = 'pending'
+                     AND (run_at IS NULL OR run_at <= ?)
                    ORDER BY created_at
                    LIMIT 1
                )""",
-            (_now(),),
+            (now, now),
         )
         if cursor.rowcount == 0:
             return None
@@ -245,7 +360,8 @@ class WorkQueue:
         self, task_id: str, attempts: int, max_attempts: int, error: Exception
     ) -> None:
         error_text = f"{type(error).__name__}: {error}\n{traceback.format_exc()}"
-        now = _now()
+        now_dt = datetime.now(timezone.utc)
+        now = _iso(now_dt)
 
         if attempts >= max_attempts:
             await self._db.execute(
@@ -255,12 +371,25 @@ class WorkQueue:
             )
             _log.error("task %s dead-lettered after %d attempts: %s", task_id, attempts, error)
         else:
+            # Exponential backoff: attempts² × base gives 1, 4, 9, 16, 25…
+            # multiples of the base (default 60s). At base=60 and
+            # max_retries=10 the final attempt lands ~6.4h after the
+            # first failure — enough time for transient upstream issues
+            # (rate limits, brief outages) to resolve without burning
+            # retries too fast.
+            delay_seconds = (attempts ** 2) * self.backoff_base_seconds
+            next_run_at = _iso(now_dt + timedelta(seconds=delay_seconds))
             await self._db.execute(
                 "UPDATE tasks SET status = 'pending', attempts = ?, "
-                "error = ?, updated_at = ? WHERE id = ?",
-                (attempts, error_text, now, task_id),
+                "error = ?, updated_at = ?, run_at = ? WHERE id = ?",
+                (attempts, error_text, now, next_run_at, task_id),
             )
             _log.warning(
-                "task %s failed (attempt %d/%d): %s", task_id, attempts, max_attempts, error
+                "task %s failed (attempt %d/%d), retrying in %.1fs: %s",
+                task_id,
+                attempts,
+                max_attempts,
+                delay_seconds,
+                error,
             )
         await self._db.commit()

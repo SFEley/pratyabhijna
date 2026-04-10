@@ -100,6 +100,7 @@ def main():
         config.queue.db_path,
         config.queue.max_retries,
         config.queue.poll_interval,
+        config.queue.backoff_base_seconds,
     )
     lifespan = build_lifespan(service, queue)
     # When running behind a reverse proxy (server.url set), disable FastMCP's
