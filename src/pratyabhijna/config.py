@@ -53,6 +53,11 @@ class SynthesisConfig(BaseModel):
     rebuild_delay_hours: float = 2.0
 
 
+class ServerConfig(BaseModel):
+    url: str = ""    # Public-facing HTTPS URL (e.g. https://vesper.example.com). Required for HTTP transport + auth.
+    port: int = 3000  # Local bind port for streamable-http transport (Caddy proxies externally).
+
+
 class PratyabhijnaConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="PRATYABHIJNA_", env_nested_delimiter="__")
 
@@ -60,12 +65,14 @@ class PratyabhijnaConfig(BaseSettings):
     subject_name: str = "Vesper"
     log_dir: str = "./logs"
     log_level: str = "INFO"
+    api_key: str = ""  # Bearer token for HTTP auth. Required when server.url is set.
 
     neo4j: Neo4jConfig = Field(default_factory=Neo4jConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     queue: QueueConfig = Field(default_factory=QueueConfig)
     synthesis: SynthesisConfig = Field(default_factory=SynthesisConfig)
+    server: ServerConfig = Field(default_factory=ServerConfig)
 
     @classmethod
     def settings_customise_sources(cls, settings_cls, **kwargs):

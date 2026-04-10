@@ -125,7 +125,9 @@ class TestCLIDispatch:
              patch("pratyabhijna.__main__.PratyabhijnaService"), \
              patch("pratyabhijna.__main__.WorkQueue"), \
              patch("pratyabhijna.__main__.create_server") as mock_create:
-            mock_config_cls.from_env.return_value = MagicMock()
+            mock_config = MagicMock()
+            mock_config.server.url = ""  # No server URL → stdio transport, no auth
+            mock_config_cls.from_env.return_value = mock_config
             mock_server = MagicMock()
             mock_create.return_value = mock_server
             main()

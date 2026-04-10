@@ -75,7 +75,26 @@ def main():
         run_seed(config)
         return
 
-    # Default: run MCP server
+    # Build auth if server URL and API key are configured.
+    token_verifier = None
+    auth = None
+    if config.server.url and config.api_key:
+        from mcp.server.auth.settings import AuthSettings
+
+        from pratyabhijna.auth import StaticTokenVerifier
+
+        token_verifier = StaticTokenVerifier(config.api_key)
+        auth = AuthSettings(
+            issuer_url=config.server.url,
+            resource_server_url=config.server.url,
+        )
+        log.info("Bearer token auth enabled (resource server: %s)", config.server.url)
+    elif config.server.url or config.api_key:
+        log.warning(
+            "Both PRATYABHIJNA_SERVER__URL and PRATYABHIJNA_API_KEY must be set to enable auth; "
+            "running without authentication"
+        )
+
     service = PratyabhijnaService(config)
     queue = WorkQueue(
         config.queue.db_path,
@@ -88,8 +107,17 @@ def main():
         queue=queue,
         subject_name=config.subject_name,
         lifespan=lifespan,
+        token_verifier=token_verifier,
+        auth=auth,
+        host="127.0.0.1",
+        port=config.server.port,
     )
-    server.run(transport="stdio")
+
+    if config.server.url:
+        log.info("Starting streamable-http transport on 127.0.0.1:%d", config.server.port)
+        server.run(transport="streamable-http")
+    else:
+        server.run(transport="stdio")
 
 
 if __name__ == "__main__":

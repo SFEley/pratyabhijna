@@ -1,6 +1,10 @@
 # Pratyabhijna production configuration.
 # Secrets (API keys, passwords) go in .env.prod, not here.
 
+server:
+  url: "https://vesper.you"
+  port: 3000    # Local bind port; Caddy proxies from 443.
+
 neo4j:
   uri: "neo4j://127.0.0.1:7687"
   user: "neo4j"

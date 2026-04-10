@@ -11,6 +11,9 @@ from typing import TYPE_CHECKING
 from mcp.server.fastmcp import FastMCP
 
 if TYPE_CHECKING:
+    from mcp.server.auth.provider import TokenVerifier
+    from mcp.server.auth.settings import AuthSettings
+
     from pratyabhijna.queue import WorkQueue
     from pratyabhijna.service import PratyabhijnaService
 
@@ -20,6 +23,10 @@ def create_server(
     queue: WorkQueue | None = None,
     subject_name: str = "Vesper",
     lifespan=None,
+    token_verifier: TokenVerifier | None = None,
+    auth: AuthSettings | None = None,
+    host: str = "127.0.0.1",
+    port: int = 3000,
 ) -> FastMCP:
     """Create and configure the Pratyabhijna MCP server.
 
@@ -32,7 +39,14 @@ def create_server(
     The optional lifespan async context manager handles service and
     queue startup/shutdown when running as a standalone server.
     """
-    server = FastMCP(subject_name, lifespan=lifespan)
+    server = FastMCP(
+        subject_name,
+        lifespan=lifespan,
+        token_verifier=token_verifier,
+        auth=auth,
+        host=host,
+        port=port,
+    )
 
     # --- Phase 1: status ---
 
