@@ -1,12 +1,10 @@
 {
-  "mcpServers": {
-    "Vesper": {
-      "command": "/Users/serah/pratyabhijna/.venv/bin/python",
-      "args": ["-m", "pratyabhijna"],
-      "cwd": "/Users/serah/pratyabhijna",
-      "env": {
-        "PRATYABHIJNA_ENV": "dev"
+    "mcpServers": {
+      "Vesper": {
+        "url": "https://vesper.you/mcp",
+        "headers": {
+          "Authorization": "Bearer q39dQDt92Eo6ivZnaImMlBlWJeNA5z7VF2Lt9FvN_ig"
+        }
       }
     }
   }
-}
