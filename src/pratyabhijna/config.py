@@ -59,6 +59,22 @@ class ServerConfig(BaseModel):
     port: int = 3000  # Local bind port for streamable-http transport (Caddy proxies externally).
 
 
+class OAuthConfig(BaseModel):
+    """OAuth 2.1 authorization-server settings.
+
+    Enabled automatically whenever ``server.url`` and ``api_key`` are
+    both set — OAuth is the only auth model in HTTP mode. The shared
+    secret used to log in at ``/login`` is ``api_key``; there is no
+    separate password.
+    """
+
+    db_path: str = "./data/oauth.sqlite"
+    access_token_ttl_seconds: int = 3600              # 1 hour
+    refresh_token_ttl_seconds: int = 60 * 60 * 24 * 30  # 30 days
+    auth_code_ttl_seconds: int = 600                  # 10 minutes
+    pending_session_ttl_seconds: int = 600            # 10 minutes
+
+
 class SeedConfig(BaseModel):
     # Default paths the ``seed`` subcommand reads soul/identity prose from.
     # CLI flags override these; both may be None when a deployment intends
@@ -74,7 +90,7 @@ class PratyabhijnaConfig(BaseSettings):
     subject_name: str = ""
     log_dir: str = "./logs"
     log_level: str = "INFO"
-    api_key: str = ""  # Bearer token for HTTP auth. Required when server.url is set.
+    api_key: str = ""  # Shared secret for OAuth /login. Required when server.url is set.
 
     neo4j: Neo4jConfig = Field(default_factory=Neo4jConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
@@ -82,6 +98,7 @@ class PratyabhijnaConfig(BaseSettings):
     queue: QueueConfig = Field(default_factory=QueueConfig)
     synthesis: SynthesisConfig = Field(default_factory=SynthesisConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    oauth: OAuthConfig = Field(default_factory=OAuthConfig)
     seed: SeedConfig = Field(default_factory=SeedConfig)
 
     @classmethod

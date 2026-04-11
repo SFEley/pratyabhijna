@@ -37,11 +37,16 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 
-def build_lifespan(service: PratyabhijnaService, queue: WorkQueue):
+def build_lifespan(
+    service: PratyabhijnaService,
+    queue: WorkQueue,
+    oauth_storage=None,
+):
     """Create the async lifespan context manager for the MCP server.
 
-    Starts the service (Neo4j + Graphiti) and work queue on entry,
-    registers queue handlers, and stops both on exit.
+    Starts the service (Neo4j + Graphiti), work queue, and — when
+    OAuth is enabled — OAuth storage on entry; registers queue
+    handlers; and stops everything on exit in reverse order.
     """
 
     @asynccontextmanager
@@ -50,10 +55,14 @@ def build_lifespan(service: PratyabhijnaService, queue: WorkQueue):
         queue.register("add_episode", remember_make_handler(service))
         queue.register("correct_memory", correct_make_handler(service))
         await queue.start()
+        if oauth_storage is not None:
+            await oauth_storage.start()
         log.info("Pratyabhijna server ready")
         try:
             yield
         finally:
+            if oauth_storage is not None:
+                await oauth_storage.stop()
             await queue.stop()
             await service.stop()
             log.info("Pratyabhijna server stopped")
@@ -450,20 +459,39 @@ def main():
         )
         sys.exit(2)
 
-    # Build auth if server URL and API key are configured.
-    token_verifier = None
+    # Build OAuth authorization server when server URL and api_key are both set.
+    # The same api_key is the shared secret for /login — no separate password.
+    oauth_provider = None
+    oauth_storage = None
     auth = None
     if config.server.url and config.api_key:
-        from mcp.server.auth.settings import AuthSettings
+        from mcp.server.auth.settings import (
+            AuthSettings,
+            ClientRegistrationOptions,
+            RevocationOptions,
+        )
 
-        from pratyabhijna.auth import StaticTokenVerifier
+        from pratyabhijna.oauth.provider import OAuthTTLs, PratyabhijnaOAuthProvider
+        from pratyabhijna.oauth.storage import OAuthStorage
 
-        token_verifier = StaticTokenVerifier(config.api_key)
+        oauth_storage = OAuthStorage(db_path=config.oauth.db_path)
+        oauth_provider = PratyabhijnaOAuthProvider(
+            storage=oauth_storage,
+            ttls=OAuthTTLs(
+                access_token=config.oauth.access_token_ttl_seconds,
+                refresh_token=config.oauth.refresh_token_ttl_seconds,
+                auth_code=config.oauth.auth_code_ttl_seconds,
+                pending_session=config.oauth.pending_session_ttl_seconds,
+            ),
+            login_url_base=f"{config.server.url.rstrip('/')}/login",
+        )
         auth = AuthSettings(
             issuer_url=config.server.url,
             resource_server_url=config.server.url,
+            client_registration_options=ClientRegistrationOptions(enabled=True),
+            revocation_options=RevocationOptions(enabled=True),
         )
-        log.info("Bearer token auth enabled (resource server: %s)", config.server.url)
+        log.info("OAuth 2.1 authorization server enabled (issuer: %s)", config.server.url)
     elif config.server.url or config.api_key:
         log.warning(
             "Both PRATYABHIJNA_SERVER__URL and PRATYABHIJNA_API_KEY must be set to enable auth; "
@@ -477,10 +505,10 @@ def main():
         config.queue.poll_interval,
         config.queue.backoff_base_seconds,
     )
-    lifespan = build_lifespan(service, queue)
+    lifespan = build_lifespan(service, queue, oauth_storage=oauth_storage)
     # When running behind a reverse proxy (server.url set), disable FastMCP's
     # DNS rebinding protection — the proxy forwards Host: <external-domain>,
-    # which the localhost allowlist would reject. Bearer token auth covers us.
+    # which the localhost allowlist would reject. OAuth covers us.
     from mcp.server.fastmcp.server import TransportSecuritySettings
 
     transport_security = (
@@ -494,12 +522,21 @@ def main():
         queue=queue,
         subject_name=config.subject_name,
         lifespan=lifespan,
-        token_verifier=token_verifier,
+        auth_server_provider=oauth_provider,
         auth=auth,
         host="127.0.0.1",
         port=config.server.port,
         transport_security=transport_security,
     )
+
+    if oauth_provider is not None:
+        from pratyabhijna.oauth.login import register_login_routes
+
+        register_login_routes(
+            server=server,
+            provider=oauth_provider,
+            expected_password=config.api_key,
+        )
 
     if config.server.url:
         log.info("Starting streamable-http transport on 127.0.0.1:%d", config.server.port)

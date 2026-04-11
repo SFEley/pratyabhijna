@@ -6,12 +6,11 @@ Tools are wired to service and queue when provided.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from mcp.server.fastmcp import FastMCP
 
 if TYPE_CHECKING:
-    from mcp.server.auth.provider import TokenVerifier
     from mcp.server.auth.settings import AuthSettings
 
     from pratyabhijna.queue import WorkQueue
@@ -23,7 +22,7 @@ def create_server(
     queue: WorkQueue | None = None,
     subject_name: str | None = None,
     lifespan=None,
-    token_verifier: TokenVerifier | None = None,
+    auth_server_provider: Any | None = None,
     auth: AuthSettings | None = None,
     host: str = "127.0.0.1",
     port: int = 3000,
@@ -45,7 +44,7 @@ def create_server(
     server = FastMCP(
         "Pratyabhijna",
         lifespan=lifespan,
-        token_verifier=token_verifier,
+        auth_server_provider=auth_server_provider,
         auth=auth,
         host=host,
         port=port,
