@@ -28,6 +28,7 @@ from mcp.server.auth.settings import (
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.server import TransportSecuritySettings
 
+from pratyabhijna.oauth import build_http_app
 from pratyabhijna.oauth.login import register_login_routes
 from pratyabhijna.oauth.provider import OAuthTTLs, PratyabhijnaOAuthProvider
 from pratyabhijna.oauth.storage import OAuthStorage
@@ -40,7 +41,14 @@ REDIRECT_URI = "http://localhost:8080/callback"
 
 @pytest.fixture
 async def oauth_app(tmp_path):
-    """Return (asgi_app, provider) — storage is started, stopped on teardown."""
+    """Return (asgi_app, provider) — storage is started, stopped on teardown.
+
+    Storage is started directly here rather than through the Starlette
+    lifespan because FastMCP's inner session-manager lifespan uses an
+    anyio task group that can't cross a pytest-asyncio fixture yield
+    boundary. The regression test for ``build_http_app``'s storage
+    lifecycle lives in ``TestBuildHttpAppLifecycle`` below.
+    """
     storage = OAuthStorage(db_path=str(tmp_path / "oauth.sqlite"))
     await storage.start()
 
@@ -364,3 +372,140 @@ class TestProtectedResource:
             meta = resp.json()
             assert meta["resource"].rstrip("/") == ISSUER_URL
             assert len(meta["authorization_servers"]) >= 1
+
+
+# ---------------------------------------------------------------------------
+# build_http_app lifespan regression
+# ---------------------------------------------------------------------------
+
+class TestBuildHttpAppLifecycle:
+    """Regression coverage for the production 500 bug.
+
+    FastMCP's ``streamable_http_app()`` hardcodes its Starlette lifespan
+    to ``self.session_manager.run()``, which only fires when an MCP
+    session is established. OAuth routes (/register, /authorize, /token,
+    /.well-known/*) are hit *before* any MCP session exists, so any
+    startup hooked onto the FastMCP lifespan (like ``oauth_storage.start()``)
+    never runs for them. The first DB call then raises ``AttributeError``,
+    Starlette turns that into a plain-text 500, and the OAuth client
+    chokes trying to JSON-parse the body.
+
+    ``build_http_app`` fixes this by wrapping Starlette's outer
+    ``router.lifespan_context`` so storage starts/stops at ASGI lifespan
+    boundaries. These tests verify that wiring directly — without
+    bringing up the session manager, which would collide with
+    pytest-asyncio's fixture task boundaries.
+    """
+
+    async def test_wrapped_lifespan_starts_and_stops_storage(self, tmp_path):
+        storage = OAuthStorage(db_path=str(tmp_path / "oauth.sqlite"))
+        provider = PratyabhijnaOAuthProvider(
+            storage=storage,
+            ttls=OAuthTTLs(),
+            login_url_base=f"{ISSUER_URL}/login",
+        )
+        server = FastMCP(
+            "Pratyabhijna-Test",
+            auth_server_provider=provider,
+            auth=AuthSettings(
+                issuer_url=ISSUER_URL,
+                resource_server_url=ISSUER_URL,
+                client_registration_options=ClientRegistrationOptions(enabled=True),
+                revocation_options=RevocationOptions(enabled=True),
+            ),
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=False,
+            ),
+        )
+        register_login_routes(server, provider, PASSWORD)
+
+        start_calls: list[str] = []
+        stop_calls: list[str] = []
+        real_start = storage.start
+        real_stop = storage.stop
+
+        async def tracking_start():
+            start_calls.append("x")
+            await real_start()
+
+        async def tracking_stop():
+            stop_calls.append("x")
+            await real_stop()
+
+        storage.start = tracking_start  # type: ignore[method-assign]
+        storage.stop = tracking_stop  # type: ignore[method-assign]
+
+        # Replace the inner FastMCP lifespan with a no-op so we can drive
+        # the outer Starlette lifespan without spinning up the anyio
+        # task group inside StreamableHTTPSessionManager.run().
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def noop_lifespan(_inner):
+            yield
+
+        raw_app = server.streamable_http_app()
+        raw_app.router.lifespan_context = noop_lifespan
+
+        # Now wrap: build_http_app sees a Starlette app whose
+        # lifespan_context is already noop_lifespan, and wraps it with
+        # the oauth_storage start/stop.
+        app = build_http_app(server, storage)
+
+        assert start_calls == []
+        async with app.router.lifespan_context(app):
+            assert start_calls == ["x"]
+            assert stop_calls == []
+        assert stop_calls == ["x"]
+
+    async def test_oauth_route_reachable_under_wrapped_lifespan(self, tmp_path):
+        """After wrapped-lifespan startup, /.well-known is reachable without 500."""
+        storage = OAuthStorage(db_path=str(tmp_path / "oauth.sqlite"))
+        provider = PratyabhijnaOAuthProvider(
+            storage=storage,
+            ttls=OAuthTTLs(),
+            login_url_base=f"{ISSUER_URL}/login",
+        )
+        server = FastMCP(
+            "Pratyabhijna-Test",
+            auth_server_provider=provider,
+            auth=AuthSettings(
+                issuer_url=ISSUER_URL,
+                resource_server_url=ISSUER_URL,
+                client_registration_options=ClientRegistrationOptions(enabled=True),
+                revocation_options=RevocationOptions(enabled=True),
+            ),
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=False,
+            ),
+        )
+        register_login_routes(server, provider, PASSWORD)
+
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def noop_lifespan(_inner):
+            yield
+
+        raw_app = server.streamable_http_app()
+        raw_app.router.lifespan_context = noop_lifespan
+
+        app = build_http_app(server, storage)
+
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url=ISSUER_URL,
+            ) as client:
+                # Dynamic client registration touches storage. Under the
+                # buggy wiring this would 500 with "Internal Server Error".
+                resp = await client.post(
+                    "/register",
+                    json={
+                        "redirect_uris": [REDIRECT_URI],
+                        "grant_types": ["authorization_code", "refresh_token"],
+                        "response_types": ["code"],
+                        "token_endpoint_auth_method": "none",
+                    },
+                )
+                assert resp.status_code == 201, resp.text

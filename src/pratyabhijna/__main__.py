@@ -37,16 +37,14 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 
-def build_lifespan(
-    service: PratyabhijnaService,
-    queue: WorkQueue,
-    oauth_storage=None,
-):
+def build_lifespan(service: PratyabhijnaService, queue: WorkQueue):
     """Create the async lifespan context manager for the MCP server.
 
-    Starts the service (Neo4j + Graphiti), work queue, and — when
-    OAuth is enabled — OAuth storage on entry; registers queue
-    handlers; and stops everything on exit in reverse order.
+    Starts the service (Neo4j + Graphiti) and work queue on entry,
+    registers queue handlers, and stops both on exit. OAuth storage
+    lifecycle is handled separately in ``oauth.build_http_app`` — it
+    needs to run at Starlette-app level, not inside this MCP-server
+    lifespan which only fires when an MCP session is established.
     """
 
     @asynccontextmanager
@@ -55,14 +53,10 @@ def build_lifespan(
         queue.register("add_episode", remember_make_handler(service))
         queue.register("correct_memory", correct_make_handler(service))
         await queue.start()
-        if oauth_storage is not None:
-            await oauth_storage.start()
         log.info("Pratyabhijna server ready")
         try:
             yield
         finally:
-            if oauth_storage is not None:
-                await oauth_storage.stop()
             await queue.stop()
             await service.stop()
             log.info("Pratyabhijna server stopped")
@@ -505,7 +499,7 @@ def main():
         config.queue.poll_interval,
         config.queue.backoff_base_seconds,
     )
-    lifespan = build_lifespan(service, queue, oauth_storage=oauth_storage)
+    lifespan = build_lifespan(service, queue)
     # When running behind a reverse proxy (server.url set), disable FastMCP's
     # DNS rebinding protection — the proxy forwards Host: <external-domain>,
     # which the localhost allowlist would reject. OAuth covers us.
@@ -540,7 +534,27 @@ def main():
 
     if config.server.url:
         log.info("Starting streamable-http transport on 127.0.0.1:%d", config.server.port)
-        server.run(transport="streamable-http")
+        if oauth_provider is not None:
+            # OAuth routes are hit before any MCP session exists, so OAuth
+            # storage must start at ASGI startup (FastMCP's built-in lifespan
+            # only runs per MCP session). build_http_app wraps the Starlette
+            # app's lifespan accordingly; we then drive uvicorn directly.
+            import asyncio
+
+            import uvicorn
+
+            from pratyabhijna.oauth import build_http_app
+
+            starlette_app = build_http_app(server, oauth_storage)
+            uvicorn_config = uvicorn.Config(
+                starlette_app,
+                host="127.0.0.1",
+                port=config.server.port,
+                log_level=config.log_level.lower(),
+            )
+            asyncio.run(uvicorn.Server(uvicorn_config).serve())
+        else:
+            server.run(transport="streamable-http")
     else:
         server.run(transport="stdio")
 
