@@ -3,6 +3,13 @@
 Usage:
     python -m pratyabhijna                       Start MCP server
     python -m pratyabhijna seed                  Seed subject identity
+
+    python -m pratyabhijna status                System orientation
+    python -m pratyabhijna bootstrap             Subject identity tiers
+    python -m pratyabhijna inspect UUID          Node or edge detail
+    python -m pratyabhijna history ENTITY        Entity relationship timeline
+    python -m pratyabhijna recall QUERY [--type T] [--time-range R]
+
     python -m pratyabhijna deadletters list      Show dead-lettered tasks
     python -m pratyabhijna deadletters show ID   Show full detail for one
     python -m pratyabhijna deadletters retry ID  Reset to pending (or --all)
@@ -13,7 +20,7 @@ from __future__ import annotations
 
 import sys
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from pratyabhijna.config import PratyabhijnaConfig
 from pratyabhijna.log import configure_logging, get_logger
@@ -174,6 +181,180 @@ def run_deadletters(config: PratyabhijnaConfig, argv: list[str]) -> int:
     return 2
 
 
+TOOL_COMMANDS = {"status", "bootstrap", "inspect", "history", "recall"}
+
+
+def _cli_queue_stats(db_path: str) -> dict:
+    """Read queue counters directly from SQLite.
+
+    The ``status`` CLI subcommand needs queue depth, last write, and
+    dead-letter info without starting a ``WorkQueue`` — starting one
+    would run ``_recover_crashed`` (clobbering the live server's
+    running task) and spawn a second worker loop. Direct SQL under
+    WAL mode is safe and matches how ``deadletters`` reads the file.
+    """
+    import sqlite3
+    from pathlib import Path
+
+    if not Path(db_path).exists():
+        return {
+            "queue_depth": 0,
+            "last_write": None,
+            "dead_letters": 0,
+            "last_error": None,
+        }
+
+    with sqlite3.connect(db_path, timeout=5.0) as conn:
+        depth = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status IN ('pending', 'running')"
+        ).fetchone()[0]
+        last_write_row = conn.execute(
+            "SELECT completed_at FROM tasks WHERE status = 'completed' "
+            "ORDER BY completed_at DESC LIMIT 1"
+        ).fetchone()
+        dead_count = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'dead_letter'"
+        ).fetchone()[0]
+        last_err_row = conn.execute(
+            "SELECT id, error, updated_at FROM tasks WHERE status = 'dead_letter' "
+            "ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+
+    return {
+        "queue_depth": depth,
+        "last_write": last_write_row[0] if last_write_row else None,
+        "dead_letters": dead_count,
+        "last_error": (
+            {"task_id": last_err_row[0], "error": last_err_row[1], "updated_at": last_err_row[2]}
+            if last_err_row
+            else None
+        ),
+    }
+
+
+def _parse_recall_args(argv: list[str]) -> tuple[str, str | None, str | None] | None:
+    """Parse ``recall QUERY [--type T] [--time-range R]``.
+
+    Returns (query, memory_type, time_range) or None on usage error.
+    """
+    query: str | None = None
+    memory_type: str | None = None
+    time_range: str | None = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--type" and i + 1 < len(argv):
+            memory_type = argv[i + 1]
+            i += 2
+        elif a == "--time-range" and i + 1 < len(argv):
+            time_range = argv[i + 1]
+            i += 2
+        elif not a.startswith("--") and query is None:
+            query = a
+            i += 1
+        else:
+            return None
+    if query is None:
+        return None
+    return query, memory_type, time_range
+
+
+_TOOL_USAGE = {
+    "status": "python -m pratyabhijna status",
+    "bootstrap": "python -m pratyabhijna bootstrap",
+    "inspect": "python -m pratyabhijna inspect UUID",
+    "history": "python -m pratyabhijna history ENTITY_NAME",
+    "recall": "python -m pratyabhijna recall QUERY [--type T] [--time-range R]",
+}
+
+
+def run_tool(config: PratyabhijnaConfig, action: str, argv: list[str]) -> int:
+    """Dispatch read-only MCP tool subcommands.
+
+    Validates args up front, then starts a ``PratyabhijnaService``
+    for the call, invokes the tool handler directly, and prints the
+    result as pretty JSON on stdout. Write tools (``remember``,
+    ``correct``) are intentionally omitted — new memories are
+    Vesper's decision, not an operator's.
+    """
+    import json
+
+    import anyio
+
+    # Validate args before paying the cost of starting the service.
+    call: Callable[[Any], Awaitable[dict]] | None = None
+
+    if action == "status":
+        async def call(service):
+            return {
+                "version": "0.1.0",
+                "db_connected": service.is_connected,
+                **_cli_queue_stats(config.queue.db_path),
+            }
+
+    elif action == "bootstrap":
+        from pratyabhijna.tools.bootstrap import bootstrap
+
+        async def call(service):
+            return await bootstrap(service)
+
+    elif action == "inspect":
+        if len(argv) != 1:
+            print(f"Usage: {_TOOL_USAGE[action]}", file=sys.stderr)
+            return 2
+        from pratyabhijna.tools.inspect import inspect
+
+        uuid = argv[0]
+
+        async def call(service):
+            return await inspect(service, uuid)
+
+    elif action == "history":
+        if len(argv) != 1:
+            print(f"Usage: {_TOOL_USAGE[action]}", file=sys.stderr)
+            return 2
+        from pratyabhijna.tools.history import history
+
+        entity_name = argv[0]
+
+        async def call(service):
+            return await history(service, entity_name)
+
+    elif action == "recall":
+        parsed = _parse_recall_args(argv)
+        if parsed is None:
+            print(f"Usage: {_TOOL_USAGE[action]}", file=sys.stderr)
+            return 2
+        query, memory_type, time_range = parsed
+        from pratyabhijna.tools.recall import recall
+
+        async def call(service):
+            return await recall(
+                service,
+                query=query,
+                memory_type=memory_type,
+                time_range=time_range,
+            )
+
+    else:
+        print(f"Unknown tool: {action}", file=sys.stderr)
+        return 2
+
+    async def _run() -> dict:
+        from pratyabhijna.service import PratyabhijnaService
+
+        service = PratyabhijnaService(config)
+        await service.start()
+        try:
+            return await call(service)
+        finally:
+            await service.stop()
+
+    result = anyio.run(_run)
+    print(json.dumps(result, indent=2, default=str))
+    return 0
+
+
 def main():
     config = PratyabhijnaConfig.from_env()
     configure_logging(config)
@@ -181,6 +362,9 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "seed":
         run_seed(config)
         return
+
+    if len(sys.argv) > 1 and sys.argv[1] in TOOL_COMMANDS:
+        sys.exit(run_tool(config, sys.argv[1], sys.argv[2:]))
 
     if len(sys.argv) > 1 and sys.argv[1] == "deadletters":
         sys.exit(run_deadletters(config, sys.argv[2:]))

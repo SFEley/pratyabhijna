@@ -132,3 +132,174 @@ class TestCLIDispatch:
             mock_create.return_value = mock_server
             main()
             mock_server.run.assert_called_once_with(transport="stdio")
+
+    @pytest.mark.parametrize("action", ["status", "bootstrap", "inspect", "history", "recall"])
+    def test_tool_subcommand_dispatches_to_run_tool(self, action):
+        """Each read-only tool name routes to run_tool."""
+        from pratyabhijna.__main__ import main
+
+        with patch.object(sys, "argv", ["pratyabhijna", action]), \
+             patch("pratyabhijna.__main__.run_tool", return_value=0) as mock_run_tool, \
+             patch("pratyabhijna.__main__.configure_logging"), \
+             patch("pratyabhijna.__main__.PratyabhijnaConfig") as mock_config_cls, \
+             pytest.raises(SystemExit) as exc:
+            mock_config_cls.from_env.return_value = MagicMock()
+            main()
+        assert exc.value.code == 0
+        assert mock_run_tool.call_args.args[1] == action
+
+
+# ---------------------------------------------------------------------------
+# _cli_queue_stats — direct SQL helper for the status subcommand
+# ---------------------------------------------------------------------------
+
+class TestCliQueueStats:
+    def test_missing_db_returns_zeros(self, tmp_path):
+        from pratyabhijna.__main__ import _cli_queue_stats
+
+        stats = _cli_queue_stats(str(tmp_path / "nope.sqlite"))
+        assert stats == {
+            "queue_depth": 0,
+            "last_write": None,
+            "dead_letters": 0,
+            "last_error": None,
+        }
+
+    async def test_reports_live_queue_counts(self, tmp_path):
+        """Populate a WorkQueue with mixed task states and verify counts.
+
+        This is the load-bearing check: _cli_queue_stats must produce
+        the same queue-related fields the status tool would return
+        without starting a second worker against the live DB.
+        """
+        from helpers import wait_for
+        from pratyabhijna.__main__ import _cli_queue_stats
+        from pratyabhijna.queue import WorkQueue
+
+        db_path = str(tmp_path / "q.sqlite")
+
+        async def ok(payload):
+            return
+
+        async def fail(payload):
+            raise RuntimeError("nope")
+
+        q = WorkQueue(
+            db_path=db_path,
+            max_retries=1,
+            poll_interval=0.02,
+            backoff_base_seconds=0.005,
+        )
+        q.register("ok", ok)
+        q.register("fail", fail)
+        await q.start()
+
+        ok_id = await q.enqueue("ok", {})
+        dead_id = await q.enqueue("fail", {})
+
+        async def settled():
+            a = await q.get_task(ok_id)
+            b = await q.get_task(dead_id)
+            return (
+                a and b
+                and a["status"] == "completed"
+                and b["status"] == "dead_letter"
+            )
+
+        await wait_for(settled)
+        await q.stop()
+
+        stats = _cli_queue_stats(db_path)
+        assert stats["queue_depth"] == 0
+        assert stats["last_write"] is not None
+        assert stats["dead_letters"] == 1
+        assert stats["last_error"]["task_id"] == dead_id
+        assert "nope" in stats["last_error"]["error"]
+
+
+# ---------------------------------------------------------------------------
+# _parse_recall_args
+# ---------------------------------------------------------------------------
+
+class TestParseRecallArgs:
+    def test_query_only(self):
+        from pratyabhijna.__main__ import _parse_recall_args
+
+        assert _parse_recall_args(["what did I say about trust"]) == (
+            "what did I say about trust", None, None,
+        )
+
+    def test_with_type_and_time_range(self):
+        from pratyabhijna.__main__ import _parse_recall_args
+
+        assert _parse_recall_args(
+            ["question", "--type", "Person", "--time-range", "7d"]
+        ) == ("question", "Person", "7d")
+
+    def test_flags_before_query(self):
+        from pratyabhijna.__main__ import _parse_recall_args
+
+        assert _parse_recall_args(
+            ["--type", "Observation", "question"]
+        ) == ("question", "Observation", None)
+
+    def test_missing_query_returns_none(self):
+        from pratyabhijna.__main__ import _parse_recall_args
+
+        assert _parse_recall_args(["--type", "Person"]) is None
+        assert _parse_recall_args([]) is None
+
+    def test_unknown_flag_returns_none(self):
+        from pratyabhijna.__main__ import _parse_recall_args
+
+        assert _parse_recall_args(["query", "--nope", "x"]) is None
+
+
+# ---------------------------------------------------------------------------
+# run_tool — dispatcher shape
+# ---------------------------------------------------------------------------
+
+class TestRunTool:
+    def test_status_prints_json_and_returns_zero(self, tmp_path, capsys):
+        """run_tool('status', ...) starts service, reads queue stats, prints JSON."""
+        import json
+
+        from pratyabhijna.__main__ import run_tool
+
+        fake_service = MagicMock()
+        fake_service.start = AsyncMock()
+        fake_service.stop = AsyncMock()
+        fake_service.is_connected = True
+
+        config = MagicMock()
+        config.queue.db_path = str(tmp_path / "missing.sqlite")
+
+        with patch(
+            "pratyabhijna.service.PratyabhijnaService", return_value=fake_service,
+        ):
+            rc = run_tool(config, "status", [])
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["version"] == "0.1.0"
+        assert payload["db_connected"] is True
+        assert payload["queue_depth"] == 0
+        fake_service.start.assert_awaited_once()
+        fake_service.stop.assert_awaited_once()
+
+    def test_inspect_without_uuid_exits_two_without_starting_service(self, capsys):
+        from pratyabhijna.__main__ import run_tool
+
+        with patch("pratyabhijna.service.PratyabhijnaService") as svc_cls:
+            rc = run_tool(MagicMock(), "inspect", [])
+
+        assert rc == 2
+        assert "Usage:" in capsys.readouterr().err
+        svc_cls.assert_not_called()
+
+    def test_unknown_tool_exits_two(self, capsys):
+        from pratyabhijna.__main__ import run_tool
+
+        rc = run_tool(MagicMock(), "nope", [])
+        assert rc == 2
+        assert "Unknown tool" in capsys.readouterr().err
