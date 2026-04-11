@@ -2,7 +2,8 @@
 
 Usage:
     python -m pratyabhijna                       Start MCP server
-    python -m pratyabhijna seed                  Seed subject identity
+    python -m pratyabhijna seed [--name NAME] [--soul-file PATH] [--identity-file PATH]
+                                                 Seed subject identity
 
     python -m pratyabhijna status                System orientation
     python -m pratyabhijna bootstrap             Subject identity tiers
@@ -60,22 +61,95 @@ def build_lifespan(service: PratyabhijnaService, queue: WorkQueue):
     return lifespan
 
 
-def run_seed(config: PratyabhijnaConfig) -> None:
-    """Run the seed subcommand synchronously."""
+def _parse_seed_args(
+    argv: list[str],
+) -> tuple[str | None, str | None, str | None] | None:
+    """Parse ``seed [--name NAME] [--soul-file PATH] [--identity-file PATH]``.
+
+    Returns (name, soul_file, identity_file) or None on usage error.
+    Any combination of flags may be omitted; callers fall back to config.
+    """
+    name: str | None = None
+    soul_file: str | None = None
+    identity_file: str | None = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--name" and i + 1 < len(argv):
+            name = argv[i + 1]
+            i += 2
+        elif a == "--soul-file" and i + 1 < len(argv):
+            soul_file = argv[i + 1]
+            i += 2
+        elif a == "--identity-file" and i + 1 < len(argv):
+            identity_file = argv[i + 1]
+            i += 2
+        else:
+            return None
+    return name, soul_file, identity_file
+
+
+def run_seed(config: PratyabhijnaConfig, argv: list[str]) -> int:
+    """Run the seed subcommand synchronously.
+
+    CLI flags override config values. ``subject_name`` and both file
+    paths must be resolved (from CLI or config) before the service
+    is started; otherwise returns exit code 2 with a usage error.
+    """
     import anyio
 
     from pratyabhijna.seed import seed_subject
+
+    parsed = _parse_seed_args(argv)
+    if parsed is None:
+        print(
+            "Usage: python -m pratyabhijna seed "
+            "[--name NAME] [--soul-file PATH] [--identity-file PATH]",
+            file=sys.stderr,
+        )
+        return 2
+    cli_name, cli_soul, cli_identity = parsed
+
+    subject_name = cli_name or config.subject_name
+    soul_path_str = cli_soul or config.seed.soul_path
+    identity_path_str = cli_identity or config.seed.identity_path
+
+    missing = []
+    if not subject_name:
+        missing.append("subject name (--name or config subject_name)")
+    if not soul_path_str:
+        missing.append("soul file (--soul-file or config seed.soul_path)")
+    if not identity_path_str:
+        missing.append("identity file (--identity-file or config seed.identity_path)")
+    if missing:
+        print("seed: missing required values:", file=sys.stderr)
+        for m in missing:
+            print(f"  - {m}", file=sys.stderr)
+        return 2
+
+    from pathlib import Path
+
+    soul_path = Path(soul_path_str).expanduser()
+    identity_path = Path(identity_path_str).expanduser()
+
+    # CLI --name overrides the config value in-place so the service
+    # and seeder both see the same subject.
+    if cli_name:
+        config.subject_name = cli_name
 
     async def _run():
         service = PratyabhijnaService(config)
         await service.start()
         try:
-            result = await seed_subject(service)
+            result = await seed_subject(
+                service, soul_path=soul_path, identity_path=identity_path,
+            )
             log.info("Seed result: %s", result)
         finally:
             await service.stop()
 
     anyio.run(_run)
+    return 0
 
 
 def run_deadletters(config: PratyabhijnaConfig, argv: list[str]) -> int:
@@ -360,14 +434,21 @@ def main():
     configure_logging(config)
 
     if len(sys.argv) > 1 and sys.argv[1] == "seed":
-        run_seed(config)
-        return
+        sys.exit(run_seed(config, sys.argv[2:]))
 
     if len(sys.argv) > 1 and sys.argv[1] in TOOL_COMMANDS:
         sys.exit(run_tool(config, sys.argv[1], sys.argv[2:]))
 
     if len(sys.argv) > 1 and sys.argv[1] == "deadletters":
         sys.exit(run_deadletters(config, sys.argv[2:]))
+
+    if not config.subject_name:
+        print(
+            "Pratyabhijna: subject_name is not configured. Set it in "
+            "config/{env}.yaml or via PRATYABHIJNA_SUBJECT_NAME.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     # Build auth if server URL and API key are configured.
     token_verifier = None

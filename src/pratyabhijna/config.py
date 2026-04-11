@@ -59,11 +59,19 @@ class ServerConfig(BaseModel):
     port: int = 3000  # Local bind port for streamable-http transport (Caddy proxies externally).
 
 
+class SeedConfig(BaseModel):
+    # Default paths the ``seed`` subcommand reads soul/identity prose from.
+    # CLI flags override these; both may be None when a deployment intends
+    # to always pass paths explicitly.
+    soul_path: str | None = None
+    identity_path: str | None = None
+
+
 class PratyabhijnaConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="PRATYABHIJNA_", env_nested_delimiter="__")
 
     env: str = "dev"
-    subject_name: str = "Vesper"
+    subject_name: str = ""
     log_dir: str = "./logs"
     log_level: str = "INFO"
     api_key: str = ""  # Bearer token for HTTP auth. Required when server.url is set.
@@ -74,6 +82,7 @@ class PratyabhijnaConfig(BaseSettings):
     queue: QueueConfig = Field(default_factory=QueueConfig)
     synthesis: SynthesisConfig = Field(default_factory=SynthesisConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    seed: SeedConfig = Field(default_factory=SeedConfig)
 
     @classmethod
     def settings_customise_sources(cls, settings_cls, **kwargs):

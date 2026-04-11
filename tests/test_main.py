@@ -108,12 +108,14 @@ class TestCLIDispatch:
         from pratyabhijna.__main__ import main
 
         with patch.object(sys, "argv", ["pratyabhijna", "seed"]), \
-             patch("pratyabhijna.__main__.run_seed") as mock_seed, \
+             patch("pratyabhijna.__main__.run_seed", return_value=0) as mock_seed, \
              patch("pratyabhijna.__main__.configure_logging"), \
-             patch("pratyabhijna.__main__.PratyabhijnaConfig") as mock_config_cls:
+             patch("pratyabhijna.__main__.PratyabhijnaConfig") as mock_config_cls, \
+             pytest.raises(SystemExit) as exc:
             mock_config_cls.from_env.return_value = MagicMock()
             main()
-            mock_seed.assert_called_once()
+        assert exc.value.code == 0
+        mock_seed.assert_called_once()
 
     def test_no_args_runs_server(self):
         """No subcommand starts the MCP server."""

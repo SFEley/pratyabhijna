@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 def create_server(
     service: PratyabhijnaService | None = None,
     queue: WorkQueue | None = None,
-    subject_name: str = "Vesper",
+    subject_name: str | None = None,
     lifespan=None,
     token_verifier: TokenVerifier | None = None,
     auth: AuthSettings | None = None,
@@ -31,8 +31,10 @@ def create_server(
 ) -> FastMCP:
     """Create and configure the Pratyabhijna MCP server.
 
-    The server name is the subject identity name, so MCP clients
-    display it naturally in status lines (e.g. "Called bootstrap on Vesper").
+    The MCP server identifies itself as ``Pratyabhijna`` — the service
+    is the mirror, not the face. ``subject_name`` is passed through to
+    tools (e.g. bootstrap) that need to know whose Person node to load,
+    but it does not appear in the server's advertised name.
 
     When service and queue are provided, write tools and status
     return live values. Otherwise tools return stubs or raise.
@@ -41,7 +43,7 @@ def create_server(
     queue startup/shutdown when running as a standalone server.
     """
     server = FastMCP(
-        subject_name,
+        "Pratyabhijna",
         lifespan=lifespan,
         token_verifier=token_verifier,
         auth=auth,
@@ -65,7 +67,7 @@ def create_server(
     async def remember(
         content: str,
         memory_type: str = "observation",
-        source: str = "vesper",
+        source: str = "self",
     ) -> dict:
         """Queue an observation, fact, reasoning, or identity item for processing."""
         if queue is None:

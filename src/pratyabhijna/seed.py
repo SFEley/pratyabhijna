@@ -1,8 +1,8 @@
-"""Seed the subject Person node from vesper memory files.
+"""Seed the subject Person node from soul and identity prose files.
 
-Reads ~/vesper/memory/SOUL.md and IDENTITY.md and writes their
-content into the soul and identity attributes of the subject
-Person node. Creates the node if it doesn't exist.
+Reads two markdown files and writes their content into the soul
+and identity attributes of the subject Person node. Creates the
+node if it doesn't exist.
 
 This is a deliberate CLI action, not an MCP tool — soul and
 identity are protected tiers that change through deliberate
@@ -26,14 +26,11 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
-_DEFAULT_SOUL_PATH = Path.home() / "vesper" / "memory" / "SOUL.md"
-_DEFAULT_IDENTITY_PATH = Path.home() / "vesper" / "memory" / "IDENTITY.md"
-
 
 async def seed_subject(
     service: PratyabhijnaService,
-    soul_path: Path = _DEFAULT_SOUL_PATH,
-    identity_path: Path = _DEFAULT_IDENTITY_PATH,
+    soul_path: Path,
+    identity_path: Path,
 ) -> dict:
     """Populate the subject Person node with soul and identity content.
 
