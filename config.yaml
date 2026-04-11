@@ -3,8 +3,8 @@
 # e.g. PRATYABHIJNA_ENV=prod  PRATYABHIJNA_LOG_DIR=/var/log/pratyabhijna
 
 env: "dev"
-log_dir: "./logs"
-log_level: "INFO"
+log_dir: "/opt/pratyabhijna/logs"
+log_level: "DEBUG"
 
 neo4j:
   uri: "bolt://localhost:7687"

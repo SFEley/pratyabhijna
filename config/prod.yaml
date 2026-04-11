@@ -14,7 +14,7 @@ server:
 neo4j:
   uri: "neo4j://127.0.0.1:7687"
   user: "neo4j"
-  database: "pratyabhijna"
+  database: "neo4j"
 
 llm:
   provider: "anthropic"
@@ -27,6 +27,7 @@ embedding:
 queue:
   db_path: "./data/queue.sqlite"
   poll_interval: 60
+  max_retries: 10
 
 synthesis:
   max_age_hours: 24
