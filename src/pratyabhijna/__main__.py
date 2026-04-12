@@ -521,6 +521,8 @@ def main():
         host="127.0.0.1",
         port=config.server.port,
         transport_security=transport_security,
+        repo_path=config.resources.repo_path,
+        resource_directories=config.resources.directories,
     )
 
     if oauth_provider is not None:

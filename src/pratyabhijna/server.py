@@ -27,6 +27,8 @@ def create_server(
     host: str = "127.0.0.1",
     port: int = 3000,
     transport_security=None,
+    repo_path: str | None = None,
+    resource_directories: list[str] | None = None,
 ) -> FastMCP:
     """Create and configure the Pratyabhijna MCP server.
 
@@ -50,6 +52,12 @@ def create_server(
         port=port,
         transport_security=transport_security,
     )
+
+    # --- Phase 8: resources ---
+
+    from pratyabhijna.resources import register_resources
+
+    register_resources(server, repo_path, resource_directories)
 
     # --- Phase 1: status ---
 

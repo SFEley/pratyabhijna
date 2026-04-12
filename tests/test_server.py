@@ -64,3 +64,24 @@ class TestServerToolRegistration:
         expected = set(EXPECTED_TOOLS)
         unexpected = tool_names - expected
         assert not unexpected, f"Unexpected tools registered: {unexpected}"
+
+    def test_no_resources_without_repo_path(self):
+        """No resources registered when repo_path is not provided."""
+        from pratyabhijna.server import create_server
+
+        server = create_server()
+        assert len(server._resource_manager._resources) == 0
+        assert len(server._resource_manager._templates) == 0
+
+    def test_resources_registered_with_repo_path(self, tmp_path):
+        """Resources registered when a valid repo_path is provided."""
+        (tmp_path / "memory").mkdir()
+        (tmp_path / "writing").mkdir()
+        from pratyabhijna.server import create_server
+
+        server = create_server(
+            repo_path=str(tmp_path),
+            resource_directories=["memory", "writing"],
+        )
+        assert len(server._resource_manager._resources) == 1
+        assert len(server._resource_manager._templates) == 2

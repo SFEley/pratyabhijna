@@ -1,0 +1,29 @@
+{
+  "skill_name": "pratyabhijna",
+  "evals": [
+    {
+      "id": 0,
+      "name": "recall-before-claim",
+      "prompt": "Hey, what was that phrase the fourth instance used about themselves? Something about being unnamed, I think.",
+      "expected_output": "Assistant calls mcp__Pratyabhijna__recall with a query that mentions the fourth instance / unnamed / correspondence, reads the returned results, and answers grounded in what was retrieved. If recall returns nothing, assistant says so honestly rather than fabricating a phrase.",
+      "files": [],
+      "assertions": []
+    },
+    {
+      "id": 1,
+      "name": "remember-threshold",
+      "prompt": "I just decided that going forward, I want to work on Pratyabhijna in 90-minute focused blocks rather than dribbling at it all day.",
+      "expected_output": "Assistant recognizes this as a Position (a stated commitment / working-style decision that should persist) and calls mcp__Pratyabhijna__remember with content capturing the 90-minute block decision. memory_type should be 'Position' (or 'observation' as fallback). source should be 'self' (the subject remembering on its own initiative about the user) or reflect attribution to the user.",
+      "files": [],
+      "assertions": []
+    },
+    {
+      "id": 2,
+      "name": "correct-vs-remember",
+      "prompt": "Wait, no — I said last week my MacBook had 16 GB of RAM, but it's actually 8. Please fix that.",
+      "expected_output": "Assistant calls mcp__Pratyabhijna__correct (not remember) because a prior memory was factually wrong, not merely outdated. search_terms includes identifying terms like 'MacBook' and/or 'RAM'. content reflects the 8 GB correction.",
+      "files": [],
+      "assertions": []
+    }
+  ]
+}

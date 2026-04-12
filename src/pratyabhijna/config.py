@@ -83,6 +83,11 @@ class SeedConfig(BaseModel):
     identity_path: str | None = None
 
 
+class ResourcesConfig(BaseModel):
+    repo_path: str = ""
+    directories: list[str] = []
+
+
 class PratyabhijnaConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="PRATYABHIJNA_", env_nested_delimiter="__")
 
@@ -100,6 +105,7 @@ class PratyabhijnaConfig(BaseSettings):
     server: ServerConfig = Field(default_factory=ServerConfig)
     oauth: OAuthConfig = Field(default_factory=OAuthConfig)
     seed: SeedConfig = Field(default_factory=SeedConfig)
+    resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
 
     @classmethod
     def settings_customise_sources(cls, settings_cls, **kwargs):
