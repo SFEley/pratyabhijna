@@ -31,3 +31,7 @@ log_dir: "./logs"
 synthesis:
   max_age_hours: 24
   max_delta_changes: 3
+
+resources:
+  repo_path: "~/vesper"
+  directories: ["memory", "writing"]
