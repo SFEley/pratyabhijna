@@ -76,13 +76,13 @@ class TestRememberReturn:
         assert payload["memory_type"] == "observation"
 
     async def test_remember_default_source(self, wired_queue):
-        """source defaults to 'vesper'."""
+        """source defaults to 'self' — the subject remembering about itself."""
         from pratyabhijna.tools.remember import remember
 
         result = await remember(queue=wired_queue, content="test")
         task = await wired_queue.get_task(result["task_id"])
         payload = json.loads(task["payload"])
-        assert payload["source"] == "vesper"
+        assert payload["source"] == "self"
 
 
 # ---------------------------------------------------------------------------

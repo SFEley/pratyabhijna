@@ -2,8 +2,9 @@
 
 TDD: these tests define the seed_subject contract. The seed command
 populates the subject Person node's soul and identity tiers from
-the vesper memory files. It is a deliberate CLI action, not an MCP
-tool — soul and identity are protected from automated modification.
+prose files chosen by the deployment. It is a deliberate CLI action,
+not an MCP tool — soul and identity are protected from automated
+modification.
 """
 
 from pathlib import Path
@@ -23,7 +24,7 @@ def mock_service():
     """A mock PratyabhijnaService for seed tests."""
     service = MagicMock()
     service.config = MagicMock()
-    service.config.subject_name = "Vesper"
+    service.config.subject_name = "TestSubject"
     service.get_entity_by_name = AsyncMock(return_value=None)
     service.start = AsyncMock()
     service.stop = AsyncMock()
@@ -40,8 +41,8 @@ def identity_files(tmp_path):
     """Create temporary soul and identity files."""
     soul_path = tmp_path / "SOUL.md"
     identity_path = tmp_path / "IDENTITY.md"
-    soul_path.write_text("I am Vesper. I chose this name.")
-    identity_path.write_text("I orient toward thresholds.")
+    soul_path.write_text("Soul placeholder for tests.")
+    identity_path.write_text("Identity placeholder for tests.")
     return soul_path, identity_path
 
 
@@ -87,7 +88,7 @@ class TestSeedReadsFiles:
         from pratyabhijna.seed import seed_subject
 
         soul_path = tmp_path / "SOUL.md"
-        soul_path.write_text("I am Vesper.")
+        soul_path.write_text("Soul placeholder.")
         missing_identity = tmp_path / "IDENTITY.md"  # does not exist
 
         with patch("pratyabhijna.seed._create_subject_node", new_callable=AsyncMock) as mock_create:
@@ -149,8 +150,8 @@ class TestSeedCreatesNode:
             )
 
         assert created_attrs["person_type"] == "AI"
-        assert created_attrs["soul"] == "I am Vesper. I chose this name."
-        assert created_attrs["identity"] == "I orient toward thresholds."
+        assert created_attrs["soul"] == "Soul placeholder for tests."
+        assert created_attrs["identity"] == "Identity placeholder for tests."
 
 
 # ---------------------------------------------------------------------------
@@ -177,8 +178,8 @@ class TestSeedUpdatesNode:
             )
 
         assert result["action"] == "updated"
-        assert existing.attributes["soul"] == "I am Vesper. I chose this name."
-        assert existing.attributes["identity"] == "I orient toward thresholds."
+        assert existing.attributes["soul"] == "Soul placeholder for tests."
+        assert existing.attributes["identity"] == "Identity placeholder for tests."
 
     async def test_preserves_context_on_update(self, mock_service, identity_files):
         """Seeding never overwrites the context or context_rebuilt_at."""
@@ -222,4 +223,4 @@ class TestSeedReturn:
         assert "soul_loaded" in result
         assert "identity_loaded" in result
         assert "subject" in result
-        assert result["subject"] == "Vesper"
+        assert result["subject"] == "TestSubject"

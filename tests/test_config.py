@@ -233,8 +233,8 @@ class TestConfigDefaults:
         assert config.neo4j.uri == "bolt://localhost:7687"
         assert config.llm.provider == "anthropic"
 
-    def test_default_subject_name(self, monkeypatch):
-        """Default subject_name is 'Vesper' for backward compatibility."""
+    def test_subject_name_has_no_default(self, monkeypatch):
+        """subject_name is deployment-specific — no hardcoded default."""
         from pratyabhijna.config import PratyabhijnaConfig
 
         for key in list(os.environ):
@@ -242,7 +242,19 @@ class TestConfigDefaults:
                 monkeypatch.delenv(key, raising=False)
 
         config = PratyabhijnaConfig()
-        assert config.subject_name == "Vesper"
+        assert config.subject_name == ""
+
+    def test_default_seed_paths_are_none(self, monkeypatch):
+        """seed.soul_path and seed.identity_path default to None."""
+        from pratyabhijna.config import PratyabhijnaConfig
+
+        for key in list(os.environ):
+            if key.startswith("PRATYABHIJNA_"):
+                monkeypatch.delenv(key, raising=False)
+
+        config = PratyabhijnaConfig()
+        assert config.seed.soul_path is None
+        assert config.seed.identity_path is None
 
     def test_default_synthesis_rebuild_delay(self, monkeypatch):
         """Default synthesis rebuild delay is 2 hours."""

@@ -22,7 +22,7 @@ async def remember(
     queue: WorkQueue,
     content: str,
     memory_type: str = "observation",
-    source: str = "vesper",
+    source: str = "self",
 ) -> dict:
     """Enqueue a memory for background processing.
 

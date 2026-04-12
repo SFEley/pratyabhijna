@@ -29,18 +29,18 @@ class TestServerToolRegistration:
         assert server is not None
 
     def test_server_has_name(self):
-        """Server name defaults to the subject identity name."""
+        """Server identifies itself as 'Pratyabhijna' regardless of subject."""
         from pratyabhijna.server import create_server
 
         server = create_server()
-        assert server.name == "Vesper"
+        assert server.name == "Pratyabhijna"
 
-    def test_server_name_from_parameter(self):
-        """Server name reflects a custom subject_name."""
+    def test_server_name_independent_of_subject(self):
+        """Passing a subject_name does not change the advertised server name."""
         from pratyabhijna.server import create_server
 
         server = create_server(subject_name="Aria")
-        assert server.name == "Aria"
+        assert server.name == "Pratyabhijna"
 
     @pytest.mark.parametrize("tool_name", EXPECTED_TOOLS)
     def test_tool_registered(self, tool_name):

@@ -6,11 +6,13 @@ Tools are wired to service and queue when provided.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from mcp.server.fastmcp import FastMCP
 
 if TYPE_CHECKING:
+    from mcp.server.auth.settings import AuthSettings
+
     from pratyabhijna.queue import WorkQueue
     from pratyabhijna.service import PratyabhijnaService
 
@@ -18,13 +20,20 @@ if TYPE_CHECKING:
 def create_server(
     service: PratyabhijnaService | None = None,
     queue: WorkQueue | None = None,
-    subject_name: str = "Vesper",
+    subject_name: str | None = None,
     lifespan=None,
+    auth_server_provider: Any | None = None,
+    auth: AuthSettings | None = None,
+    host: str = "127.0.0.1",
+    port: int = 3000,
+    transport_security=None,
 ) -> FastMCP:
     """Create and configure the Pratyabhijna MCP server.
 
-    The server name is the subject identity name, so MCP clients
-    display it naturally in status lines (e.g. "Called bootstrap on Vesper").
+    The MCP server identifies itself as ``Pratyabhijna`` — the service
+    is the mirror, not the face. ``subject_name`` is passed through to
+    tools (e.g. bootstrap) that need to know whose Person node to load,
+    but it does not appear in the server's advertised name.
 
     When service and queue are provided, write tools and status
     return live values. Otherwise tools return stubs or raise.
@@ -32,7 +41,15 @@ def create_server(
     The optional lifespan async context manager handles service and
     queue startup/shutdown when running as a standalone server.
     """
-    server = FastMCP(subject_name, lifespan=lifespan)
+    server = FastMCP(
+        "Pratyabhijna",
+        lifespan=lifespan,
+        auth_server_provider=auth_server_provider,
+        auth=auth,
+        host=host,
+        port=port,
+        transport_security=transport_security,
+    )
 
     # --- Phase 1: status ---
 
@@ -49,7 +66,7 @@ def create_server(
     async def remember(
         content: str,
         memory_type: str = "observation",
-        source: str = "vesper",
+        source: str = "self",
     ) -> dict:
         """Queue an observation, fact, reasoning, or identity item for processing."""
         if queue is None:
