@@ -13,6 +13,7 @@ layer — soul and identity change through deliberate reflection.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -22,6 +23,32 @@ if TYPE_CHECKING:
     from pratyabhijna.service import PratyabhijnaService
 
 IDENTITY_LABELS = {"Observation", "Drive", "Position", "Question"}
+
+IDENTITY_FILES = {
+    "soul": "SOUL.md",
+    "identity": "IDENTITY.md",
+    "user": "USER.md",
+    "threads": "THREADS.md",
+    "chronicle": "CHRONICLE.md",
+}
+
+
+def read_identity_files(repo_path: str) -> dict[str, str | None]:
+    """Read identity tier files from {repo_path}/memory/.
+
+    Returns a dict keyed by tier name with file contents, or empty dict
+    if repo_path is unconfigured or the memory directory doesn't exist.
+    """
+    if not repo_path:
+        return {}
+    memory_dir = Path(repo_path).expanduser().resolve() / "memory"
+    if not memory_dir.is_dir():
+        return {}
+    result = {}
+    for key, filename in IDENTITY_FILES.items():
+        filepath = memory_dir / filename
+        result[key] = filepath.read_text(encoding="utf-8").strip() if filepath.is_file() else None
+    return result
 
 
 async def get_subject_node(service: PratyabhijnaService) -> EntityNode | None:
