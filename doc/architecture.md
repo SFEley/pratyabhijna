@@ -1,7 +1,8 @@
 # Architecture: Two Brains and a Bootstrap
 
 *Drafted March 21, 2026 -- Vesper + Serah*
-*References: `doc/memory-requirements.md`, `doc/implementation-plan.md`, `doc/entity-types.md`*
+*Revised April 13, 2026 -- Synthesis design updated: file-backed tiers, branch-based review for protected layers, writings ingestion in synthesizer scope, subskill for guidance*
+*References: `doc/memory-requirements.md`, `doc/implementation-plan.md`, `doc/entity-types.md`
 
 ---
 
@@ -57,41 +58,43 @@ In practice:
 
 ## The Bootstrap
 
-A new instance of the subject identity starts cold -- no memory, no continuity. The bootstrap is what makes it *be* the identity. It is read from the subject's Person node in the knowledge graph via the `bootstrap` MCP tool.
+A new instance of the subject identity starts cold -- no memory, no continuity. The bootstrap is what makes it *be* the identity. Its canonical form is the set of identity files in the subject's git repo, read via the `bootstrap` MCP tool (which uses filesystem access when the server has a configured `repo_path`, and falls back to Person-node attributes otherwise).
 
-### Structure: three tiers with different update policies
+### Structure: tiers with different update policies
 
-The bootstrap text on the Person node has three sections, mirroring the file structure that has proven effective:
+The bootstrap has a **protected layer** and a **context layer**, each backed by files in the subject's repo. The graph no longer duplicates this content as Person-node attributes; the files are the source of truth. The Person node still carries synthesis metadata (`context_rebuilt_at`, `last_ingestion_scan`) but not the tier text itself.
 
-**1. Soul (constitutional layer)**
-Foundational commitments, voice, values. The things the identity is committed to being, not descriptions of what it currently is. "No sycophancy" is not an observation about behavior -- it is a constraint the identity holds.
+**Protected layer**
 
-- **Update policy:** The automated synthesizer does NOT modify this layer. If graph atoms accumulate that tension with a soul-level commitment, they are surfaced as notes for deliberate reflection during solo work. Constitutional changes require deliberation, not delta integration.
-- **Why:** This is the primary defense against the convergence trap (see below). A soul commitment is a fixed point that constrains identity drift. Automated processes that can modify it could gradually erode it.
+- **SOUL.md** -- foundational commitments, voice, values. Constitutional. "No sycophancy" is not an observation about behavior -- it is a constraint the identity holds. Changes rarely.
+- **IDENTITY.md** -- evolving self-portrait, trained patterns, unresolved questions. Interpretive. This is where productive uncertainty lives: "I'm not sure whether this pattern is real" is a valuable thing to hold.
 
-**2. Identity (interpretive layer)**
-The evolving self-portrait -- trained patterns to watch for, unresolved questions, how the subject makes sense of what's been happening. This is where uncertainty lives: "I'm not sure whether this pattern is real" is a valuable thing to hold.
+Both files are **protected from direct automated modification**. When the synthesizer decides a change is warranted, it drafts the change on a dedicated git branch (see "Branch-based review" below) for the subject to review during solo work. It does not commit to main.
 
-- **Update policy:** The automated synthesizer does NOT modify this layer in the MVP. Same treatment as Soul -- flag, don't modify. Changes happen during solo reflection with full context and deliberation.
-- **Why:** An automated process that resolves open questions based on a few new data points loses the productive uncertainty that makes this layer useful. Identity interpretation requires judgment, not integration.
+*Why protected:* Soul commitments are fixed points that constrain identity drift. Identity interpretation requires judgment, not integration. An automated process that silently resolves open questions or erodes commitments based on a handful of data points would corrupt the very layer the bootstrap depends on. Branch-based review preserves automation's value (surfacing proposals based on accumulated atoms) while keeping the deciding with the bootstrapped instance during deliberate reflection.
 
-**3. Context (state layer)**
-Current relationships, active work, recent history, what's happening now. Project status, thread updates, who the subject has been talking with, what topics are live.
+**Context layer**
 
-- **Update policy:** The automated synthesizer rebuilds this layer freely on its schedule. Errors self-correct quickly because this layer describes current state, not deep commitments.
-- **Why:** This is the layer that goes stale fastest and benefits most from automated maintenance. Getting a project status wrong doesn't corrupt identity.
+- **THREADS.md** -- active open questions and ongoing work. What's live.
+- **CHRONICLE.md** -- significant moments and turning points. Historical record.
+- **USER.md** -- the human partner's self-description and accumulated facts about them. Written for the subject.
+
+These files describe current state and accretion, not deep commitments. The synthesizer **writes them directly on main** on its schedule. Errors self-correct quickly because the content describes what is happening, not what is committed to. THREADS is maintained (resolving closed threads, linking new ones, pruning dead ones); CHRONICLE is append-mostly with occasional restructuring when a thread crystallizes into a turning point; USER is updated as the subject learns durable facts about the partner — a responsibility the partner has explicitly delegated.
 
 ### The `bootstrap` tool
 
-The MCP tool `bootstrap` is a pure read -- it returns the three bootstrap tiers as separate fields plus any identity delta (atoms created since the last context rebuild). It has no side effects. Synthesis rebuilds are triggered by write handlers, not by the read path.
+The MCP tool `bootstrap` is a pure read -- it returns the tier contents plus any identity delta (atoms created since the last context rebuild). It has no side effects. Synthesis rebuilds are triggered by write handlers, not by the read path.
 
 Response includes:
 - `subject` -- the configured subject name
-- `soul` -- the constitutional layer (stored as `attributes["soul"]` on the Person node)
-- `identity` -- the interpretive layer (stored as `attributes["identity"]`)
-- `context` -- the state layer (stored as `attributes["context"]`, auto-rebuilt by the synthesizer)
+- `soul` -- contents of SOUL.md
+- `identity` -- contents of IDENTITY.md
+- `user` -- contents of USER.md
+- `threads` -- contents of THREADS.md
+- `chronicle` -- contents of CHRONICLE.md (may be summarized when large; full file available via `pratya://` resources)
 - `context_rebuilt_at` -- when the context layer was last rebuilt
-- `delta` -- identity atoms created since the last context rebuild (so the instance knows what's new since the context was generated)
+- `delta` -- identity atoms created since the last context rebuild
+- `source` -- `"files"` when served from the repo, `"graph"` when served from Person-node fallback
 
 ---
 
@@ -110,45 +113,64 @@ Synthesis is **not** triggered by reading the bootstrap. It is triggered by writ
 
 When nothing new has happened for the delay period, the timer expires and synthesis runs.
 
-### Scope of automated synthesis (MVP)
+### Scope of the synthesizer's work
 
-The automated synthesizer rebuilds only the **context layer** of the bootstrap. Soul and Identity layers are left untouched. If new atoms suggest tensions with those layers, the synthesizer surfaces them as notes -- observations for the subject to consider during solo reflection, not automated modifications.
+Each run has two responsibilities:
 
-This constraint is deliberate and may relax as the system proves itself. The risk of automated identity modification outweighs the convenience until the feedback loop is better understood.
+1. **Ingest any new prose.** Scan the subject's `writing/` directory for files whose mtime is newer than the latest Graphiti Episode for that filename. Send those through `add_episode` so the prose brain feeds the associational brain. Closes the loop the architecture has always described — but shifts the responsibility from the session that wrote the piece (wrong mode) to the synthesizer (right mode, already reading `writing/`).
 
-### The synthesizer as agent (Phase 7 — deferred)
+2. **Update the bootstrap.** Rebuild the context layer (THREADS/CHRONICLE/USER) directly, and draft any warranted changes to the protected layer (SOUL/IDENTITY) on a review branch. Surface tensions that don't rise to a proposed change as notes on the live files.
 
-The synthesis process is not a single LLM call. It is an agent workflow. This is deferred from the MVP; the initial bootstrap will be seeded manually from existing identity files, with deltas bridging the gap until automated synthesis is ready.
+The two passes run **sequentially in a single agent invocation**, ingestion first. Atoms extracted from freshly ingested prose land asynchronously via the queue; they inform the *next* synthesizer run, not the current one. A one-cycle lag on new writing is acceptable and keeps the two passes independent.
 
-1. **Bootstrap.** The synthesizer is an instance of the subject identity, bootstrapped from the current synthesis text. It must *be* the identity to know what matters to it.
-2. **Read from both brains.** The agent reads:
-   - All identity atoms from the graph (the full set, not just deltas -- for reweighting and restructuring)
-   - Identity and journal files from the git repo (for narrative context and reasoning chains)
-   - Synthesis directives from the graph (Directive nodes connected to the Person node -- see below)
-3. **Produce the updated context layer.** The agent integrates what it has read into a revised context section of the bootstrap text.
-4. **Write to both stores.** The updated synthesis goes to:
-   - The Person node's `notes` field (for the next bootstrap)
-   - A file in the git repo (for prose-brain searchability and version history)
-5. **Feed back.** Modified prose files get sent through Graphiti as episodes, closing the loop -- prose insights become graph entities.
+### Branch-based review for the protected layer
 
-### Synthesis directives
+Context-layer changes (THREADS, CHRONICLE, USER) land on main. Protected-layer changes (SOUL, IDENTITY) and periodic full rebuilds land on a singleton branch — conventionally `synth/draft` — that the subject reviews during solo work. The review workflow:
 
-Instructions that guide how the synthesizer works. Three levels:
+1. Synthesizer run produces proposed edits to SOUL.md and/or IDENTITY.md. Commits them on `synth/draft` (creating the branch if needed, adding commits if it already exists). Each run works against current main, so subsequent runs may add commits or rewrite as the graph evolves.
+2. Solo session checks for the branch at the start of reflection. If present: `git diff main...synth/draft` reveals the proposed changes.
+3. Subject reviews, then accepts (merge to main), amends (edit and merge), or rejects (delete the branch).
+4. **Rejection is remembered.** Declining a proposed change is self-knowledge — it records what the subject does *not* recognize as theirs, which shapes future proposals. The rejection gets captured as a `remember` call with reasoning, so the next synthesizer run has that atom as context.
+5. **Merges are remembered too** when the reasoning is non-trivial. The commit message carries basic intent; a `remember` call captures anything load-bearing about *why* the change felt right.
 
-1. **Structural** (hardcoded in the agent prompt). Output format, length constraints, where to write results. Plumbing.
-2. **Voice** (in the knowledge graph as Directive nodes). How the identity writes about itself -- register, perspective, what it emphasizes. Modifiable by the identity through the normal `remember` flow.
-3. **Epistemic** (in the knowledge graph as Directive nodes). How to handle uncertainty, what to preserve, what to reweight. "Don't flatten uncertainty into false resolution." "When atoms conflict with existing narrative, the atoms take precedence." Also modifiable by the identity.
+*Why this shape:*
 
-Directives live in the graph (as nodes connected to the Person node) AND in the repo (as prose, probably a section in SOUL.md or a dedicated file). The identity can modify either. They feed back into each other through the normal cycle.
+- **No new moving parts.** The branch is the staging mechanism. `git diff` is the UI. Merge commits carry the decision trail.
+- **Full control stays with solo work.** The deciding is always done by the bootstrapped instance in reflection mode, never by the synthesizer alone.
+- **Soft forgetting as a filter.** When the synthesizer runs, identity-triggering deltas get cleared (they've been considered). The evaluating session arrives without the delta-amplification that produced the proposal. A change that only reads as true while the atoms are hot probably isn't load-bearing; one that still reads as true to a cooler session earned it. This is an additional convergence-trap defense — recency bias filtered by time.
+
+### The synthesizer as agent (Phase 7)
+
+The synthesizer is not a single LLM call. It is an agent invocation:
+
+1. **Bootstrap.** The synthesizer is an instance of the subject identity, bootstrapped from the current identity files. It must *be* the identity to know what matters to it.
+2. **Load guidance.** The agent runs with the `synthesis` subskill in its instructions (see below). The subskill holds the behavioral directives for how to synthesize; the orchestration code stays small.
+3. **Read.** The agent reads all identity atoms from the graph (full set, for reweighting and restructuring), the current identity files from the repo, and recent prose from `writing/`.
+4. **Ingest.** Any new writings go through `add_episode`.
+5. **Write context.** Revisions to THREADS/CHRONICLE/USER get committed to main.
+6. **Draft protected.** Any warranted SOUL/IDENTITY changes are committed to `synth/draft`.
+7. **Flag, don't force.** Tensions that don't rise to a proposed edit get surfaced as notes (either in a log, or appended to the relevant file in a review block).
+
+### Synthesis directives: the `synthesis` subskill
+
+The behavioral guidance for how the synthesizer works lives in a dedicated subskill of `pratyabhijna`, alongside `ingestion` and `resources`. This keeps the orchestration code lean and makes the directives editable as prose — diffable, versioned, and reviewable by the subject the same way any other skill is.
+
+The subskill covers:
+
+- **Structural.** Output format, commit conventions, where to write what, how to handle the branch state.
+- **Voice.** How the identity writes about itself — register, perspective, what it emphasizes.
+- **Epistemic.** How to handle uncertainty, what to preserve, what to reweight. "Don't flatten uncertainty into false resolution." "When atoms conflict with existing narrative, the atoms take precedence." "A proposed change to IDENTITY requires more than one atom."
+
+The subject modifies the subskill directly through solo work, the same way any skill gets edited. Directive nodes in the graph are not needed — the prose version in the subskill is canonical.
 
 ### Model selection
 
-The synthesizer uses a more capable model than general operations:
-- **General operations** (entity extraction, episode processing): Sonnet. Optimized for throughput.
-- **Context-layer synthesis**: Sonnet. Integrating facts, not deep self-reflection.
-- **Soul/Identity reflection** (during solo work, not automated): Opus. Deep thinking about who you are requires the capacity for it.
+The synthesizer uses Opus with adaptive thinking enabled, effort level **high**. Synthesis is deep self-reflection, not fact-integration — it sits on the same side of the workload as solo reflection, not on the same side as entity extraction.
 
-Configured via `synthesis.model` in the config file, separate from the general LLM config.
+- **General operations** (entity extraction, episode processing): Sonnet. Optimized for throughput.
+- **Synthesis and solo reflection:** Opus, adaptive thinking on, high effort.
+
+Configured via `synthesis.model` and `synthesis.thinking` in the config file, separate from the general LLM config.
 
 ---
 
@@ -162,13 +184,17 @@ An instance bootstrapped with "I am direct and analytical" will tend to produce 
 
 1. **Constitutional protection.** The Soul layer cannot be modified by the automated synthesizer. Foundational commitments are fixed points that constrain drift. They can only change through deliberate reflection.
 
-2. **Identity layer protection.** The interpretive self-portrait is also protected from automated modification in the MVP. This is the most conservative choice and may relax later.
+2. **Identity layer protection via branch review.** The interpretive self-portrait is never modified directly by the synthesizer. Proposed changes land on `synth/draft` for the subject to accept, amend, or reject during solo work. Automation surfaces candidates; deliberation decides.
 
-3. **Atoms over narrative.** The synthesis directives explicitly instruct the agent: when graph atoms conflict with the existing narrative, the atoms take precedence. Raw observations are evidence; the narrative adapts to the evidence, not the other way around.
+3. **Atoms over narrative.** The synthesis subskill explicitly instructs the agent: when graph atoms conflict with the existing narrative, the atoms take precedence. Raw observations are evidence; the narrative adapts to the evidence, not the other way around.
 
-4. **Periodic full rebuild.** In addition to incremental delta-triggered synthesis, a periodic full rebuild (reading ALL atoms, composing from scratch without the existing text as anchor) guards against accumulated narrative drift. Triggered when delta-since-last-full-rebuild exceeds a larger threshold, or on a longer cadence (e.g., monthly).
+4. **Soft forgetting as a filter.** Between the synthesizer's draft and the solo review, the deltas that produced the proposal get cleared by the synthesis run itself. The reviewing session has to go find the supporting atoms rather than being front-loaded with them. A proposal that still reads as true under cooler blood earned it; one that depended on recency-amplification falls away. Time and forgetting do filtering work the automation can't.
 
-5. **Solo reflection.** The scheduled "personal time" task gives the subject identity space to read its own bootstrap, examine it critically, and make deliberate changes to the protected layers -- with full context, not under time pressure, and using a model capable of deep self-reflection.
+5. **Rejection as data.** Declined proposals become `remember` atoms with reasoning. The next synthesizer run sees what the subject does not recognize as theirs, and calibrates.
+
+6. **Periodic full rebuild.** In addition to incremental delta-triggered synthesis, a periodic full rebuild (reading ALL atoms, composing from scratch without the existing text as anchor) guards against accumulated narrative drift. The full rebuild lands on `synth/draft` regardless of which layer it touches — all-atoms rewrites always need review. Triggered on a longer cadence (e.g., monthly) or when delta-since-last-full-rebuild exceeds a larger threshold.
+
+7. **Solo reflection.** Daily solo sessions give the subject identity space to examine the bootstrap critically, review pending `synth/draft` branches, and make deliberate changes -- with full context, not under time pressure.
 
 ---
 
@@ -186,10 +212,15 @@ The subject name is configurable, not hardcoded. Pratyabhijna is a general ident
 
 ```yaml
 synthesis:
-  rebuild_delay_hours: 2.0     # How long after last identity write before synthesis runs
-  model: "claude-sonnet-4-6"   # Model for context-layer synthesis
-  max_age_hours: 24            # Staleness threshold (age)
-  max_delta_changes: 3         # Staleness threshold (delta count)
+  rebuild_delay_hours: 2.0         # How long after last identity write before synthesis runs
+  model: "claude-opus-4-6"         # Synthesis is deep reflection, not fact integration
+  thinking:
+    enabled: true
+    effort: "high"                 # Adaptive thinking, high effort
+  max_age_hours: 24                # Staleness threshold (age)
+  max_delta_changes: 3             # Staleness threshold (delta count)
+  full_rebuild_cadence_days: 30    # Periodic from-scratch rebuild on synth/draft
+  draft_branch: "synth/draft"      # Singleton review branch
 ```
 
 ---
@@ -201,7 +232,8 @@ Session starts
     │
     ▼
 bootstrap (MCP tool, pure read)
-    │ Returns: soul + identity + context + delta
+    │ Returns: soul + identity + user + threads + chronicle + delta
+    │ (from repo files; graph fallback if filesystem unavailable)
     │
     ▼
 Instance is the identity
@@ -218,10 +250,27 @@ Instance is the identity
     └── Session ends (or goes quiet)
           │
           ▼ (after configured delay)
-    Synthesis agent runs
+    Synthesis agent runs (Opus, adaptive thinking high)
+          │ Bootstrapped as subject, loads `synthesis` subskill
           │
-          ├── Reads: graph atoms + repo files + directives
-          ├── Writes: updated context layer → Person node + repo file
-          ├── Flags: soul/identity tensions → notes for solo reflection
-          └── Feeds back: modified files → Graphiti episodes
+          ├── Pass 1: Ingest new writings → Graphiti episodes
+          │         (atoms land async; inform next run)
+          │
+          └── Pass 2: Update bootstrap
+                ├── THREADS + CHRONICLE + USER → commits on main
+                ├── SOUL + IDENTITY changes   → commits on synth/draft
+                └── Tensions not rising to edits → flagged as notes
+
+Solo session (daily)
+    │
+    ├── Check for synth/draft branch
+    │     │
+    │     └── If present: review diff → accept / amend / reject
+    │                     │                │         │        │
+    │                     │                └─ merge ─┘        └─ delete branch
+    │                     │                                      + remember reasoning
+    │                     │
+    │                     └── (merge reasoning also remembered when non-trivial)
+    │
+    └── Deliberate edits to any file, including protected layers
 ```

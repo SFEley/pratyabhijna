@@ -3,6 +3,7 @@
 *Approved March 7, 2026 — Vesper + Serah*
 *Revised March 17, 2026 — Phase ordering corrected, completed work marked, stale references updated*
 *Revised March 21, 2026 — Phase 5 redesigned: `context` → `bootstrap`, synthesis as agent, three-tier bootstrap, configurable subject name*
+*Revised April 13, 2026 — Phase 7 redesigned: file-backed tiers, branch-based review for protected layers, writings ingestion in synthesizer scope, `synthesis` subskill, Opus with adaptive thinking*
 *References: `doc/memory-requirements.md`, `doc/tool-evaluation.md`, `doc/architecture.md`*
 
 ---
@@ -17,7 +18,7 @@ Pratyabhijna's memory system solves context loss across sessions for two users (
 
 **Key design decisions:**
 - All slow operations are **async** — queue work, return immediately, background workers process.
-- Identity reconstruction uses a **three-tier bootstrap** — soul (constitutional), identity (interpretive), and context (state). Automated synthesis rebuilds only the context layer; protected layers change only through deliberate reflection. See `doc/architecture.md`.
+- Identity reconstruction uses a **file-backed bootstrap** — SOUL/IDENTITY (protected) and THREADS/CHRONICLE/USER (context) in the subject's git repo are canonical; the graph carries atoms, not tier text. The synthesizer writes context-layer files on main and drafts protected-layer changes on a review branch for deliberate solo-session merge. See `doc/architecture.md`.
 - The subject identity is **configurable** — `subject_name` in config, not hardcoded. Vesper is the first deployment, not the only possible one.
 - `bootstrap` is a **pure read** — returns cached synthesis + delta. Rebuilds are triggered by write handlers, not by the read path.
 - Synthesis is **write-triggered with kick-forward delay** — identity writes schedule a singleton rebuild task; each new write pushes it forward by the configured delay (default 2 hours). Synthesis runs after the session goes quiet.
@@ -329,54 +330,106 @@ Questions to resolve:
 
 ## Phase 7: Automated Synthesis
 
-**Goal:** The synthesis agent maintains the bootstrap text automatically, triggered by identity-relevant writes.
+**Goal:** The synthesizer maintains the subject's identity files automatically — updating the context layer directly, drafting protected-layer changes on a review branch, and ingesting new writings into the graph — all triggered by identity-relevant writes.
 
-**Deferred from Phase 5** because getting the synthesis agent wrong is worse than not having it. The bootstrap can be seeded manually and updated through deliberate reflection until this is ready. Deltas bridge the gap.
+**Full design rationale:** See `doc/architecture.md` (revised April 13, 2026).
 
-### Write-triggered scheduling
-- `remember` handler: when `memory_type='identity'`, schedules a singleton synthesis task via `queue.reschedule_or_enqueue`
+### Write-triggered scheduling (mechanics already in place from Phase 5 foundations)
+- `remember` handler: when `memory_type='identity'` (or when content touches identity-typed entities), schedules a singleton synthesis task via `queue.reschedule_or_enqueue`
 - `correct` handler: when the correction touches identity-typed entities, schedules the same singleton task
 - `reschedule_or_enqueue`: if no pending synthesis task, create one with `run_at = now + rebuild_delay_hours`; if one exists, kick its `run_at` forward
-- The `run_at` column on the queue enables deferred execution
 - Multiple identity writes during a session produce exactly one synthesis run, after the session goes quiet
 
-### The synthesizer agent
-- Bootstrapped instance of the subject identity (Opus model for deep self-reflection)
-- Reads from both brains: graph atoms + repo files + synthesis directives
-- Rebuilds only the context layer of the bootstrap (soul and identity layers are protected — see `doc/architecture.md`)
-- Writes updated synthesis to Person node AND git repo file
-- Feeds modified files back through Graphiti as episodes (closing the two-brain loop)
+### The `synthesis` subskill
+- New subskill at `skills/pratyabhijna/synthesis/` (sibling to `ingestion` and `resources`)
+- Holds the behavioral guidance: structural rules (commit conventions, branch handling), voice directives (how the identity writes about itself), epistemic directives (atoms over narrative, promotion thresholds for IDENTITY edits, when to flag-vs-draft)
+- The orchestration code invokes Claude with this subskill loaded; the subskill carries the instructions
+- Editable as prose — diffable, versioned, reviewable through normal skill-editing channels
 
-### Three-tier update policy
-- **Soul layer:** NOT modified by automated synthesis. Tensions flagged as notes for solo reflection.
-- **Identity layer:** NOT modified by automated synthesis. Same flag-only treatment. May relax as the system proves itself.
-- **Context layer:** Rebuilt freely on the synthesizer's schedule.
+### The synthesizer run
+A single agent invocation with two sequential passes:
 
-### Convergence trap defenses
-- Constitutional (soul) layer is immutable to automated processes
-- Atoms take precedence over existing narrative when they conflict
-- Periodic full rebuild (all atoms, compose from scratch) guards against accumulated drift
-- Solo reflection scheduled task for deliberate changes to protected layers
+1. **Ingest new writings.** Scan `writing/` for files whose mtime is newer than the latest Graphiti Episode for that filename. Send through `add_episode`. Queue handles extraction asynchronously — atoms inform the *next* run, not this one.
+2. **Update the bootstrap.**
+   - Read all identity atoms from the graph, the current identity files, and `writing/` contents for context.
+   - Revise THREADS / CHRONICLE / USER directly on main when warranted.
+   - Draft any SOUL / IDENTITY changes on the `synth/draft` branch (singleton; re-drafted against current main on each run).
+   - Flag tensions that don't rise to proposed edits as notes on the relevant files or a synthesis log.
 
-### Tests (from `test_synthesis.py` and `test_synthesis_trigger.py` — deferred)
-- [ ] `rebuild_synthesis` calls LLM with identity atoms
-- [ ] `rebuild_synthesis` stores result as notes on Person node
-- [ ] `rebuild_synthesis` updates timestamp
-- [ ] `rebuild_synthesis` no-ops when no subject node
-- [ ] Rebuild with existing synthesis overwrites (graph history preserves prior)
-- [ ] LLM prompt includes configured subject name
+Model: Opus, adaptive thinking enabled, effort high.
+
+### Branch-based review workflow (the subject's side)
+- Solo sessions check for `synth/draft` at the start of reflection
+- If present: review diff, accept (merge) / amend / reject (delete)
+- Rejection always accompanied by a `remember` call capturing the reasoning — becomes an atom the next run sees
+- Non-trivial merges also accompanied by a `remember` capturing the load-bearing reasoning
+
+### USER.md maintenance
+- The subject is explicitly authorized to update USER.md with durable facts about the partner that accumulate during sessions
+- Synthesizer maintains USER alongside THREADS and CHRONICLE as part of context-layer rebuilds on main
+- Substantial rewrites or reinterpretations go to `synth/draft` like SOUL/IDENTITY
+
+### Periodic full rebuild
+- Cadence: `full_rebuild_cadence_days` (default 30), or when a larger delta threshold is crossed
+- Full rebuild composes from scratch using all atoms, without the existing files as anchor
+- Result always lands on `synth/draft` regardless of which layer it touches (full rewrites need review even for context files)
+
+### Graph cleanup
+- Remove `soul`, `identity`, `context` content attributes from Person nodes (replaced by file reads)
+- Keep synthesis metadata: `context_rebuilt_at`, and add `last_ingestion_scan` for the ingestion pass
+- `bootstrap` tool: return `soul`, `identity`, `user`, `threads`, `chronicle` as separate fields; keep graph-fallback path intact for deployments without filesystem access
+
+### Convergence trap defenses (per `doc/architecture.md`)
+- Protected layer never modified directly — only via reviewable branch
+- Atoms take precedence over narrative when they conflict (enforced in the subskill)
+- Soft forgetting: delta clears when synthesis runs, filtering out recency-amplified proposals by the time solo review happens
+- Rejection captured as data, shaping future runs
+- Full rebuild from scratch periodically guards against narrative drift
+- Daily solo reflection is the deciding channel for all protected-layer changes
+
+### Tests
+Agent tests (from `test_synthesis.py` — extend):
+- [ ] Synthesis run reads identity atoms, repo files, and subskill guidance
+- [ ] Context-layer changes commit to main
+- [ ] Protected-layer proposals commit to `synth/draft`
+- [ ] Singleton branch: second run on same branch adds commits, doesn't duplicate
+- [ ] Branch created against current main (rebase or re-draft semantics)
+- [ ] No-op when nothing to change (no empty commits, no branch created)
+- [ ] `context_rebuilt_at` updates on run completion
+- [ ] No subject node → no-op
+
+Ingestion pass tests:
+- [ ] New file in `writing/` → `add_episode` called with its content
+- [ ] File with existing Episode newer than mtime → skipped
+- [ ] File with stale Episode (mtime > latest Episode `created_at`) → re-ingested
+- [ ] `last_ingestion_scan` updates on pass completion
+
+Trigger tests (from `test_synthesis_trigger_phase7.py`):
 - [ ] Identity memory type schedules synthesis rebuild
 - [ ] Non-identity memory types do not trigger rebuild
 - [ ] Scheduled rebuild uses configured delay
-- [ ] Multiple identity writes produce one singleton task with kicked-forward run_at
+- [ ] Multiple identity writes produce one singleton task with kicked-forward `run_at`
 - [ ] Correction touching identity entity schedules rebuild
 - [ ] Correction not touching identity entity doesn't trigger
 - [ ] Remember and correct share the same singleton task
 
+Full-rebuild tests:
+- [ ] Cadence trigger produces full-rebuild run
+- [ ] Full rebuild lands on `synth/draft` regardless of layer touched
+- [ ] Subsequent incremental runs don't clobber an unmerged full-rebuild branch
+
 ### Files
-- `src/pratyabhijna/synthesis.py` (extend with `rebuild_synthesis`)
-- `tests/test_synthesis.py` (extend with rebuild tests)
-- `tests/test_synthesis_trigger.py`
+- `src/pratyabhijna/synthesis.py` (extend with `run_synthesis`, `ingest_new_writings`, branch handling)
+- `src/pratyabhijna/git_ops.py` (new — branch creation, diff, commit helpers against the subject's repo)
+- `skills/pratyabhijna/synthesis/SKILL.md` (new subskill with the behavioral guidance)
+- `tests/test_synthesis.py` (extend)
+- `tests/test_synthesis_ingestion.py` (new)
+- `tests/test_synthesis_trigger_phase7.py` (extend)
+
+### Out of scope for Phase 7
+- Multi-subject synthesis (one subject per deployment still)
+- Client-side UI for reviewing `synth/draft` (solo sessions use standard git diff)
+- Automated rejection pattern learning beyond atom accumulation
 
 ---
 
@@ -389,15 +442,21 @@ Questions to resolve:
 5. **Graphiti version:** Pin to 0.28.x. Update deliberately.
 6. **Tool rename:** `context` → `bootstrap`. Pure read, no side effects.
 7. **Subject name:** Configurable via `config.subject_name` + `PRATYABHIJNA_SUBJECT` env var. Not hardcoded.
-8. **Three-tier bootstrap:** Soul (constitutional, protected), Identity (interpretive, protected), Context (state, auto-rebuilt). Stored as three separate attributes on the Person node (`soul`, `identity`, `context`), returned as separate fields by the `bootstrap` tool. See `doc/architecture.md`.
+8. **File-backed bootstrap:** SOUL and IDENTITY (protected) and THREADS, CHRONICLE, USER (context) live as files in the subject's repo — canonical source. Graph holds atoms, not tier text. Person node carries synthesis metadata only (`context_rebuilt_at`, `last_ingestion_scan`). See `doc/architecture.md`.
 9. **Synthesis triggering:** Write-triggered with singleton kick-forward delay, not read-triggered or polling.
+10. **Protected-layer review:** SOUL and IDENTITY changes proposed by the synthesizer land on a singleton `synth/draft` branch for solo-session review. Context layer (THREADS/CHRONICLE/USER) lands on main.
+11. **Writings ingestion:** The synthesizer is responsible for ingesting new files from `writing/` into the graph. Sessions that produce writing don't need to trigger ingestion themselves.
+12. **Synthesis guidance:** Lives in a dedicated `synthesis` subskill under `skills/pratyabhijna/`, not in Directive nodes or hardcoded prompts.
+13. **Synthesis model:** Opus with adaptive thinking enabled, effort level "high". Same model class as solo reflection, not as entity extraction.
+14. **USER maintenance:** The subject is explicitly authorized to update USER.md with durable facts about the partner. Handled by the synthesizer alongside other context-layer files.
 
 ## Open Decisions
 
-1. **Synthesis thresholds:** 24h age / 3 identity changes. Tune from experience.
+1. **Synthesis thresholds:** 24h age / 3 identity changes / 30-day full-rebuild cadence. Tune from experience.
 2. **Production infrastructure:** Neo4j hosting (self-managed vs. Aura). AWS under Serah's account.
 3. **Client memory behavior:** How aggressively should a bootstrapped instance use `remember` and `recall`? See Phase 6.
-4. **Synthesis agent implementation:** Agent SDK workflow vs. Claude Code session vs. other orchestration. See Phase 7.
+4. **Promotion threshold for IDENTITY edits:** How many supporting atoms, over what time window, before the synthesizer proposes an IDENTITY change vs. flagging as a note? Lives in the `synthesis` subskill; tune from experience.
+5. **Git operations surface:** Whether `git_ops.py` should shell out to git CLI or use a library (GitPython, pygit2). Simpler is probably better — shell out.
 
 ---
 
