@@ -23,7 +23,7 @@ The common pattern: `recall()` surfaces that something exists or is relevant, th
 
 ## When NOT to read files
 
-Most sessions won't need resource reads after bootstrap. The bootstrap tool already loads identity file contents at session start. Reading them again only makes sense when:
+Many sessions won't need resource reads after bootstrap. The bootstrap tool already loads identity file contents at session start. Reading them again only makes sense when:
 
 - The conversation turns to the subject's **writing** specifically — discussing an essay, comparing pieces, reflecting on how a position evolved across drafts.
 - You need the **exact current wording** of an identity file — to quote it, to check whether a proposed edit is warranted, or to see what's already captured before suggesting an update.
