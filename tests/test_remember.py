@@ -168,6 +168,54 @@ class TestRememberHandler:
         # entity_types should be passed through
         assert "entity_types" in str(call_kwargs)
 
+    async def test_handler_uses_now_when_occurred_at_absent(
+        self, wired_queue, mock_service
+    ):
+        """Without occurred_at, reference_time defaults to ~now (UTC)."""
+        from datetime import datetime, timezone
+
+        from pratyabhijna.tools.remember import remember
+
+        before = datetime.now(timezone.utc)
+        await remember(queue=wired_queue, content="test")
+        await wait_for(lambda: mock_service._graphiti.add_episode.called)
+        after = datetime.now(timezone.utc)
+
+        ref = mock_service._graphiti.add_episode.call_args.kwargs["reference_time"]
+        assert before <= ref <= after
+
+    async def test_handler_uses_occurred_at_when_provided(
+        self, wired_queue, mock_service
+    ):
+        """occurred_at (ISO-8601) becomes the add_episode reference_time."""
+        from datetime import datetime, timezone
+
+        from pratyabhijna.tools.remember import remember
+
+        await remember(
+            queue=wired_queue,
+            content="Serah adopted Beth-Ella last week.",
+            occurred_at="2026-04-06T14:30:00+00:00",
+        )
+        await wait_for(lambda: mock_service._graphiti.add_episode.called)
+        ref = mock_service._graphiti.add_episode.call_args.kwargs["reference_time"]
+        assert ref == datetime(2026, 4, 6, 14, 30, tzinfo=timezone.utc)
+
+    async def test_handler_accepts_trailing_z(self, wired_queue, mock_service):
+        """ISO-8601 with trailing 'Z' parses as UTC."""
+        from datetime import datetime, timezone
+
+        from pratyabhijna.tools.remember import remember
+
+        await remember(
+            queue=wired_queue,
+            content="event",
+            occurred_at="2026-01-15T09:00:00Z",
+        )
+        await wait_for(lambda: mock_service._graphiti.add_episode.called)
+        ref = mock_service._graphiti.add_episode.call_args.kwargs["reference_time"]
+        assert ref == datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)
+
     async def test_handler_passes_source(self, wired_queue, mock_service):
         """Source attribution is included in the add_episode call."""
         from pratyabhijna.tools.remember import remember

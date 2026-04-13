@@ -142,3 +142,21 @@ class TestCorrectHandler:
         call_kwargs = mock_service._graphiti.add_episode.call_args
         # Correction content should be passed through
         assert "Serah's pronouns are she/her" in str(call_kwargs)
+
+    async def test_handler_uses_occurred_at_when_provided(
+        self, wired_queue, mock_service
+    ):
+        """occurred_at (ISO-8601) becomes the add_episode reference_time."""
+        from datetime import datetime, timezone
+
+        from pratyabhijna.tools.correct import correct
+
+        await correct(
+            queue=wired_queue,
+            content="The move was in 2019, not 2020.",
+            search_terms="move 2019",
+            occurred_at="2019-07-01T00:00:00+00:00",
+        )
+        await wait_for(lambda: mock_service._graphiti.add_episode.called)
+        ref = mock_service._graphiti.add_episode.call_args.kwargs["reference_time"]
+        assert ref == datetime(2019, 7, 1, tzinfo=timezone.utc)
