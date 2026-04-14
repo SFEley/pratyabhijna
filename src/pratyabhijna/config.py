@@ -48,10 +48,28 @@ class QueueConfig(BaseModel):
     backoff_base_seconds: float = 60.0
 
 
+class SynthesisThinkingConfig(BaseModel):
+    enabled: bool = True
+    # Token budget for extended thinking. The synthesizer is the
+    # "deep reflection" workload — heavier budget than general ops.
+    budget_tokens: int = 10000
+
+
 class SynthesisConfig(BaseModel):
     max_age_hours: int = 24
     max_delta_changes: int = 3
     rebuild_delay_hours: float = 2.0
+    model: str = "claude-opus-4-6"
+    thinking: SynthesisThinkingConfig = Field(default_factory=SynthesisThinkingConfig)
+    # Singleton branch for protected-layer proposals awaiting solo review.
+    draft_branch: str = "synth/draft"
+    # Periodic from-scratch rebuild lands on draft_branch regardless
+    # of which layer it touched.
+    full_rebuild_cadence_days: int = 30
+    # Upper bound on tool-use loop iterations, as a circuit breaker.
+    max_iterations: int = 40
+    # Bound on how far back the ingestion scan looks.
+    ingestion_lookback_days: int | None = 14
 
 
 class ServerConfig(BaseModel):
