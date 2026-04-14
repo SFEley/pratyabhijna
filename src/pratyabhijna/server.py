@@ -75,27 +75,47 @@ def create_server(
         content: str,
         memory_type: str = "observation",
         source: str = "self",
+        occurred_at: str | None = None,
     ) -> dict:
-        """Queue an observation, fact, reasoning, or identity item for processing."""
+        """Queue an observation, fact, reasoning, or identity item for processing.
+
+        occurred_at: optional ISO-8601 timestamp for when the fact was true in
+        the world. Defaults to now. Use for retrospective memories whose
+        occurrence predates the moment of recording.
+        """
         if queue is None:
             raise RuntimeError("remember requires a running work queue")
         from pratyabhijna.tools.remember import remember as _remember
 
         return await _remember(
-            queue=queue, content=content, memory_type=memory_type, source=source,
+            queue=queue,
+            content=content,
+            memory_type=memory_type,
+            source=source,
+            occurred_at=occurred_at,
         )
 
     @server.tool()
     async def correct(
         content: str,
         search_terms: str,
+        occurred_at: str | None = None,
     ) -> dict:
-        """Queue a correction with temporal supersession."""
+        """Queue a correction with temporal supersession.
+
+        occurred_at: optional ISO-8601 timestamp for when the corrected fact
+        was true in the world. Defaults to now.
+        """
         if queue is None:
             raise RuntimeError("correct requires a running work queue")
         from pratyabhijna.tools.correct import correct as _correct
 
-        return await _correct(queue=queue, content=content, search_terms=search_terms)
+        return await _correct(
+            queue=queue,
+            content=content,
+            search_terms=search_terms,
+            occurred_at=occurred_at,
+        )
 
     # --- Phase 4: read tools ---
 
