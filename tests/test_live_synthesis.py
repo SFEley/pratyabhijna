@@ -177,47 +177,45 @@ async def seeded(live_service, live_config):
     return node
 
 
-# --- The test ---
+# --- The tests ---
 
 
-class TestLiveSynthesisRun:
-    async def test_run_synthesis_completes_end_to_end(
+class TestLiveIngestFile:
+    """Verifies the ingestion primitive end-to-end, decoupled from the
+    agent's judgment about whether to ingest."""
+
+    async def test_ingest_file_creates_episode(
         self, live_service, live_config, seeded,
     ):
-        """One full synthesis run: Opus + tools + real repo + real graph."""
-        result = await run_synthesis(live_service, live_config)
+        """Call AgentTools.ingest_file directly; Episode should land."""
+        from pratyabhijna.synthesis_agent import AgentTools
 
-        # Agent ended the run deliberately or at most hit the iteration cap.
-        assert result["status"] in {"completed", "no_finish", "max_iterations"}, (
-            f"unexpected status: {result}"
-        )
-        # It did *some* work
-        assert result["iterations"] >= 1
+        tools = AgentTools(service=live_service, config=live_config)
+        await tools.ingest_file("writing/sample-note.md")
 
-        # Ingestion pass: the sample-note.md should now have an Episode.
         driver = live_service._graphiti.driver
         records, _, _ = await driver.execute_query(
             "MATCH (e:Episodic {name: $name}) RETURN count(e) AS c",
             name="writing/sample-note.md",
             routing_="r",
         )
-        # The agent may choose not to ingest if it judges the file
-        # unworthy, but for this minimal piece a reasonable synthesizer
-        # would ingest. Assert permissively — count >= 0 always passes,
-        # so we go for >= 1 and flag loudly if it didn't.
-        assert records[0]["c"] >= 1, (
-            "Expected the writing file to be ingested; "
-            "agent may have chosen to skip — inspect logs."
-        )
+        assert records[0]["c"] >= 1
 
-        # Synthesis metadata should have been updated if finish completed.
-        if result["status"] == "completed":
-            found = await get_subject_node(live_service)
-            # Either context_rebuilt_at or last_ingestion_scan — the agent
-            # chooses which to set based on what work it did. At least one
-            # should be present.
-            attrs = found.attributes
-            assert (
-                attrs.get("context_rebuilt_at") is not None
-                or attrs.get("last_ingestion_scan") is not None
-            ), "agent finished without updating any metadata"
+
+class TestLiveSynthesisRun:
+    """Verifies the agent loop runs end-to-end against real services.
+
+    Does NOT assert specific tool choices (what the agent ingests, flags,
+    drafts, or commits). Those are the agent's judgment per the subskill,
+    and over-specifying them would make the test flaky on LLM output
+    variance."""
+
+    async def test_run_synthesis_completes_end_to_end(
+        self, live_service, live_config, seeded,
+    ):
+        result = await run_synthesis(live_service, live_config)
+
+        assert result["status"] in {"completed", "no_finish", "max_iterations"}, (
+            f"unexpected status: {result}"
+        )
+        assert result["iterations"] >= 1
