@@ -8,7 +8,7 @@ real-service confidence.
 
 from __future__ import annotations
 
-import subprocess
+import subprocess  # noqa: F401 — used by the remote-sync tests below
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -366,20 +366,30 @@ async def test_run_synthesis_stops_on_no_tools_no_finish(service, config):
 
 
 @pytest.mark.asyncio
-async def test_run_synthesis_passes_thinking_when_enabled(service, config):
+async def test_run_synthesis_uses_adaptive_thinking_when_enabled(service, config):
     config.synthesis.thinking.enabled = True
-    config.synthesis.thinking.budget_tokens = 5000
+    config.synthesis.thinking.effort = "high"
     client = FakeClient(script=[
         [_tool_use_block("t1", "finish", {"summary": "x"})],
     ])
 
     await run_synthesis(service, config, client=client)
 
-    assert client.calls[0].get("thinking") == {
-        "type": "enabled",
-        "budget_tokens": 5000,
-    }
-    assert client.calls[0]["max_tokens"] > 5000
+    assert client.calls[0].get("thinking") == {"type": "adaptive"}
+    assert client.calls[0].get("output_config") == {"effort": "high"}
+
+
+@pytest.mark.asyncio
+async def test_run_synthesis_passes_configured_effort(service, config):
+    config.synthesis.thinking.enabled = True
+    config.synthesis.thinking.effort = "medium"
+    client = FakeClient(script=[
+        [_tool_use_block("t1", "finish", {"summary": "x"})],
+    ])
+
+    await run_synthesis(service, config, client=client)
+
+    assert client.calls[0]["output_config"] == {"effort": "medium"}
 
 
 @pytest.mark.asyncio
@@ -392,6 +402,7 @@ async def test_run_synthesis_omits_thinking_when_disabled(service, config):
     await run_synthesis(service, config, client=client)
 
     assert "thinking" not in client.calls[0]
+    assert "output_config" not in client.calls[0]
 
 
 @pytest.mark.asyncio
@@ -433,3 +444,105 @@ async def test_run_synthesis_opening_message_has_identity_files(
     opening = client.calls[0]["messages"][0]["content"]
     assert "SOUL.md" in opening
     assert "IDENTITY.md" in opening
+
+
+# --- Remote sync behavior ---
+
+
+@pytest.mark.asyncio
+async def test_run_synthesis_no_op_sync_when_no_remote(
+    service, config, repo, monkeypatch
+):
+    """Without a remote, sync steps should be silent no-ops."""
+    from pratyabhijna import git_ops
+
+    fetch_calls = []
+
+    async def record_fetch(*args, **kwargs):
+        fetch_calls.append((args, kwargs))
+
+    monkeypatch.setattr(git_ops, "fetch", record_fetch)
+
+    client = FakeClient(script=[
+        [_tool_use_block("t1", "finish", {"summary": "x"})],
+    ])
+
+    result = await run_synthesis(service, config, client=client)
+
+    assert result["status"] == "completed"
+    assert fetch_calls == []  # no remote → no fetch
+
+
+@pytest.mark.asyncio
+async def test_run_synthesis_syncs_and_pushes_with_remote(
+    service, config, repo, monkeypatch, tmp_path
+):
+    """With a remote: fetch at start, push at end."""
+    from pratyabhijna import git_ops
+
+    # Add a bare remote so has_remote() returns True
+    remote = tmp_path / "bare.git"
+    remote.mkdir()
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main"],
+        cwd=str(remote), check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(remote)],
+        cwd=str(repo), check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "push", "origin", "main"],
+        cwd=str(repo), check=True, capture_output=True,
+    )
+
+    fetch_called = []
+    push_calls = []
+
+    real_fetch = git_ops.fetch
+    real_push = git_ops.push
+
+    async def recording_fetch(*args, **kwargs):
+        fetch_called.append(True)
+        await real_fetch(*args, **kwargs)
+
+    async def recording_push(*args, **kwargs):
+        push_calls.append((args, kwargs))
+        await real_push(*args, **kwargs)
+
+    monkeypatch.setattr(git_ops, "fetch", recording_fetch)
+    monkeypatch.setattr(git_ops, "push", recording_push)
+
+    client = FakeClient(script=[
+        [_tool_use_block("t1", "finish", {"summary": "done"})],
+    ])
+
+    await run_synthesis(service, config, client=client)
+
+    assert fetch_called  # sync_from_remote fetched
+    # push was called for main at end (draft branch doesn't exist)
+    pushed_branches = {args[1] for args, _ in push_calls}
+    assert "main" in pushed_branches
+
+
+@pytest.mark.asyncio
+async def test_sync_failure_does_not_block_run(
+    service, config, repo, monkeypatch, tmp_path
+):
+    """If the fetch raises, the run should still proceed with local state."""
+    from pratyabhijna import git_ops
+
+    # Add a broken remote so has_remote returns True but fetch fails
+    subprocess.run(
+        ["git", "remote", "add", "origin", "/nonexistent/remote.git"],
+        cwd=str(repo), check=True, capture_output=True,
+    )
+
+    client = FakeClient(script=[
+        [_tool_use_block("t1", "finish", {"summary": "ok"})],
+    ])
+
+    result = await run_synthesis(service, config, client=client)
+
+    # Broken remote shouldn't have prevented the run from completing.
+    assert result["status"] == "completed"

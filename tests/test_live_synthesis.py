@@ -125,9 +125,10 @@ async def live_config(tmp_path_factory):
     config = PratyabhijnaConfig.from_env("test")
     config.subject_name = subject
     config.resources.repo_path = str(repo)
-    # Keep the test bounded — fewer iterations, smaller thinking budget.
+    # Keep the test bounded — fewer iterations. Use lower effort so the
+    # model doesn't spend a lot of thinking on a minimal test scenario.
     config.synthesis.max_iterations = 15
-    config.synthesis.thinking.budget_tokens = 4000
+    config.synthesis.thinking.effort = "medium"
     return config
 
 

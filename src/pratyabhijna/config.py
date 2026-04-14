@@ -49,10 +49,14 @@ class QueueConfig(BaseModel):
 
 
 class SynthesisThinkingConfig(BaseModel):
+    # Adaptive thinking: the model decides when and how much to think.
+    # Supported on Claude Opus 4.6 and Sonnet 4.6. The effort parameter
+    # is soft guidance (low/medium/high/max); "high" is the default and
+    # means Claude almost always thinks. Adaptive mode also enables
+    # interleaved thinking between tool calls on Opus 4.6 — important
+    # for the synthesizer's tool-use loop.
     enabled: bool = True
-    # Token budget for extended thinking. The synthesizer is the
-    # "deep reflection" workload — heavier budget than general ops.
-    budget_tokens: int = 10000
+    effort: str = "high"
 
 
 class SynthesisConfig(BaseModel):

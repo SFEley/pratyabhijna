@@ -255,3 +255,117 @@ async def test_git_error_includes_stderr(tmp_path):
         await git_ops.current_branch(not_a_repo)
     assert exc_info.value.returncode != 0
     assert exc_info.value.stderr  # non-empty
+
+
+# --- Remote operations (local --bare remote as test harness) ---
+
+
+@pytest.fixture
+def remote_repo(tmp_path):
+    """A bare repo that other repos can use as ``origin``."""
+    path = tmp_path / "remote.git"
+    path.mkdir()
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main"],
+        cwd=str(path), check=True, capture_output=True,
+    )
+    return path
+
+
+@pytest.fixture
+def repo_with_remote(repo, remote_repo):
+    """A working repo with ``remote_repo`` configured as ``origin``."""
+    _sync_git(repo, "remote", "add", "origin", str(remote_repo))
+    _sync_git(repo, "push", "origin", "main")
+    return repo
+
+
+@pytest.mark.asyncio
+async def test_has_remote_true_when_origin_configured(repo_with_remote):
+    assert await git_ops.has_remote(repo_with_remote) is True
+
+
+@pytest.mark.asyncio
+async def test_has_remote_false_when_none(repo):
+    assert await git_ops.has_remote(repo) is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_updates_remote_tracking(repo_with_remote, remote_repo, tmp_path):
+    # Create a second clone, push a commit through it, then fetch from the first
+    other = tmp_path / "other"
+    subprocess.run(
+        ["git", "clone", str(remote_repo), str(other)],
+        check=True, capture_output=True,
+    )
+    for k, v in [("user.email", "o@e"), ("user.name", "O"), ("commit.gpgsign", "false")]:
+        _sync_git(other, "config", k, v)
+    (other / "new.md").write_text("from other")
+    _sync_git(other, "add", "new.md")
+    _sync_git(other, "commit", "-m", "from other")
+    _sync_git(other, "push", "origin", "main")
+
+    await git_ops.fetch(repo_with_remote)
+
+    # origin/main should now be ahead of local main
+    result = subprocess.run(
+        ["git", "log", "--oneline", "origin/main"],
+        cwd=str(repo_with_remote), check=True, capture_output=True, text=True,
+    )
+    assert "from other" in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_remote_branch_exists_after_fetch(repo_with_remote):
+    await git_ops.fetch(repo_with_remote)
+    assert await git_ops.remote_branch_exists(repo_with_remote, "main") is True
+    assert await git_ops.remote_branch_exists(repo_with_remote, "nope") is False
+
+
+@pytest.mark.asyncio
+async def test_reset_hard_to_discards_local_commits(repo_with_remote):
+    # Make a local commit not pushed to origin
+    (repo_with_remote / "local-only.md").write_text("x")
+    await git_ops.add(repo_with_remote, "local-only.md")
+    await git_ops.commit(repo_with_remote, "local only")
+    assert (repo_with_remote / "local-only.md").exists()
+
+    await git_ops.fetch(repo_with_remote)
+    await git_ops.reset_hard_to(repo_with_remote, "origin/main")
+
+    assert not (repo_with_remote / "local-only.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_push_sends_commits_to_remote(repo_with_remote, remote_repo):
+    (repo_with_remote / "pushed.md").write_text("y")
+    await git_ops.add(repo_with_remote, "pushed.md")
+    await git_ops.commit(repo_with_remote, "push me")
+
+    await git_ops.push(repo_with_remote, "main")
+
+    # Verify on the bare remote
+    result = subprocess.run(
+        ["git", "log", "--oneline", "main"],
+        cwd=str(remote_repo), check=True, capture_output=True, text=True,
+    )
+    assert "push me" in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_push_force_with_lease(repo_with_remote, remote_repo):
+    # Create a branch with one commit, push it
+    await git_ops.create_branch(repo_with_remote, "synth/draft", base="main")
+    (repo_with_remote / "draft.md").write_text("v1")
+    await git_ops.add(repo_with_remote, "draft.md")
+    await git_ops.commit(repo_with_remote, "draft v1")
+    await git_ops.push(repo_with_remote, "synth/draft")
+
+    # Rewrite the branch with a new commit (simulating re-draft)
+    (repo_with_remote / "draft.md").write_text("v2")
+    await git_ops.add(repo_with_remote, "draft.md")
+    _sync_git(repo_with_remote, "commit", "--amend", "--no-edit")
+
+    # Force-with-lease should succeed — lease check sees we know the
+    # current remote state
+    await git_ops.push(repo_with_remote, "synth/draft", force_with_lease=True)

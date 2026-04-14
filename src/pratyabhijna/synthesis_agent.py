@@ -709,6 +709,10 @@ async def run_synthesis(
     now = datetime.now(timezone.utc)
 
     repo_path = config.resources.repo_path
+    # Sync from remote before reading any state — we want the full run
+    # to work against the current shared state, not a stale local copy.
+    if repo_path:
+        await _sync_from_remote(repo_path, config.synthesis.draft_branch)
     identity_files = read_identity_files(repo_path)
     atoms = await get_identity_atoms(service, subject_node)
     delta = await get_identity_delta(service, subject_node)
@@ -750,18 +754,16 @@ async def run_synthesis(
 
         client = anthropic.AsyncAnthropic()
 
-    thinking_param = None
-    if config.synthesis.thinking.enabled:
-        thinking_param = {
-            "type": "enabled",
-            "budget_tokens": config.synthesis.thinking.budget_tokens,
-        }
-    # max_tokens must exceed thinking budget; add headroom for text + tool use
-    max_tokens = (
-        (config.synthesis.thinking.budget_tokens + 8000)
-        if config.synthesis.thinking.enabled
-        else 8000
-    )
+    # Adaptive thinking on Opus 4.6 / Sonnet 4.6: the model decides
+    # when and how much to think; we guide via the `effort` parameter
+    # under `output_config`. Adaptive mode also automatically enables
+    # interleaved thinking between tool calls on Opus 4.6 — important
+    # for the synthesizer's tool-use workflow.
+    use_thinking = config.synthesis.thinking.enabled
+    # max_tokens caps total output (thinking + text + tool use). Sized
+    # generously for high-effort agent runs; the effort parameter is
+    # the soft control on thinking spend.
+    max_tokens = 24000
 
     messages: list[dict[str, Any]] = [{"role": "user", "content": opening}]
     iterations = 0
@@ -775,8 +777,11 @@ async def run_synthesis(
             tools=TOOL_SCHEMAS,
             messages=messages,
         )
-        if thinking_param is not None:
-            create_kwargs["thinking"] = thinking_param
+        if use_thinking:
+            create_kwargs["thinking"] = {"type": "adaptive"}
+            create_kwargs["output_config"] = {
+                "effort": config.synthesis.thinking.effort
+            }
 
         response = await client.messages.create(**create_kwargs)
 
@@ -804,6 +809,11 @@ async def run_synthesis(
         if tools.finished:
             break
 
+    # Sync anything the agent committed back to the remote. Non-fatal
+    # on error: the next run will re-sync and retry.
+    if repo_path:
+        await _push_to_remote(repo_path, config.synthesis.draft_branch)
+
     if tools.finished:
         return {
             "status": "completed",
@@ -821,6 +831,92 @@ async def run_synthesis(
         "iterations": iterations,
         "summary": "",
     }
+
+
+async def _sync_from_remote(repo_path: str, draft_branch: str) -> None:
+    """Bring the subject's repo in line with its remote before a run.
+
+    Steps (each skipped if no remote configured):
+    1. Fetch with prune.
+    2. Reset local ``main`` hard to ``origin/main``. The synthesizer
+       owns ``main`` during runs; local uncommitted changes on prod
+       shouldn't exist and will be clobbered if they do.
+    3. If ``origin/<draft_branch>`` exists, align local. If it doesn't
+       but a local copy does, delete the local copy — the remote's
+       absence means the subject pushed a deletion (typically after
+       rejecting the proposal during solo review).
+
+    Failures are logged and swallowed; the synthesizer proceeds against
+    whatever state is local. Worst case the next run catches up.
+    """
+    import logging
+
+    log = logging.getLogger(__name__)
+
+    try:
+        if not await git_ops.has_remote(repo_path):
+            return
+        await git_ops.fetch(repo_path)
+
+        current = await git_ops.current_branch(repo_path)
+        if current != "main":
+            await git_ops.checkout(repo_path, "main")
+        if await git_ops.remote_branch_exists(repo_path, "main"):
+            await git_ops.reset_hard_to(repo_path, "origin/main")
+
+        remote_has_draft = await git_ops.remote_branch_exists(repo_path, draft_branch)
+        local_has_draft = await git_ops.branch_exists(repo_path, draft_branch)
+
+        if remote_has_draft:
+            if local_has_draft:
+                await git_ops.checkout(repo_path, draft_branch)
+                await git_ops.reset_hard_to(repo_path, f"origin/{draft_branch}")
+                await git_ops.checkout(repo_path, "main")
+            # If no local copy, the branch is available as
+            # origin/draft_branch; the synthesizer will pick it up
+            # when it queries branch existence. (We could also create
+            # a local tracking branch here, but the subskill's branch-
+            # handling logic already handles this case.)
+        elif local_has_draft:
+            # Subject pushed a deletion — propagate locally.
+            await git_ops.delete_branch(repo_path, draft_branch, force=True)
+    except Exception:  # noqa: BLE001 — sync shouldn't crash the run
+        log.warning("sync_from_remote failed; proceeding with local state", exc_info=True)
+
+
+async def _push_to_remote(repo_path: str, draft_branch: str) -> None:
+    """Push synthesizer commits back to the remote after a run.
+
+    - ``main`` is pushed with a regular push; a rejection here means
+      someone else updated origin/main concurrently, which is a
+      concurrency signal to back off rather than clobber. The failure
+      is logged; next run will resync and catch up.
+    - ``draft_branch`` (if it exists locally) is pushed with
+      ``--force-with-lease`` because the synthesizer rebases it freely
+      each run. The lease check protects against clobbering a
+      concurrent push to the same branch.
+    """
+    import logging
+
+    log = logging.getLogger(__name__)
+
+    if not await git_ops.has_remote(repo_path):
+        return
+
+    try:
+        await git_ops.push(repo_path, "main")
+    except git_ops.GitError:
+        log.warning("push main failed; concurrent update on origin/main?", exc_info=True)
+
+    if await git_ops.branch_exists(repo_path, draft_branch):
+        try:
+            await git_ops.push(repo_path, draft_branch, force_with_lease=True)
+        except git_ops.GitError:
+            log.warning(
+                "push %s failed; lease check may have rejected force-push",
+                draft_branch,
+                exc_info=True,
+            )
 
 
 def make_synthesize_handler(service: PratyabhijnaService, config: PratyabhijnaConfig):

@@ -207,3 +207,94 @@ async def log_since(
         repo_path, "log", "--oneline", f"{base}..{branch}"
     )
     return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+# --- Remote operations ---
+
+
+async def has_remote(
+    repo_path: str | Path,
+    name: str = "origin",
+) -> bool:
+    """Whether the repo has a remote configured under the given name.
+
+    Synthesizer sync becomes a no-op when no remote exists — useful for
+    single-machine deployments where the subject repo isn't pushed
+    anywhere.
+    """
+    result = await _run(
+        repo_path, "remote", "get-url", name, check=False
+    )
+    return result.returncode == 0
+
+
+async def fetch(
+    repo_path: str | Path,
+    remote: str = "origin",
+    prune: bool = True,
+) -> None:
+    """Fetch from ``remote``. ``prune=True`` drops tracking refs whose
+    upstream has been deleted — useful for ``synth/draft`` rejection
+    propagation.
+    """
+    args = ["fetch", remote]
+    if prune:
+        args.append("--prune")
+    await _run(repo_path, *args)
+
+
+async def remote_branch_exists(
+    repo_path: str | Path,
+    name: str,
+    remote: str = "origin",
+) -> bool:
+    """Whether ``remote/name`` exists as a remote-tracking ref locally.
+
+    Requires a prior ``fetch`` to be current. Useful for deciding
+    whether to sync ``synth/draft`` state at run start.
+    """
+    result = await _run(
+        repo_path,
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        f"refs/remotes/{remote}/{name}",
+        check=False,
+    )
+    return result.returncode == 0
+
+
+async def reset_hard_to(
+    repo_path: str | Path,
+    ref: str,
+) -> None:
+    """Hard-reset the current branch to ``ref``.
+
+    Destructive: discards any uncommitted changes and any commits on
+    the current branch not reachable from ``ref``. Used by the
+    synthesizer's run-start sync to bring local main in line with
+    origin/main. The synthesizer owns main during its runs; anything
+    uncommitted shouldn't be there.
+    """
+    await _run(repo_path, "reset", "--hard", ref)
+
+
+async def push(
+    repo_path: str | Path,
+    branch: str,
+    remote: str = "origin",
+    force_with_lease: bool = False,
+) -> None:
+    """Push ``branch`` to ``remote``.
+
+    ``force_with_lease=True`` is safe-forced push — replaces the remote
+    branch only if the remote hasn't moved since we last fetched it.
+    Used for ``synth/draft`` because the synthesizer freely rebases
+    that branch each run. Never use ``force_with_lease`` on ``main`` —
+    main is shared state; a genuine concurrent push to origin/main is
+    a signal to back off, not clobber.
+    """
+    args = ["push", remote, branch]
+    if force_with_lease:
+        args.append("--force-with-lease")
+    await _run(repo_path, *args)
