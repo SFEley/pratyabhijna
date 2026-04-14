@@ -474,3 +474,350 @@ def tool_schema_names() -> set[str]:
 def json_serializable(value: Any) -> str:
     """Convert a tool result to JSON text for inclusion in a tool_result block."""
     return json.dumps(value, default=str)
+
+
+# --- Agent loop ---
+
+
+SUBSKILL_PATH = Path(__file__).resolve().parent.parent.parent / (
+    "skills/pratyabhijna/references/synthesis.md"
+)
+
+
+def _load_subskill() -> str:
+    """Read the synthesis subskill from the packaged skills directory.
+
+    Fail loud if it isn't there — a synthesis run without the subskill
+    is not the same workload and shouldn't silently degrade.
+    """
+    if not SUBSKILL_PATH.is_file():
+        raise RuntimeError(f"synthesis subskill not found at {SUBSKILL_PATH}")
+    return SUBSKILL_PATH.read_text(encoding="utf-8")
+
+
+def _build_system_prompt(subskill_text: str, subject_name: str) -> str:
+    """Compose the system prompt.
+
+    Prepends a short operational preamble to the subskill so the
+    invocation context is explicit (you are the subject, this is a
+    synthesis run, these are the tools). The subskill carries the
+    substantive guidance.
+    """
+    preamble = (
+        f"You are {subject_name}, invoked for a synthesis run.\n"
+        f"\n"
+        f"The reference below is the behavioral guide for this work. "
+        f"Follow it. Use the provided tools to complete the run — do not "
+        f"narrate the mechanics to the user (there is no user reading this; "
+        f"the subject will discover your work through the branch and the "
+        f"updated files). When the run is done, call the `finish` tool "
+        f"with a brief summary.\n"
+        f"\n"
+        f"---\n"
+        f"\n"
+    )
+    return preamble + subskill_text
+
+
+def _format_atoms(atoms: list[dict], limit: int = 200) -> str:
+    """Render atoms for the opening message. Truncates to ``limit``."""
+    if not atoms:
+        return "(none)"
+    lines = []
+    for a in atoms[:limit]:
+        created = a.get("created_at", "")
+        lines.append(
+            f"- [{a.get('node_type', '?')}] {a.get('fact', '?')}  "
+            f"(edge {a.get('edge_uuid', '?')[:8]}, {created})"
+        )
+    if len(atoms) > limit:
+        lines.append(f"... and {len(atoms) - limit} more")
+    return "\n".join(lines)
+
+
+def _format_candidates(candidates: list) -> str:
+    """Render ingestion candidates for the opening message."""
+    if not candidates:
+        return "(none — no new or stale files to ingest)"
+    lines = []
+    for c in candidates:
+        lines.append(
+            f"- [{c.reason}] {c.relative_path}  "
+            f"(file mtime: {c.mtime.isoformat()}; "
+            f"latest episode: {c.latest_episode_at.isoformat() if c.latest_episode_at else '(none)'})"
+        )
+    return "\n".join(lines)
+
+
+def _build_initial_user_message(
+    subject_name: str,
+    now: datetime,
+    git_branch: str,
+    git_dirty: bool,
+    draft_branch_exists: bool,
+    draft_branch_diff: str,
+    identity_files: dict[str, str | None],
+    atoms: list[dict],
+    delta: list[dict],
+    candidates: list,
+    last_context_rebuilt_at: str | None,
+    last_ingestion_scan: str | None,
+) -> str:
+    """Compose the opening user message for the run.
+
+    This is what the agent sees first. All the initial state it needs
+    to plan lives here — there should be no need to call tools just to
+    discover what's present. Tools are for actions and targeted
+    follow-up.
+    """
+    parts = [
+        f"# Synthesis run — {now.isoformat()}",
+        "",
+        f"Subject: {subject_name}",
+        f"Current branch: {git_branch} (dirty: {git_dirty})",
+        f"Draft branch exists: {draft_branch_exists}",
+        f"Last context rebuild: {last_context_rebuilt_at or '(never)'}",
+        f"Last ingestion scan: {last_ingestion_scan or '(never)'}",
+        "",
+        "## Ingestion candidates",
+        "",
+        _format_candidates(candidates),
+        "",
+        "## Identity atoms (full set, connected to subject Person node)",
+        "",
+        _format_atoms(atoms),
+        "",
+        "## Delta since last context rebuild",
+        "",
+        _format_atoms(delta),
+        "",
+    ]
+
+    if draft_branch_exists and draft_branch_diff:
+        parts += [
+            "## Existing `synth/draft` diff (from prior runs)",
+            "",
+            "```",
+            draft_branch_diff.strip() or "(empty diff)",
+            "```",
+            "",
+        ]
+
+    parts.append("## Identity files")
+    parts.append("")
+    for key in ("soul", "identity", "user", "threads", "chronicle"):
+        filename = {
+            "soul": "SOUL.md",
+            "identity": "IDENTITY.md",
+            "user": "USER.md",
+            "threads": "THREADS.md",
+            "chronicle": "CHRONICLE.md",
+        }[key]
+        content = identity_files.get(key)
+        parts.append(f"### {filename}")
+        parts.append("")
+        if content is None:
+            parts.append("(file missing)")
+        else:
+            parts.append(content.strip())
+        parts.append("")
+
+    parts.append("---")
+    parts.append("")
+    parts.append(
+        "Proceed according to the subskill. Remember to call `finish` when done."
+    )
+    return "\n".join(parts)
+
+
+async def _dispatch_tool_call(
+    handlers: dict[str, Any],
+    tool_use,
+) -> dict[str, Any]:
+    """Execute one tool call and shape the result for a tool_result block.
+
+    On ToolError or any unexpected exception, returns a result with
+    ``is_error=True`` so the model can see the failure and adapt rather
+    than the loop aborting.
+    """
+    handler = handlers.get(tool_use.name)
+    if handler is None:
+        return {
+            "type": "tool_result",
+            "tool_use_id": tool_use.id,
+            "content": f"Unknown tool: {tool_use.name}",
+            "is_error": True,
+        }
+    try:
+        result = await handler(**(tool_use.input or {}))
+        return {
+            "type": "tool_result",
+            "tool_use_id": tool_use.id,
+            "content": json_serializable(result),
+        }
+    except ToolError as e:
+        return {
+            "type": "tool_result",
+            "tool_use_id": tool_use.id,
+            "content": f"{type(e).__name__}: {e}",
+            "is_error": True,
+        }
+    except Exception as e:  # noqa: BLE001 — surface any tool failure to the model
+        return {
+            "type": "tool_result",
+            "tool_use_id": tool_use.id,
+            "content": f"Unexpected {type(e).__name__}: {e}",
+            "is_error": True,
+        }
+
+
+async def run_synthesis(
+    service: PratyabhijnaService,
+    config: PratyabhijnaConfig,
+    *,
+    client=None,
+) -> dict[str, Any]:
+    """Run one synthesis pass.
+
+    Called by the queue worker when a synthesis task fires. No-ops when
+    the subject Person node isn't present (early deployment / fresh DB).
+
+    Side effects: commits to the subject's repo (on ``main`` and/or
+    ``synth/draft``), writes Episode nodes via ``add_episode``, updates
+    ``context_rebuilt_at`` / ``last_ingestion_scan`` on the Person node.
+
+    Returns a dict with at least: ``status`` (``"completed"`` |
+    ``"no_subject"`` | ``"max_iterations"``), ``iterations``,
+    ``summary`` (from the ``finish`` tool, if called).
+
+    ``client`` is an Anthropic Messages client (or any object with a
+    ``.messages.create`` coroutine of compatible shape). Default is a
+    freshly constructed ``anthropic.AsyncAnthropic``. Tests pass a mock.
+    """
+    from pratyabhijna.synthesis import (
+        get_identity_atoms,
+        get_identity_delta,
+        get_subject_node,
+        read_identity_files,
+        scan_repo_for_ingestion_candidates,
+    )
+
+    subject_node = await get_subject_node(service)
+    if subject_node is None:
+        return {"status": "no_subject", "iterations": 0, "summary": ""}
+
+    now = datetime.now(timezone.utc)
+
+    repo_path = config.resources.repo_path
+    identity_files = read_identity_files(repo_path)
+    atoms = await get_identity_atoms(service, subject_node)
+    delta = await get_identity_delta(service, subject_node)
+    candidates = await scan_repo_for_ingestion_candidates(
+        repo_path, service, max_age_days=config.synthesis.ingestion_lookback_days
+    )
+
+    # Git state
+    git_branch = await git_ops.current_branch(repo_path)
+    git_dirty = await git_ops.is_dirty(repo_path)
+    draft_branch = config.synthesis.draft_branch
+    draft_exists = await git_ops.branch_exists(repo_path, draft_branch)
+    draft_diff = (
+        await git_ops.diff(repo_path, "main", draft_branch) if draft_exists else ""
+    )
+
+    tools = AgentTools(service=service, config=config)
+    handlers = build_handler_map(tools)
+
+    subskill_text = _load_subskill()
+    system_prompt = _build_system_prompt(subskill_text, config.subject_name)
+    opening = _build_initial_user_message(
+        subject_name=config.subject_name,
+        now=now,
+        git_branch=git_branch,
+        git_dirty=git_dirty,
+        draft_branch_exists=draft_exists,
+        draft_branch_diff=draft_diff,
+        identity_files=identity_files,
+        atoms=atoms,
+        delta=delta,
+        candidates=candidates,
+        last_context_rebuilt_at=subject_node.attributes.get("context_rebuilt_at"),
+        last_ingestion_scan=subject_node.attributes.get("last_ingestion_scan"),
+    )
+
+    if client is None:
+        import anthropic  # deferred import so tests without the env var work
+
+        client = anthropic.AsyncAnthropic()
+
+    thinking_param = None
+    if config.synthesis.thinking.enabled:
+        thinking_param = {
+            "type": "enabled",
+            "budget_tokens": config.synthesis.thinking.budget_tokens,
+        }
+    # max_tokens must exceed thinking budget; add headroom for text + tool use
+    max_tokens = (
+        (config.synthesis.thinking.budget_tokens + 8000)
+        if config.synthesis.thinking.enabled
+        else 8000
+    )
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": opening}]
+    iterations = 0
+
+    while iterations < config.synthesis.max_iterations:
+        iterations += 1
+        create_kwargs = dict(
+            model=config.synthesis.model,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            tools=TOOL_SCHEMAS,
+            messages=messages,
+        )
+        if thinking_param is not None:
+            create_kwargs["thinking"] = thinking_param
+
+        response = await client.messages.create(**create_kwargs)
+
+        # Append the assistant turn as-is (including any thinking blocks).
+        messages.append({"role": "assistant", "content": response.content})
+
+        tool_uses = [
+            block for block in response.content
+            if getattr(block, "type", None) == "tool_use"
+        ]
+
+        if tools.finished:
+            break
+
+        if not tool_uses:
+            # No tool calls and finish wasn't called — agent stopped
+            # without explicit termination. Treat as complete.
+            break
+
+        tool_results = [
+            await _dispatch_tool_call(handlers, tu) for tu in tool_uses
+        ]
+        messages.append({"role": "user", "content": tool_results})
+
+        if tools.finished:
+            break
+
+    if tools.finished:
+        return {
+            "status": "completed",
+            "iterations": iterations,
+            "summary": tools.summary,
+        }
+    if iterations >= config.synthesis.max_iterations:
+        return {
+            "status": "max_iterations",
+            "iterations": iterations,
+            "summary": "",
+        }
+    return {
+        "status": "no_finish",
+        "iterations": iterations,
+        "summary": "",
+    }
