@@ -752,7 +752,11 @@ async def run_synthesis(
     if client is None:
         import anthropic  # deferred import so tests without the env var work
 
-        client = anthropic.AsyncAnthropic()
+        # Use the configured LLM api_key (set via PRATYABHIJNA_LLM__API_KEY
+        # or config YAML). Falls through to anthropic's default env-var
+        # resolution (ANTHROPIC_API_KEY) when unset.
+        api_key = config.llm.api_key or None
+        client = anthropic.AsyncAnthropic(api_key=api_key)
 
     # Adaptive thinking on Opus 4.6 / Sonnet 4.6: the model decides
     # when and how much to think; we guide via the `effort` parameter
