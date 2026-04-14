@@ -7,10 +7,11 @@ when the correction episode is processed.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from pratyabhijna.log import get_logger
+from pratyabhijna.synthesis import IDENTITY_LABELS
 
 if TYPE_CHECKING:
     from pratyabhijna.queue import WorkQueue
@@ -57,8 +58,18 @@ def _resolve_reference_time(occurred_at: str | None) -> datetime:
     return parsed
 
 
-def make_handler(service: PratyabhijnaService):
-    """Create the correct_memory queue handler bound to a service instance."""
+def make_handler(service: PratyabhijnaService, queue: WorkQueue | None = None):
+    """Create the correct_memory queue handler bound to a service instance.
+
+    When ``queue`` is provided, the handler schedules a singleton
+    synthesis task whenever the subject Person node has any neighbor
+    with an identity label (Observation, Drive, Position, Question).
+    This is intentionally broad — the singleton kick-forward in
+    ``reschedule_or_enqueue`` collapses repeated triggers into one run,
+    while under-triggering would silently skip real identity changes.
+
+    Corrections made when no identity neighbors exist do not trigger.
+    """
 
     async def handle_correct_memory(payload: dict[str, Any]) -> None:
         now = datetime.now(timezone.utc)
@@ -77,6 +88,7 @@ def make_handler(service: PratyabhijnaService):
         _log.info(
             "add_episode starting (type=correction, len=%d)", len(payload["content"])
         )
+
         await service._graphiti.add_episode(
             name=f"correction:{now.isoformat()}",
             episode_body=payload["content"],
@@ -87,6 +99,49 @@ def make_handler(service: PratyabhijnaService):
                if extraction_hint else {}),
         )
         _log.info("add_episode complete (type=correction)")
-        # TODO Phase 5: if correction touches identity entities, mark synthesis stale
+
+        if queue is None:
+            return
+
+        if await _subject_has_identity_neighbor(service):
+            delay = service.config.synthesis.rebuild_delay_hours
+            run_at = datetime.now(timezone.utc) + timedelta(hours=delay)
+            await queue.reschedule_or_enqueue("synthesize", {}, run_at=run_at)
+            _log.info("synthesis scheduled from correction (run_at=%s)", run_at.isoformat())
 
     return handle_correct_memory
+
+
+async def _subject_has_identity_neighbor(
+    service: PratyabhijnaService,
+) -> bool:
+    """Whether the subject Person node has any neighbor with an identity label.
+
+    Intended to be called after add_episode to detect whether this
+    correction plausibly touched identity. A blunt heuristic: if the
+    subject has any identity-typed neighbor at all, we schedule
+    synthesis. The singleton kick-forward means this is safe to be
+    permissive about.
+    """
+    subject = await service.get_entity_by_name(service.config.subject_name)
+    if subject is None:
+        return False
+    try:
+        edges = await service.get_edges_for_node(subject.uuid)
+    except Exception:  # noqa: BLE001 — graph hiccup shouldn't tank the write
+        _log.warning("failed to fetch edges for identity-touch check", exc_info=True)
+        return False
+
+    for edge in edges:
+        other_uuid = (
+            edge.target_node_uuid
+            if edge.source_node_uuid == subject.uuid
+            else edge.source_node_uuid
+        )
+        try:
+            other = await service.get_entity_by_uuid(other_uuid)
+        except Exception:  # noqa: BLE001
+            continue
+        if set(getattr(other, "labels", []) or []) & IDENTITY_LABELS:
+            return True
+    return False

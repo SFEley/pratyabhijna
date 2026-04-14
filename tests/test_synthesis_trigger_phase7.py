@@ -40,7 +40,13 @@ IDENTITY_LABELS = {"Observation", "Drive", "Position", "Question"}
 
 @pytest.fixture
 def mock_service():
-    """Mock service with graphiti and config for trigger tests."""
+    """Mock service with graphiti and config for trigger tests.
+
+    Async methods the correct handler reaches during identity-neighbor
+    detection (get_entity_by_name, get_edges_for_node, get_entity_by_uuid)
+    are AsyncMock so they can be awaited. Tests override ``.return_value``
+    on each to script the scenario.
+    """
     service = MagicMock()
     service.is_connected = True
     service._graphiti = MagicMock()
@@ -51,6 +57,9 @@ def mock_service():
     service.config.synthesis.rebuild_delay_hours = 2.0
     service.config.synthesis.max_age_hours = 24
     service.config.synthesis.max_delta_changes = 3
+    service.get_entity_by_name = AsyncMock(return_value=None)
+    service.get_edges_for_node = AsyncMock(return_value=[])
+    service.get_entity_by_uuid = AsyncMock(return_value=None)
     return service
 
 

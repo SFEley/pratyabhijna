@@ -821,3 +821,25 @@ async def run_synthesis(
         "iterations": iterations,
         "summary": "",
     }
+
+
+def make_synthesize_handler(service: PratyabhijnaService, config: PratyabhijnaConfig):
+    """Factory for the queue handler registered under task type 'synthesize'.
+
+    The payload is ignored — one synthesis run reads everything it needs
+    from the service and the subject's repo. Returning the result from
+    the handler is optional; the worker only cares whether it raises.
+    """
+    import logging
+
+    log = logging.getLogger(__name__)
+
+    async def handle_synthesize(payload: dict) -> None:
+        result = await run_synthesis(service, config)
+        log.info(
+            "synthesis run completed: status=%s iterations=%d",
+            result.get("status"),
+            result.get("iterations"),
+        )
+
+    return handle_synthesize

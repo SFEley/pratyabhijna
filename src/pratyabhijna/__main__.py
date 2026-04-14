@@ -28,6 +28,7 @@ from pratyabhijna.log import configure_logging, get_logger
 from pratyabhijna.queue import WorkQueue
 from pratyabhijna.server import create_server
 from pratyabhijna.service import PratyabhijnaService
+from pratyabhijna.synthesis_agent import make_synthesize_handler
 from pratyabhijna.tools.correct import make_handler as correct_make_handler
 from pratyabhijna.tools.remember import make_handler as remember_make_handler
 
@@ -50,8 +51,13 @@ def build_lifespan(service: PratyabhijnaService, queue: WorkQueue):
     @asynccontextmanager
     async def lifespan(app: FastMCP):
         await service.start()
-        queue.register("add_episode", remember_make_handler(service))
-        queue.register("correct_memory", correct_make_handler(service))
+        # Register synthesize first so remember/correct handlers — which
+        # schedule synthesize tasks via reschedule_or_enqueue — can
+        # reference it. WorkQueue.reschedule_or_enqueue validates the
+        # handler exists before inserting.
+        queue.register("synthesize", make_synthesize_handler(service, service.config))
+        queue.register("add_episode", remember_make_handler(service, queue=queue))
+        queue.register("correct_memory", correct_make_handler(service, queue=queue))
         await queue.start()
         log.info("Pratyabhijna server ready")
         try:
