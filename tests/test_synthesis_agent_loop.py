@@ -89,9 +89,9 @@ def service(subject_node):
     svc.get_edges_for_node = AsyncMock(return_value=[])
     svc.recall = AsyncMock(return_value=[])
     svc.get_latest_episode_by_name = AsyncMock(return_value=None)
-    svc.graphiti = MagicMock()
-    svc.graphiti.add_episode = AsyncMock()
-    svc.graphiti.driver = MagicMock()
+    svc._graphiti = MagicMock()
+    svc._graphiti.add_episode = AsyncMock()
+    svc._graphiti.driver = MagicMock()
     return svc
 
 

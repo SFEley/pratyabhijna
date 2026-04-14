@@ -385,7 +385,7 @@ class AgentTools:
         content = abs_path.read_text(encoding="utf-8")
         from graphiti_core.nodes import EpisodeType  # local import to avoid top-level dep at schema time
 
-        await self.service.graphiti.add_episode(
+        await self.service._graphiti.add_episode(
             name=path,
             episode_body=content,
             source=EpisodeType.text,
@@ -415,7 +415,7 @@ class AgentTools:
             node.attributes["last_ingestion_scan"] = now
             updated["last_ingestion_scan"] = now
         if updated:
-            await node.save(self.service.graphiti.driver)
+            await node.save(self.service._graphiti.driver)
         return updated
 
     # --- Control ---

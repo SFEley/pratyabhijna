@@ -64,9 +64,9 @@ def service():
     svc.get_entity_by_name = AsyncMock()
     svc.entity_types = {}
     svc.config = MagicMock(subject_name="TestSubject")
-    svc.graphiti = MagicMock()
-    svc.graphiti.add_episode = AsyncMock()
-    svc.graphiti.driver = MagicMock()
+    svc._graphiti = MagicMock()
+    svc._graphiti.add_episode = AsyncMock()
+    svc._graphiti.driver = MagicMock()
     return svc
 
 
@@ -235,8 +235,8 @@ async def test_ingest_file_calls_add_episode(tools, service, repo):
 
     await tools.ingest_file("writing/piece.md")
 
-    service.graphiti.add_episode.assert_awaited_once()
-    kwargs = service.graphiti.add_episode.await_args.kwargs
+    service._graphiti.add_episode.assert_awaited_once()
+    kwargs = service._graphiti.add_episode.await_args.kwargs
     assert kwargs["name"] == "writing/piece.md"
     assert kwargs["episode_body"] == "the piece"
     assert "writing/piece.md" in kwargs["source_description"]
