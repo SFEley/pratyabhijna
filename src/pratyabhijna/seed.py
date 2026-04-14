@@ -1,18 +1,17 @@
-"""Seed the subject Person node from soul and identity prose files.
+"""Create the subject's Person node in the graph.
 
-Reads two markdown files and writes their content into the soul
-and identity attributes of the subject Person node. Creates the
-node if it doesn't exist.
+The subject node is the anchor for identity-atom edges — observations,
+drives, positions, and questions connect to it. The tier text itself
+(SOUL, IDENTITY, USER, THREADS, CHRONICLE) lives in the subject's repo,
+not on this node. Seeding therefore needs only the subject's name.
 
-This is a deliberate CLI action, not an MCP tool — soul and
-identity are protected tiers that change through deliberate
-reflection, not automated synthesis.
+This is a deliberate CLI action, not an MCP tool — a Person node is
+meant to be created once per deployment.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -27,62 +26,31 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 
-async def seed_subject(
-    service: PratyabhijnaService,
-    soul_path: Path,
-    identity_path: Path,
-) -> dict:
-    """Populate the subject Person node with soul and identity content.
+async def seed_subject(service: PratyabhijnaService) -> dict:
+    """Ensure the subject's Person node exists in the graph.
 
-    Reads the given file paths and writes their content into the
-    subject node's attributes. Creates the node if it doesn't exist;
-    updates it if it does. Never touches the context tier.
+    Creates the node with the configured subject name if it doesn't
+    exist yet. No-ops and reports ``"exists"`` when already present.
 
-    Returns a summary dict with action taken and which files loaded.
+    Tier content (soul, identity, etc.) is not stored on the node —
+    files in the subject's repo are canonical. This is just the anchor.
     """
     subject_name = service.config.subject_name
-
-    # Read files
-    soul_text, soul_loaded = _read_file(soul_path, "soul")
-    identity_text, identity_loaded = _read_file(identity_path, "identity")
-
-    # Find or create node
     node = await get_subject_node(service)
-    if node is None:
-        node = await _create_subject_node(
-            service, subject_name, soul_text, identity_text,
-        )
-        action = "created"
-    else:
-        if soul_text is not None:
-            node.attributes["soul"] = soul_text
-        if identity_text is not None:
-            node.attributes["identity"] = identity_text
-        await node.save(service._graphiti.driver)
-        action = "updated"
+    if node is not None:
+        log.info("Seed: subject node '%s' already exists", subject_name)
+        return {"subject": subject_name, "action": "exists"}
 
-    log.info("Seed %s: subject node '%s'", action, subject_name)
-    return {
-        "subject": subject_name,
-        "action": action,
-        "soul_loaded": soul_loaded,
-        "identity_loaded": identity_loaded,
-    }
+    await _create_subject_node(service, subject_name)
+    log.info("Seed: created subject node '%s'", subject_name)
+    return {"subject": subject_name, "action": "created"}
 
 
 async def _create_subject_node(
     service: PratyabhijnaService,
     name: str,
-    soul_text: str | None,
-    identity_text: str | None,
 ) -> EntityNode:
-    """Create a new subject Person node with identity attributes."""
-    attrs = {"person_type": "AI"}
-    if soul_text is not None:
-        attrs["soul"] = soul_text
-    if identity_text is not None:
-        attrs["identity"] = identity_text
-
+    """Create a new subject Person node with minimal attributes."""
     node = EntityNode(
         uuid=str(uuid4()),
         name=name,
@@ -91,19 +59,8 @@ async def _create_subject_node(
         created_at=datetime.now(timezone.utc),
         name_embedding=None,
         summary="An AI identity",
-        attributes=attrs,
+        attributes={"person_type": "AI"},
     )
     await node.generate_name_embedding(service._graphiti.embedder)
     await node.save(service._graphiti.driver)
     return node
-
-
-def _read_file(path: Path, label: str) -> tuple[str | None, bool]:
-    """Read a file, returning (content, success). Warns on missing files."""
-    try:
-        text = path.read_text()
-        log.info("Loaded %s from %s", label, path)
-        return text, True
-    except FileNotFoundError:
-        log.warning("File not found for %s: %s", label, path)
-        return None, False

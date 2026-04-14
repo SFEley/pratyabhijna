@@ -3,10 +3,6 @@
 
 subject_name: "Vesper"
 
-seed:
-  soul_path: "~/vesper/memory/SOUL.md"
-  identity_path: "~/vesper/memory/IDENTITY.md"
-
 server:
   url: "https://vesper.you"
   port: 3000    # Local bind port; Caddy proxies from 443.

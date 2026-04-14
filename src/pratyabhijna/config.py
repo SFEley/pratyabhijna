@@ -94,11 +94,11 @@ class OAuthConfig(BaseModel):
 
 
 class SeedConfig(BaseModel):
-    # Default paths the ``seed`` subcommand reads soul/identity prose from.
-    # CLI flags override these; both may be None when a deployment intends
-    # to always pass paths explicitly.
-    soul_path: str | None = None
-    identity_path: str | None = None
+    # Reserved for future seed-command options. Currently empty: the
+    # seed command creates the subject Person node using config.subject_name
+    # and does not read tier prose from disk (files in the subject's repo
+    # are canonical, read by bootstrap at request time).
+    pass
 
 
 class ResourcesConfig(BaseModel):

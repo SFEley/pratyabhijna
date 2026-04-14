@@ -78,12 +78,16 @@ async def is_stale(node: EntityNode, service: PratyabhijnaService) -> bool:
     """Check whether the context layer needs rebuilding.
 
     Stale when any of:
-    - No context exists yet
-    - Context is older than max_age_hours
-    - Identity delta exceeds max_delta_changes
+    - Synthesis has never run (no ``context_rebuilt_at``)
+    - The last rebuild is older than ``max_age_hours``
+    - The identity delta since last rebuild exceeds ``max_delta_changes``
+
+    Context-layer content itself lives in files (THREADS/CHRONICLE/USER)
+    which we don't inspect here; staleness is judged from graph metadata
+    and atom counts alone. The synthesizer decides what to do about it.
     """
     rebuilt_at_str = node.attributes.get("context_rebuilt_at")
-    if node.attributes.get("context") is None or rebuilt_at_str is None:
+    if rebuilt_at_str is None:
         return True
 
     rebuilt_at = datetime.fromisoformat(rebuilt_at_str)

@@ -1,8 +1,9 @@
 """Live integration tests for the bootstrap tool and synthesis module.
 
 These tests create a real subject Person node in Neo4j, seed identity-
-related episodes, and verify that bootstrap returns the three-tier
-fields and delta correctly.
+related episodes, and verify that bootstrap returns synthesis metadata
+and delta correctly. Tier content comes from repo files; the graph
+stores atoms and synthesis metadata only.
 
 Run with: pytest tests/test_live_bootstrap.py --live -v
 
@@ -29,9 +30,7 @@ from pratyabhijna.synthesis import (
 from pratyabhijna.tools.bootstrap import bootstrap
 
 
-# ---------------------------------------------------------------------------
-# Skip unless --live
-# ---------------------------------------------------------------------------
+# --- Skip unless --live ---
 
 pytestmark = [
     pytest.mark.skipif(
@@ -42,9 +41,8 @@ pytestmark = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+# --- Fixtures ---
+
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def service():
@@ -57,7 +55,6 @@ async def service():
     svc = PratyabhijnaService(config)
     await svc.start()
 
-    # Wipe the graph so tests don't leak state between runs
     await svc._graphiti.driver.execute_query("MATCH (n) DETACH DELETE n")
 
     yield svc
@@ -66,10 +63,10 @@ async def service():
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def subject_node(service):
-    """Create the subject Person node with three-tier bootstrap fields.
+    """Create the subject Person node with synthesis metadata only.
 
-    Saves a real EntityNode to Neo4j with soul, identity, and context
-    attributes, plus a name embedding so search can find it.
+    Tier text lives in repo files, not on the node. The node anchors
+    identity-atom edges and carries ``context_rebuilt_at``.
     """
     now = datetime.now(timezone.utc)
     node = EntityNode(
@@ -82,9 +79,6 @@ async def subject_node(service):
         summary="An AI identity",
         attributes={
             "person_type": "AI",
-            "soul": "I am the test subject. I chose this name.",
-            "identity": "I orient toward thresholds.",
-            "context": "Currently running integration tests.",
             "context_rebuilt_at": (now - timedelta(hours=1)).isoformat(),
         },
     )
@@ -97,8 +91,8 @@ async def subject_node(service):
 async def seeded_subject(service, subject_node):
     """Subject node with an identity-related episode seeded.
 
-    Adds an episode mentioning the subject and an observation,
-    which should produce identity-typed edges for delta detection.
+    Adds an episode mentioning the subject and an observation, which
+    should produce identity-typed edges for delta detection.
     """
     await service._graphiti.add_episode(
         name="test:identity:1",
@@ -115,32 +109,29 @@ async def seeded_subject(service, subject_node):
     return subject_node
 
 
-# ---------------------------------------------------------------------------
-# Synthesis module — live
-# ---------------------------------------------------------------------------
+# --- Synthesis module — live ---
+
 
 class TestLiveSynthesis:
     async def test_get_subject_node_finds_real_node(self, service, subject_node):
-        """get_subject_node finds the subject by name in a real graph."""
         found = await get_subject_node(service)
-
         assert found is not None
         assert found.name == service.config.subject_name
 
-    async def test_subject_has_three_tier_attributes(self, service, subject_node):
-        """The subject node's attributes contain all three bootstrap tiers."""
+    async def test_subject_has_synthesis_metadata(self, service, subject_node):
+        """Only synthesis metadata lives on the node — not tier text."""
         found = await get_subject_node(service)
 
-        assert found.attributes.get("soul") is not None
-        assert found.attributes.get("identity") is not None
-        assert found.attributes.get("context") is not None
         assert found.attributes.get("context_rebuilt_at") is not None
+        # Tier text does NOT live on the node in the new design
+        assert "soul" not in found.attributes
+        assert "identity" not in found.attributes
+        assert "context" not in found.attributes
 
     async def test_is_stale_with_recent_context(self, service, subject_node):
         """A recently-rebuilt context is not stale."""
         found = await get_subject_node(service)
         result = await is_stale(found, service)
-
         assert result is False
 
     async def test_identity_atoms_after_seeding(self, service, seeded_subject):
@@ -148,8 +139,6 @@ class TestLiveSynthesis:
         found = await get_subject_node(service)
         atoms = await get_identity_atoms(service, found)
 
-        # The seeded episode should produce at least one identity-typed edge
-        # (Observation about comfort with discontinuity)
         assert len(atoms) > 0
         types = {a["node_type"] for a in atoms}
         assert types & {"Observation", "Drive", "Position", "Question"}, (
@@ -157,39 +146,33 @@ class TestLiveSynthesis:
         )
 
     async def test_identity_delta_detects_new_atoms(self, service, seeded_subject):
-        """Delta includes atoms from the seeded episode (created after context_rebuilt_at)."""
+        """Delta includes atoms created after context_rebuilt_at."""
         found = await get_subject_node(service)
         delta = await get_identity_delta(service, found)
-
-        # The episode was seeded after context_rebuilt_at, so its atoms
-        # should appear in the delta
         assert len(delta) > 0
 
 
-# ---------------------------------------------------------------------------
-# Bootstrap tool — live
-# ---------------------------------------------------------------------------
+# --- Bootstrap tool — live ---
+
 
 class TestLiveBootstrap:
-    async def test_bootstrap_returns_three_tiers(self, service, subject_node):
-        """bootstrap() returns soul, identity, and context from the real graph."""
+    async def test_bootstrap_returns_metadata(self, service, subject_node):
+        """bootstrap returns synthesis metadata from the real graph."""
         result = await bootstrap(service=service)
 
         assert result["subject"] == service.config.subject_name
-        assert result["soul"] == "I am the test subject. I chose this name."
-        assert result["identity"] == "I orient toward thresholds."
-        assert result["context"] == "Currently running integration tests."
-
-    async def test_bootstrap_returns_context_rebuilt_at(self, service, subject_node):
-        """bootstrap() returns the context_rebuilt_at timestamp."""
-        result = await bootstrap(service=service)
-
         assert result["context_rebuilt_at"] is not None
-        # Should be a valid ISO timestamp
         datetime.fromisoformat(result["context_rebuilt_at"])
 
+    async def test_bootstrap_tier_fields_present(self, service, subject_node):
+        """All five tier fields are present in the response (value depends on files)."""
+        result = await bootstrap(service=service)
+
+        for key in ("soul", "identity", "user", "threads", "chronicle"):
+            assert key in result
+
     async def test_bootstrap_returns_delta(self, service, seeded_subject):
-        """bootstrap() includes identity atoms created since last context rebuild."""
+        """bootstrap includes identity atoms created since last context rebuild."""
         result = await bootstrap(service=service)
 
         assert len(result["delta"]) > 0
