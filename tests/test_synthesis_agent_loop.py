@@ -115,8 +115,14 @@ def _tool_use_block(tool_use_id: str, name: str, inp: dict | None = None) -> _Bl
 
 
 class FakeClient:
-    """Returns scripted responses. Each entry in ``script`` is the
-    ``content`` list for one Messages.create call."""
+    """Returns scripted responses via a streaming-shaped API.
+
+    ``messages.stream(**kwargs)`` returns an async context manager; on
+    entry it yields a stream object whose ``get_final_message()`` returns
+    the next scripted response. Matches Anthropic's streaming shape
+    since ``run_synthesis`` uses ``messages.stream`` (required by the
+    SDK when ``max_tokens`` would exceed the non-streaming timeout).
+    """
 
     def __init__(self, script: list[list[_Block]]):
         self._script = list(script)
@@ -124,18 +130,29 @@ class FakeClient:
 
         fake = self
 
+        class _StreamCtx:
+            def __init__(self, response):
+                self._response = response
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *exc):
+                return None
+            async def get_final_message(self):
+                return self._response
+
         class _Messages:
-            async def create(self, **kwargs):
+            def stream(self, **kwargs):
                 fake.calls.append(kwargs)
                 if not fake._script:
                     raise AssertionError("FakeClient: script exhausted")
                 content = fake._script.pop(0)
-                return _Response(
+                response = _Response(
                     content=content,
                     stop_reason="end_turn" if not any(
                         getattr(b, "type", None) == "tool_use" for b in content
                     ) else "tool_use",
                 )
+                return _StreamCtx(response)
 
         self.messages = _Messages()
 

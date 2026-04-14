@@ -783,7 +783,12 @@ async def run_synthesis(
                 "effort": config.synthesis.thinking.effort
             }
 
-        response = await client.messages.create(**create_kwargs)
+        # Stream the response. At our max_tokens (24k), the SDK rejects
+        # non-streaming requests because they could exceed the 10-minute
+        # non-streaming timeout. get_final_message() accumulates the
+        # stream into the same Message shape we'd otherwise get back.
+        async with client.messages.stream(**create_kwargs) as stream:
+            response = await stream.get_final_message()
 
         # Append the assistant turn as-is (including any thinking blocks).
         messages.append({"role": "assistant", "content": response.content})
