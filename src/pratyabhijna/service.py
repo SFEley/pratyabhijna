@@ -189,3 +189,29 @@ class PratyabhijnaService:
         if not uuids:
             return []
         return await EpisodicNode.get_by_uuids(self._graphiti.driver, uuids)
+
+    async def get_latest_episode_by_name(self, name: str) -> EpisodicNode | None:
+        """Return the most-recently-created episode whose name matches exactly.
+
+        Used by the synthesizer's ingestion pass to decide whether a repo
+        file has already been ingested (and whether it's been revised
+        since). Episodes ingested from files use the repo-relative path
+        as ``name`` — e.g. ``writing/solo-22-visible-life.md`` — so an
+        exact-match lookup is correct.
+
+        Returns None if no episode has that name.
+        """
+        driver = self._graphiti.driver
+        records, _, _ = await driver.execute_query(
+            """
+            MATCH (e:Episodic {name: $name})
+            RETURN e.uuid AS uuid, e.created_at AS created_at
+            ORDER BY e.created_at DESC
+            LIMIT 1
+            """,
+            name=name,
+            routing_="r",
+        )
+        if not records:
+            return None
+        return await EpisodicNode.get_by_uuid(driver, records[0]["uuid"])
