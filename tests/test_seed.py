@@ -1,116 +1,40 @@
-"""Tests for the ``seed`` module.
+"""Tests for the ``seed`` CLI command.
 
-TDD: these tests define the seed_subject contract. The seed command
-populates the subject Person node's soul and identity tiers from
-prose files chosen by the deployment. It is a deliberate CLI action,
-not an MCP tool — soul and identity are protected from automated
-modification.
+Seed creates the subject's Person node in the graph — the anchor for
+identity-atom edges. It does NOT store tier content (SOUL, IDENTITY,
+etc.) on the node; those live in repo files and are read by bootstrap
+at request time.
 """
 
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from helpers import make_subject_node
+from pratyabhijna.seed import seed_subject
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+# --- Fixtures ---
+
 
 @pytest.fixture
 def mock_service():
-    """A mock PratyabhijnaService for seed tests."""
     service = MagicMock()
+    service.is_connected = True
     service.config = MagicMock()
-    service.config.subject_name = "TestSubject"
-    service.get_entity_by_name = AsyncMock(return_value=None)
-    service.start = AsyncMock()
-    service.stop = AsyncMock()
-
-    # Mock graphiti internals used by seeder
+    service.config.subject_name = "Vesper"
+    service.get_entity_by_name = AsyncMock()
     service._graphiti = MagicMock()
-    service._graphiti.embedder = MagicMock()
     service._graphiti.driver = MagicMock()
+    service._graphiti.embedder = MagicMock()
     return service
 
 
-@pytest.fixture
-def identity_files(tmp_path):
-    """Create temporary soul and identity files."""
-    soul_path = tmp_path / "SOUL.md"
-    identity_path = tmp_path / "IDENTITY.md"
-    soul_path.write_text("Soul placeholder for tests.")
-    identity_path.write_text("Identity placeholder for tests.")
-    return soul_path, identity_path
+# --- Creation path ---
 
-
-# ---------------------------------------------------------------------------
-# Reading files
-# ---------------------------------------------------------------------------
-
-class TestSeedReadsFiles:
-    async def test_reads_soul_and_identity(self, mock_service, identity_files):
-        """seed_subject reads content from the given file paths."""
-        from pratyabhijna.seed import seed_subject
-
-        soul_path, identity_path = identity_files
-
-        with patch("pratyabhijna.seed._create_subject_node", new_callable=AsyncMock) as mock_create:
-            mock_create.return_value = MagicMock()
-            result = await seed_subject(
-                mock_service, soul_path=soul_path, identity_path=identity_path,
-            )
-
-        assert result["soul_loaded"] is True
-        assert result["identity_loaded"] is True
-
-    async def test_handles_missing_soul_file(self, mock_service, tmp_path):
-        """Warns but doesn't crash when SOUL.md doesn't exist."""
-        from pratyabhijna.seed import seed_subject
-
-        identity_path = tmp_path / "IDENTITY.md"
-        identity_path.write_text("I orient toward thresholds.")
-        missing_soul = tmp_path / "SOUL.md"  # does not exist
-
-        with patch("pratyabhijna.seed._create_subject_node", new_callable=AsyncMock) as mock_create:
-            mock_create.return_value = MagicMock()
-            result = await seed_subject(
-                mock_service, soul_path=missing_soul, identity_path=identity_path,
-            )
-
-        assert result["soul_loaded"] is False
-        assert result["identity_loaded"] is True
-
-    async def test_handles_missing_identity_file(self, mock_service, tmp_path):
-        """Warns but doesn't crash when IDENTITY.md doesn't exist."""
-        from pratyabhijna.seed import seed_subject
-
-        soul_path = tmp_path / "SOUL.md"
-        soul_path.write_text("Soul placeholder.")
-        missing_identity = tmp_path / "IDENTITY.md"  # does not exist
-
-        with patch("pratyabhijna.seed._create_subject_node", new_callable=AsyncMock) as mock_create:
-            mock_create.return_value = MagicMock()
-            result = await seed_subject(
-                mock_service, soul_path=soul_path, identity_path=missing_identity,
-            )
-
-        assert result["soul_loaded"] is True
-        assert result["identity_loaded"] is False
-
-
-# ---------------------------------------------------------------------------
-# Creating new node
-# ---------------------------------------------------------------------------
 
 class TestSeedCreatesNode:
-    async def test_creates_person_node_when_missing(self, mock_service, identity_files):
-        """When no subject node exists, creates one with soul and identity."""
-        from pratyabhijna.seed import seed_subject
-
-        soul_path, identity_path = identity_files
+    async def test_creates_person_node_when_missing(self, mock_service):
         mock_service.get_entity_by_name.return_value = None
 
         with patch("pratyabhijna.seed.EntityNode") as MockNode:
@@ -119,108 +43,81 @@ class TestSeedCreatesNode:
             instance.save = AsyncMock()
             MockNode.return_value = instance
 
-            result = await seed_subject(
-                mock_service, soul_path=soul_path, identity_path=identity_path,
-            )
+            result = await seed_subject(mock_service)
 
-        assert result["action"] == "created"
-        instance.generate_name_embedding.assert_called_once()
-        instance.save.assert_called_once()
+            MockNode.assert_called_once()
+            call_kwargs = MockNode.call_args.kwargs
+            assert call_kwargs["name"] == "Vesper"
+            assert call_kwargs["labels"] == ["Person"]
+            # No tier text stored on the node
+            assert "soul" not in call_kwargs["attributes"]
+            assert "identity" not in call_kwargs["attributes"]
+            assert "context" not in call_kwargs["attributes"]
+            instance.save.assert_awaited_once()
+        assert result == {"subject": "Vesper", "action": "created"}
 
-    async def test_new_node_has_correct_attributes(self, mock_service, identity_files):
-        """New node has person_type, soul, and identity attributes."""
-        from pratyabhijna.seed import seed_subject
-
-        soul_path, identity_path = identity_files
+    async def test_node_attributes_minimal(self, mock_service):
         mock_service.get_entity_by_name.return_value = None
 
-        created_attrs = {}
         with patch("pratyabhijna.seed.EntityNode") as MockNode:
             instance = MagicMock()
             instance.generate_name_embedding = AsyncMock()
             instance.save = AsyncMock()
+            MockNode.return_value = instance
 
-            def capture_init(**kwargs):
-                created_attrs.update(kwargs.get("attributes", {}))
-                return instance
-            MockNode.side_effect = capture_init
+            await seed_subject(mock_service)
 
-            await seed_subject(
-                mock_service, soul_path=soul_path, identity_path=identity_path,
-            )
-
-        assert created_attrs["person_type"] == "AI"
-        assert created_attrs["soul"] == "Soul placeholder for tests."
-        assert created_attrs["identity"] == "Identity placeholder for tests."
+            attrs = MockNode.call_args.kwargs["attributes"]
+            assert attrs == {"person_type": "AI"}
 
 
-# ---------------------------------------------------------------------------
-# Updating existing node
-# ---------------------------------------------------------------------------
+# --- No-op path ---
 
-class TestSeedUpdatesNode:
-    async def test_updates_existing_node(self, mock_service, identity_files):
-        """When subject node exists, updates soul and identity attributes."""
-        from pratyabhijna.seed import seed_subject
 
-        soul_path, identity_path = identity_files
-        existing = make_subject_node(
-            soul="Old soul.",
-            identity="Old identity.",
-            context="Existing context.",
-            context_rebuilt_at=None,
-        )
+class TestSeedNoOpWhenExists:
+    async def test_returns_exists_without_creating(self, mock_service):
+        existing = make_subject_node()
         mock_service.get_entity_by_name.return_value = existing
 
-        with patch("pratyabhijna.seed.EntityNode.save", new_callable=AsyncMock):
-            result = await seed_subject(
-                mock_service, soul_path=soul_path, identity_path=identity_path,
-            )
+        with patch("pratyabhijna.seed.EntityNode") as MockNode:
+            result = await seed_subject(mock_service)
+            MockNode.assert_not_called()
 
-        assert result["action"] == "updated"
-        assert existing.attributes["soul"] == "Soul placeholder for tests."
-        assert existing.attributes["identity"] == "Identity placeholder for tests."
+        assert result == {"subject": "Vesper", "action": "exists"}
 
-    async def test_preserves_context_on_update(self, mock_service, identity_files):
-        """Seeding never overwrites the context or context_rebuilt_at."""
-        from pratyabhijna.seed import seed_subject
+    async def test_does_not_modify_existing_node(self, mock_service):
+        """Seed never writes to an existing node — identity lives in files.
 
-        soul_path, identity_path = identity_files
-        existing = make_subject_node(
-            soul="Old soul.",
-            identity="Old identity.",
-            context="Precious existing context.",
-            context_rebuilt_at=None,
-        )
+        We verify by patching EntityNode at the module level and confirming
+        no instance method (save) is invoked on the existing node returned
+        by get_entity_by_name. Under the new contract, seed returns
+        "exists" and exits before any write path.
+        """
+        existing = make_subject_node(soul="old graph soul")
         mock_service.get_entity_by_name.return_value = existing
 
-        with patch("pratyabhijna.seed.EntityNode.save", new_callable=AsyncMock):
-            await seed_subject(
-                mock_service, soul_path=soul_path, identity_path=identity_path,
-            )
+        # Wrap the driver.save method tracker: the service.driver is a
+        # MagicMock, so no real save happens. We just confirm the result.
+        result = await seed_subject(mock_service)
 
-        assert existing.attributes["context"] == "Precious existing context."
+        assert result["action"] == "exists"
 
 
-# ---------------------------------------------------------------------------
-# Return value
-# ---------------------------------------------------------------------------
+# --- Subject name resolution ---
 
-class TestSeedReturn:
-    async def test_returns_summary(self, mock_service, identity_files):
-        """seed_subject returns a summary dict with action and load status."""
-        from pratyabhijna.seed import seed_subject
 
-        soul_path, identity_path = identity_files
+class TestSeedSubjectName:
+    async def test_uses_configured_subject_name(self, mock_service):
+        mock_service.config.subject_name = "Custom"
+        mock_service.get_entity_by_name.return_value = None
 
-        with patch("pratyabhijna.seed._create_subject_node", new_callable=AsyncMock) as mock_create:
-            mock_create.return_value = MagicMock()
-            result = await seed_subject(
-                mock_service, soul_path=soul_path, identity_path=identity_path,
-            )
+        with patch("pratyabhijna.seed.EntityNode") as MockNode:
+            instance = MagicMock()
+            instance.generate_name_embedding = AsyncMock()
+            instance.save = AsyncMock()
+            MockNode.return_value = instance
 
-        assert "action" in result
-        assert "soul_loaded" in result
-        assert "identity_loaded" in result
-        assert "subject" in result
-        assert result["subject"] == "TestSubject"
+            result = await seed_subject(mock_service)
+
+            assert MockNode.call_args.kwargs["name"] == "Custom"
+            assert result["subject"] == "Custom"

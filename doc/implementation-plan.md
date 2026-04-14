@@ -421,7 +421,7 @@ Full-rebuild tests:
 ### Files
 - `src/pratyabhijna/synthesis.py` (extend with `run_synthesis`, `ingest_new_writings`, branch handling)
 - `src/pratyabhijna/git_ops.py` (new — branch creation, diff, commit helpers against the subject's repo)
-- `skills/pratyabhijna/synthesis/SKILL.md` (new subskill with the behavioral guidance)
+- `skills/pratyabhijna/references/synthesis.md` (new subskill reference with the behavioral guidance)
 - `tests/test_synthesis.py` (extend)
 - `tests/test_synthesis_ingestion.py` (new)
 - `tests/test_synthesis_trigger_phase7.py` (extend)

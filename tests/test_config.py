@@ -244,8 +244,8 @@ class TestConfigDefaults:
         config = PratyabhijnaConfig()
         assert config.subject_name == ""
 
-    def test_default_seed_paths_are_none(self, monkeypatch):
-        """seed.soul_path and seed.identity_path default to None."""
+    def test_seed_config_is_empty(self, monkeypatch):
+        """seed config carries no fields — subject creation needs only the name."""
         from pratyabhijna.config import PratyabhijnaConfig
 
         for key in list(os.environ):
@@ -253,8 +253,8 @@ class TestConfigDefaults:
                 monkeypatch.delenv(key, raising=False)
 
         config = PratyabhijnaConfig()
-        assert config.seed.soul_path is None
-        assert config.seed.identity_path is None
+        assert not hasattr(config.seed, "soul_path")
+        assert not hasattr(config.seed, "identity_path")
 
     def test_default_synthesis_rebuild_delay(self, monkeypatch):
         """Default synthesis rebuild delay is 2 hours."""

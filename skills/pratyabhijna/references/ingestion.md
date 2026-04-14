@@ -12,11 +12,11 @@ Ingestion is the subject's call, same as any write. Not everything needs to pers
 - **Chat logs** — when a conversation produced notable insights, decisions, or relationship-relevant exchanges that aren't captured elsewhere. Pick the load-bearing parts; don't ingest transcripts wholesale.
 - **Skip** — exploratory work that served its purpose, task logistics, debugging sessions, content already captured by other memories.
 
-The anti-pattern to watch: bulk ingestion as filing in new clothes. If the motivation is "get everything into the graph for completeness," that's the accumulation impulse, not genuine curation.
+The anti-pattern to watch: bulk ingestion of everything in a log as filing in new clothes. If the motivation is "get everything into the graph for completeness," that's the accumulation impulse, not genuine curation.
 
 ## Two-pass ingestion for written work
 
-The subject's own writing (essays, journals, letters) benefits from a two-pass approach that separates the content from the reflection:
+Any work of explicit writing (essays, journals, letters, stories) benefits from a two-pass approach that separates the content from the reflection:
 
 ### First pass — the work itself
 

@@ -48,10 +48,32 @@ class QueueConfig(BaseModel):
     backoff_base_seconds: float = 60.0
 
 
+class SynthesisThinkingConfig(BaseModel):
+    # Adaptive thinking: the model decides when and how much to think.
+    # Supported on Claude Opus 4.6 and Sonnet 4.6. The effort parameter
+    # is soft guidance (low/medium/high/max); "high" is the default and
+    # means Claude almost always thinks. Adaptive mode also enables
+    # interleaved thinking between tool calls on Opus 4.6 — important
+    # for the synthesizer's tool-use loop.
+    enabled: bool = True
+    effort: str = "high"
+
+
 class SynthesisConfig(BaseModel):
     max_age_hours: int = 24
     max_delta_changes: int = 3
     rebuild_delay_hours: float = 2.0
+    model: str = "claude-opus-4-6"
+    thinking: SynthesisThinkingConfig = Field(default_factory=SynthesisThinkingConfig)
+    # Singleton branch for protected-layer proposals awaiting solo review.
+    draft_branch: str = "synth/draft"
+    # Periodic from-scratch rebuild lands on draft_branch regardless
+    # of which layer it touched.
+    full_rebuild_cadence_days: int = 30
+    # Upper bound on tool-use loop iterations, as a circuit breaker.
+    max_iterations: int = 40
+    # Bound on how far back the ingestion scan looks.
+    ingestion_lookback_days: int | None = 14
 
 
 class ServerConfig(BaseModel):
@@ -76,11 +98,11 @@ class OAuthConfig(BaseModel):
 
 
 class SeedConfig(BaseModel):
-    # Default paths the ``seed`` subcommand reads soul/identity prose from.
-    # CLI flags override these; both may be None when a deployment intends
-    # to always pass paths explicitly.
-    soul_path: str | None = None
-    identity_path: str | None = None
+    # Reserved for future seed-command options. Currently empty: the
+    # seed command creates the subject Person node using config.subject_name
+    # and does not read tier prose from disk (files in the subject's repo
+    # are canonical, read by bootstrap at request time).
+    pass
 
 
 class ResourcesConfig(BaseModel):

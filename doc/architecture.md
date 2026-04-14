@@ -215,8 +215,8 @@ synthesis:
   rebuild_delay_hours: 2.0         # How long after last identity write before synthesis runs
   model: "claude-opus-4-6"         # Synthesis is deep reflection, not fact integration
   thinking:
-    enabled: true
-    effort: "high"                 # Adaptive thinking, high effort
+    enabled: true                  # Uses Anthropic adaptive thinking (thinking.type: "adaptive")
+    effort: "high"                 # low | medium | high | max — soft guidance on thinking spend
   max_age_hours: 24                # Staleness threshold (age)
   max_delta_changes: 3             # Staleness threshold (delta count)
   full_rebuild_cadence_days: 30    # Periodic from-scratch rebuild on synth/draft

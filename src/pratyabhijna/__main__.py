@@ -28,6 +28,7 @@ from pratyabhijna.log import configure_logging, get_logger
 from pratyabhijna.queue import WorkQueue
 from pratyabhijna.server import create_server
 from pratyabhijna.service import PratyabhijnaService
+from pratyabhijna.synthesis_agent import make_synthesize_handler
 from pratyabhijna.tools.correct import make_handler as correct_make_handler
 from pratyabhijna.tools.remember import make_handler as remember_make_handler
 
@@ -50,8 +51,13 @@ def build_lifespan(service: PratyabhijnaService, queue: WorkQueue):
     @asynccontextmanager
     async def lifespan(app: FastMCP):
         await service.start()
-        queue.register("add_episode", remember_make_handler(service))
-        queue.register("correct_memory", correct_make_handler(service))
+        # Register synthesize first so remember/correct handlers — which
+        # schedule synthesize tasks via reschedule_or_enqueue — can
+        # reference it. WorkQueue.reschedule_or_enqueue validates the
+        # handler exists before inserting.
+        queue.register("synthesize", make_synthesize_handler(service, service.config))
+        queue.register("add_episode", remember_make_handler(service, queue=queue))
+        queue.register("correct_memory", correct_make_handler(service, queue=queue))
         await queue.start()
         log.info("Pratyabhijna server ready")
         try:
@@ -64,79 +70,50 @@ def build_lifespan(service: PratyabhijnaService, queue: WorkQueue):
     return lifespan
 
 
-def _parse_seed_args(
-    argv: list[str],
-) -> tuple[str | None, str | None, str | None] | None:
-    """Parse ``seed [--name NAME] [--soul-file PATH] [--identity-file PATH]``.
+def _parse_seed_args(argv: list[str]) -> str | None | False:
+    """Parse ``seed [--name NAME]``.
 
-    Returns (name, soul_file, identity_file) or None on usage error.
-    Any combination of flags may be omitted; callers fall back to config.
+    Returns the name (or None if absent), or False on usage error.
     """
     name: str | None = None
-    soul_file: str | None = None
-    identity_file: str | None = None
     i = 0
     while i < len(argv):
         a = argv[i]
         if a == "--name" and i + 1 < len(argv):
             name = argv[i + 1]
             i += 2
-        elif a == "--soul-file" and i + 1 < len(argv):
-            soul_file = argv[i + 1]
-            i += 2
-        elif a == "--identity-file" and i + 1 < len(argv):
-            identity_file = argv[i + 1]
-            i += 2
         else:
-            return None
-    return name, soul_file, identity_file
+            return False
+    return name
 
 
 def run_seed(config: PratyabhijnaConfig, argv: list[str]) -> int:
     """Run the seed subcommand synchronously.
 
-    CLI flags override config values. ``subject_name`` and both file
-    paths must be resolved (from CLI or config) before the service
-    is started; otherwise returns exit code 2 with a usage error.
+    Creates the subject's Person node in the graph. Tier text is no
+    longer stored on the node — files in the subject's repo are the
+    canonical source. This command now just anchors the identity.
     """
     import anyio
 
     from pratyabhijna.seed import seed_subject
 
     parsed = _parse_seed_args(argv)
-    if parsed is None:
+    if parsed is False:
         print(
-            "Usage: python -m pratyabhijna seed "
-            "[--name NAME] [--soul-file PATH] [--identity-file PATH]",
+            "Usage: python -m pratyabhijna seed [--name NAME]",
             file=sys.stderr,
         )
         return 2
-    cli_name, cli_soul, cli_identity = parsed
+    cli_name = parsed
 
     subject_name = cli_name or config.subject_name
-    soul_path_str = cli_soul or config.seed.soul_path
-    identity_path_str = cli_identity or config.seed.identity_path
-
-    missing = []
     if not subject_name:
-        missing.append("subject name (--name or config subject_name)")
-    if not soul_path_str:
-        missing.append("soul file (--soul-file or config seed.soul_path)")
-    if not identity_path_str:
-        missing.append("identity file (--identity-file or config seed.identity_path)")
-    if missing:
-        print("seed: missing required values:", file=sys.stderr)
-        for m in missing:
-            print(f"  - {m}", file=sys.stderr)
+        print(
+            "seed: missing subject name (--name or config subject_name)",
+            file=sys.stderr,
+        )
         return 2
-
-    from pathlib import Path
-
-    soul_path = Path(soul_path_str).expanduser()
-    identity_path = Path(identity_path_str).expanduser()
-
-    # CLI --name overrides the config value in-place so the service
-    # and seeder both see the same subject.
     if cli_name:
         config.subject_name = cli_name
 
@@ -144,9 +121,7 @@ def run_seed(config: PratyabhijnaConfig, argv: list[str]) -> int:
         service = PratyabhijnaService(config)
         await service.start()
         try:
-            result = await seed_subject(
-                service, soul_path=soul_path, identity_path=identity_path,
-            )
+            result = await seed_subject(service)
             log.info("Seed result: %s", result)
         finally:
             await service.stop()

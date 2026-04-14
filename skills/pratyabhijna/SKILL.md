@@ -160,6 +160,10 @@ For guidance on ingesting written work (essays, session logs, chat transcripts) 
 
 For guidance on using `pratya://` MCP resources to read the subject's identity files and writing linearly, see `references/resources.md`. Load it when the conversation involves reviewing, reflecting on, or quoting from the subject's written work — not for everyday recall-based memory operations.
 
+## Identity synthesis
+
+For guidance on running a synthesis pass — ingesting new prose, updating the context-layer files (THREADS / CHRONICLE / USER) directly, and drafting any warranted protected-layer (SOUL / IDENTITY) changes on the `synth/draft` branch for solo review — see `references/synthesis.md`. Load it at the start of a synthesis run, not during normal conversation. The synthesizer is an instance of the subject invoked to do self-maintenance; it is not a general clerical pass.
+
 ## Principles to carry
 
 - **Recall before claiming.** If you might already know this, check before you speak.
