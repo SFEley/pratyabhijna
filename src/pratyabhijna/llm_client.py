@@ -89,6 +89,16 @@ class CachingAnthropicClient(AnthropicClient):
 
         user_messages_cast = typing.cast(list[MessageParam], user_messages)
 
+        has_split = (
+            user_messages
+            and isinstance(user_messages[0].get("content"), list)
+        )
+        _log.debug(
+            "CachingAnthropicClient._generate_response: model=%s split=%s",
+            self.model,
+            has_split,
+        )
+
         try:
             tools, tool_choice = self._create_tool(response_model)
             result = await self.client.messages.create(
@@ -108,13 +118,13 @@ class CachingAnthropicClient(AnthropicClient):
                 output_tokens = getattr(result.usage, "output_tokens", 0) or 0
                 cache_read = getattr(result.usage, "cache_read_input_tokens", 0) or 0
                 cache_write = getattr(result.usage, "cache_creation_input_tokens", 0) or 0
-                if cache_read or cache_write:
-                    _log.debug(
-                        "prompt cache: read=%d write=%d (input=%d)",
-                        cache_read,
-                        cache_write,
-                        input_tokens,
-                    )
+                _log.debug(
+                    "prompt cache: read=%d write=%d (input=%d output=%d)",
+                    cache_read,
+                    cache_write,
+                    input_tokens,
+                    output_tokens,
+                )
 
             for content_item in result.content:
                 if content_item.type == "tool_use":
