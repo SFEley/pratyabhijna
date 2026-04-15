@@ -256,6 +256,7 @@ async def test_ingest_file_rejects_missing(tools):
 async def test_update_synthesis_metadata_sets_flags(tools, service):
     node = MagicMock()
     node.attributes = {}
+    node.load_name_embedding = AsyncMock()
     node.save = AsyncMock()
     service.get_entity_by_name = AsyncMock(return_value=node)
 
@@ -267,6 +268,7 @@ async def test_update_synthesis_metadata_sets_flags(tools, service):
     assert "last_ingestion_scan" in node.attributes
     assert "context_rebuilt_at" in result
     assert "last_ingestion_scan" in result
+    node.load_name_embedding.assert_awaited_once()
     node.save.assert_awaited_once()
 
 
@@ -274,6 +276,7 @@ async def test_update_synthesis_metadata_sets_flags(tools, service):
 async def test_update_synthesis_metadata_only_sets_what_was_requested(tools, service):
     node = MagicMock()
     node.attributes = {}
+    node.load_name_embedding = AsyncMock()
     node.save = AsyncMock()
     service.get_entity_by_name = AsyncMock(return_value=node)
 

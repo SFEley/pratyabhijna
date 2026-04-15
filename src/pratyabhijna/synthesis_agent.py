@@ -425,6 +425,7 @@ class AgentTools:
             updated["last_ingestion_scan"] = now
             _log.info("synthesis: last_ingestion_scan updated (%s)", now)
         if updated:
+            await node.load_name_embedding(self.service._graphiti.driver)
             await node.save(self.service._graphiti.driver)
         return updated
 
