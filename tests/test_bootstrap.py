@@ -30,6 +30,7 @@ def mock_service():
     service.config.subject_name = "Vesper"
     service.config.synthesis.max_age_hours = 24
     service.config.synthesis.max_delta_changes = 3
+    service.config.synthesis.rebuild_delay_hours = 2
     service.config.resources.repo_path = ""
     return service
 
@@ -239,7 +240,12 @@ class TestBootstrapContract:
 
         await bootstrap(mock_service_with_files, queue=mock_queue)
 
-        mock_queue.reschedule_or_enqueue.assert_called_once_with("synthesize", {})
+        mock_queue.reschedule_or_enqueue.assert_called_once()
+        args, kwargs = mock_queue.reschedule_or_enqueue.call_args
+        assert args == ("synthesize", {})
+        run_at = kwargs["run_at"]
+        expected = datetime.now(timezone.utc) + timedelta(hours=2)
+        assert abs((run_at - expected).total_seconds()) < 5
 
     async def test_fresh_context_does_not_schedule(self, mock_service_with_files):
         """When context is fresh, synthesis is not scheduled even with a queue."""

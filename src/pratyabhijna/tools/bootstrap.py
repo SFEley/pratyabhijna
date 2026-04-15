@@ -17,6 +17,7 @@ on writes.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from pratyabhijna.log import get_logger
@@ -72,7 +73,9 @@ async def bootstrap(
     delta = await get_identity_delta(service, node)
 
     if queue is not None and await is_stale(node, service):
-        await queue.reschedule_or_enqueue("synthesize", {})
+        delay = service.config.synthesis.rebuild_delay_hours
+        run_at = datetime.now(timezone.utc) + timedelta(hours=delay)
+        await queue.reschedule_or_enqueue("synthesize", {}, run_at=run_at)
         _log.info(
             "synthesis scheduled from bootstrap (delta=%d, context_rebuilt_at=%s)",
             len(delta),
