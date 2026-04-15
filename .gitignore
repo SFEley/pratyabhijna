@@ -4,6 +4,7 @@
 
 # Python
 .venv/
+venv/
 __pycache__/
 *.pyc
 *.egg-info/
@@ -11,6 +12,7 @@ __pycache__/
 .envrc
 
 # Environment secrets (never commit these)
+.env
 .env.*
 !.env.example
 
