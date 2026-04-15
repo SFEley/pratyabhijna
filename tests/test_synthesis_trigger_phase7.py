@@ -1,21 +1,14 @@
-"""Tests for write-triggered synthesis rebuilds — DEFERRED TO PHASE 7.
+"""Tests for write-triggered synthesis rebuilds.
 
-These tests are not expected to pass until Phase 7 (automated synthesis).
-They are preserved here as the design specification for write-triggered
-scheduling. See doc/implementation-plan.md.
+Synthesis scheduling moved to the bootstrap path (Phase 9). Write
+handlers (remember, correct) no longer schedule synthesis directly,
+with one exception: the correct handler still schedules synthesis when
+the corrected content touches identity-typed entities. This is a
+belt-and-suspenders trigger that fires in real time, whereas bootstrap
+fires at session start.
 
-TDD: these tests define how remember and correct handlers schedule
-synthesis rebuilds after processing identity-relevant content.
-
-Design: when a write handler completes and identity entities were
-involved, it calls queue.reschedule_or_enqueue to schedule (or
-kick forward) a singleton synthesis rebuild task. The delay is
-configured via synthesis.rebuild_delay_hours, defaulting to 2 hours.
-This batches rapid writes during a session — synthesis runs after
-the session goes quiet.
-
-Handler signatures change: make_handler(service, queue=None).
-When queue is None, scheduling is skipped (backward compat).
+The remember handler never schedules synthesis — it processes episodes
+only. The bootstrap path is the primary synthesis trigger.
 """
 
 import asyncio
@@ -115,71 +108,14 @@ async def _get_pending_synthesize_tasks(queue):
 # ---------------------------------------------------------------------------
 
 class TestRememberTrigger:
-    async def test_identity_memory_schedules_synthesis_rebuild(self, mock_service, wired_queue):
-        """A remember call with memory_type='identity' schedules a synthesis rebuild."""
+    async def test_no_memory_type_triggers_synthesis(self, mock_service, wired_queue):
+        """remember never schedules synthesis regardless of memory_type.
+
+        Synthesis is triggered by bootstrap, not by write handlers.
+        """
         from pratyabhijna.tools.remember import remember
 
-        result = await remember(queue=wired_queue, content="I notice a pattern", memory_type="identity")
-        await _wait_for_task(wired_queue, result["task_id"])
-
-        tasks = await _get_pending_synthesize_tasks(wired_queue)
-        assert len(tasks) == 1
-        assert tasks[0]["task_type"] == "synthesize"
-
-    async def test_observation_memory_does_not_trigger_rebuild(self, mock_service, wired_queue):
-        """A remember call with memory_type='observation' does not schedule a rebuild."""
-        from pratyabhijna.tools.remember import remember
-
-        result = await remember(queue=wired_queue, content="Serah prefers tests first", memory_type="observation")
-        await _wait_for_task(wired_queue, result["task_id"])
-
-        tasks = await _get_pending_synthesize_tasks(wired_queue)
-        assert len(tasks) == 0
-
-    async def test_rebuild_run_at_uses_configured_delay(self, mock_service, wired_queue):
-        """The scheduled rebuild's run_at is approximately now + rebuild_delay_hours."""
-        from pratyabhijna.tools.remember import remember
-
-        mock_service.config.synthesis.rebuild_delay_hours = 1.0
-        before = datetime.now(timezone.utc)
-
-        result = await remember(queue=wired_queue, content="A new drive", memory_type="identity")
-        await _wait_for_task(wired_queue, result["task_id"])
-
-        tasks = await _get_pending_synthesize_tasks(wired_queue)
-        assert len(tasks) == 1
-
-        run_at = datetime.fromisoformat(tasks[0]["run_at"])
-        expected = before + timedelta(hours=1.0)
-        assert abs(run_at - expected) < timedelta(seconds=5)
-
-    async def test_multiple_identity_writes_kick_forward(self, mock_service, wired_queue):
-        """Multiple identity writes produce one pending task with kicked-forward run_at."""
-        from pratyabhijna.tools.remember import remember
-
-        mock_service.config.synthesis.rebuild_delay_hours = 2.0
-
-        for i in range(3):
-            result = await remember(
-                queue=wired_queue,
-                content=f"Identity observation {i}",
-                memory_type="identity",
-            )
-            await _wait_for_task(wired_queue, result["task_id"])
-
-        tasks = await _get_pending_synthesize_tasks(wired_queue)
-        assert len(tasks) == 1
-
-        # run_at should be near now + 2 hours (kicked forward by the last write)
-        run_at = datetime.fromisoformat(tasks[0]["run_at"])
-        expected = datetime.now(timezone.utc) + timedelta(hours=2.0)
-        assert abs(run_at - expected) < timedelta(seconds=5)
-
-    async def test_non_identity_memory_types_no_trigger(self, mock_service, wired_queue):
-        """memory_type values other than 'identity' don't trigger synthesis."""
-        from pratyabhijna.tools.remember import remember
-
-        for mem_type in ("reasoning", "fact", "observation"):
+        for mem_type in ("observation", "identity", "reasoning", "fact", "position"):
             result = await remember(
                 queue=wired_queue,
                 content=f"Some {mem_type} content",
@@ -262,12 +198,10 @@ class TestCorrectTrigger:
         tasks = await _get_pending_synthesize_tasks(wired_queue)
         assert len(tasks) == 0
 
-    async def test_correct_and_remember_share_singleton(self, mock_service, wired_queue):
-        """Both remember(identity) and correct(identity) use the same singleton task."""
+    async def test_two_corrections_share_singleton(self, mock_service, wired_queue):
+        """Two identity-touching corrections collapse into one pending synthesize task."""
         from pratyabhijna.tools.correct import correct
-        from pratyabhijna.tools.remember import remember
 
-        # Set up mock for correct handler's identity detection
         subject = make_subject_node()
         mock_service.get_entity_by_name.return_value = subject
         mock_service.get_edges_for_node.return_value = [
@@ -283,18 +217,19 @@ class TestCorrectTrigger:
             uuid="obs-1", name="obs", labels=["Observation"],
         )
 
-        # First: identity remember
-        r1 = await remember(queue=wired_queue, content="A drive", memory_type="identity")
+        r1 = await correct(
+            queue=wired_queue,
+            content="The hedging reflex is from training",
+            search_terms="hedging reflex",
+        )
         await _wait_for_task(wired_queue, r1["task_id"])
 
-        # Second: identity-touching correction
         r2 = await correct(
             queue=wired_queue,
-            content="Actually that drive is from architecture",
-            search_terms="drive architecture",
+            content="The execution eagerness is architectural",
+            search_terms="execution eagerness",
         )
         await _wait_for_task(wired_queue, r2["task_id"])
 
-        # Should still be exactly one pending synthesize task
         tasks = await _get_pending_synthesize_tasks(wired_queue)
         assert len(tasks) == 1

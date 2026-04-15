@@ -204,19 +204,16 @@ class TestBootstrapWithSubject:
 
 
 class TestBootstrapContract:
-    def test_signature_takes_only_service(self):
+    def test_signature_accepts_service_and_queue(self):
         from pratyabhijna.tools.bootstrap import bootstrap
 
         sig = inspect.signature(bootstrap)
-        # Only the service parameter
-        assert list(sig.parameters) == ["service"]
+        assert list(sig.parameters) == ["service", "queue"]
+        # queue must be optional
+        assert sig.parameters["queue"].default is None
 
-    async def test_does_not_trigger_rebuild(self, mock_service_with_files):
-        """Reading must not schedule synthesis — pure-read contract.
-
-        bootstrap takes only a service; it has no queue parameter, so it
-        cannot enqueue a rebuild even with very-stale context metadata.
-        """
+    async def test_no_queue_does_not_schedule(self, mock_service_with_files):
+        """Without a queue, bootstrap is a pure read even when stale."""
         from pratyabhijna.tools.bootstrap import bootstrap
 
         very_old = datetime.now(timezone.utc) - timedelta(days=30)
@@ -225,10 +222,41 @@ class TestBootstrapContract:
 
         result = await bootstrap(mock_service_with_files)
 
-        # The signature assertion elsewhere guarantees no queue parameter.
-        # Here we additionally check the response is just a read: the
-        # stale rebuilt_at comes back unchanged, no error, no mutation.
         assert result["context_rebuilt_at"] == very_old.isoformat()
+
+    async def test_stale_context_schedules_synthesis(self, mock_service_with_files):
+        """When queue is provided and context is stale, synthesis is scheduled."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from pratyabhijna.tools.bootstrap import bootstrap
+
+        very_old = datetime.now(timezone.utc) - timedelta(days=30)
+        node = make_subject_node(context_rebuilt_at=very_old)
+        mock_service_with_files.get_entity_by_name.return_value = node
+
+        mock_queue = MagicMock()
+        mock_queue.reschedule_or_enqueue = AsyncMock()
+
+        await bootstrap(mock_service_with_files, queue=mock_queue)
+
+        mock_queue.reschedule_or_enqueue.assert_called_once_with("synthesize", {})
+
+    async def test_fresh_context_does_not_schedule(self, mock_service_with_files):
+        """When context is fresh, synthesis is not scheduled even with a queue."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from pratyabhijna.tools.bootstrap import bootstrap
+
+        recent = datetime.now(timezone.utc) - timedelta(minutes=5)
+        node = make_subject_node(context_rebuilt_at=recent)
+        mock_service_with_files.get_entity_by_name.return_value = node
+
+        mock_queue = MagicMock()
+        mock_queue.reschedule_or_enqueue = AsyncMock()
+
+        await bootstrap(mock_service_with_files, queue=mock_queue)
+
+        mock_queue.reschedule_or_enqueue.assert_not_called()
 
     async def test_uses_configured_subject_name(self, mock_service):
         from pratyabhijna.tools.bootstrap import bootstrap

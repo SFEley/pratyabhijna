@@ -165,6 +165,6 @@ def create_server(
             raise RuntimeError("bootstrap requires a connected service")
         from pratyabhijna.tools.bootstrap import bootstrap as _bootstrap
 
-        return await _bootstrap(service=service)
+        return await _bootstrap(service=service, queue=queue)
 
     return server
