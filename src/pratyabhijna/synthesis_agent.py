@@ -789,7 +789,19 @@ async def run_synthesis(
     # the soft control on thinking spend.
     max_tokens = 24000
 
-    messages: list[dict[str, Any]] = [{"role": "user", "content": opening}]
+    # The opening user message (identity files + atoms) and the system
+    # prompt (synthesis subskill) are both static for the duration of a
+    # run. Marking them for prompt caching means turns 2+ only pay for
+    # the incremental tool-call exchanges.
+    cached_opening: dict[str, Any] = {
+        "role": "user",
+        "content": [{"type": "text", "text": opening, "cache_control": {"type": "ephemeral"}}],
+    }
+    cached_system: list[dict[str, Any]] = [
+        {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+    ]
+
+    messages: list[dict[str, Any]] = [cached_opening]
     iterations = 0
 
     while iterations < config.synthesis.max_iterations:
@@ -797,7 +809,7 @@ async def run_synthesis(
         create_kwargs = dict(
             model=config.synthesis.model,
             max_tokens=max_tokens,
-            system=system_prompt,
+            system=cached_system,
             tools=TOOL_SCHEMAS,
             messages=messages,
         )
