@@ -30,3 +30,7 @@ pythonpath = ["tests"]
 markers = [
     "focus: mark test to run when --focus is used",
 ]
+filterwarnings = [
+    # graphiti-core 0.28.x uses class-based Pydantic config (their migration, not ours)
+    "ignore::pydantic.warnings.PydanticDeprecatedSince20:graphiti_core",
+]
