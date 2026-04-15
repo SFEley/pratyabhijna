@@ -407,9 +407,36 @@ def run_tool(config: PratyabhijnaConfig, action: str, argv: list[str]) -> int:
     return 0
 
 
+_HELP = """\
+Usage: python -m pratyabhijna [COMMAND]
+
+Commands:
+  (none)                          Start MCP server
+  help                            Show this message
+
+  seed [--name NAME]              Seed subject identity node
+
+  status                          System orientation (DB, queue, dead-letters)
+  bootstrap                       Subject identity tiers
+  inspect UUID                    Node or edge detail
+  history ENTITY                  Entity relationship timeline
+  recall QUERY [--type T]         Graph search
+              [--time-range R]
+
+  deadletters list                Show dead-lettered tasks
+  deadletters show ID             Full detail for one task
+  deadletters retry (ID|--all)    Reset to pending
+  deadletters purge (ID|--all)    Delete permanently
+"""
+
+
 def main():
     config = PratyabhijnaConfig.from_env()
     configure_logging(config)
+
+    if len(sys.argv) > 1 and sys.argv[1] == "help":
+        print(_HELP, end="")
+        sys.exit(0)
 
     if len(sys.argv) > 1 and sys.argv[1] == "seed":
         sys.exit(run_seed(config, sys.argv[2:]))
