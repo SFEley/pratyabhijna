@@ -96,6 +96,11 @@ class CachingAnthropicClient(AnthropicClient):
                 }
                 for m in self._shared_tool_models
             ]
+            # Extra cache breakpoint at the end of tools[] so the tools
+            # block can cache independently of system drift. Anthropic
+            # allows up to 4 breakpoints per request; we use 3 (tools,
+            # system, MESSAGES prefix) giving graceful fallback.
+            tools[-1]["cache_control"] = {"type": "ephemeral"}
             # Use {"type": "any"} so tool_choice is identical across
             # parallel entity-attribute calls; Anthropic invalidates the
             # messages cache when tool_choice varies. The model picks

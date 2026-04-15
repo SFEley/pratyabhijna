@@ -174,6 +174,11 @@ def test_create_tool_emits_shared_tools_list_when_response_model_is_shared():
     assert tools_for_person == tools_for_drive
     assert [t["name"] for t in tools_for_person] == ["Drive", "Event", "Person"]
 
+    # Last tool carries a cache_control breakpoint so tools[] can cache
+    # independently of system drift.
+    assert tools_for_person[-1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in tools_for_person[0]
+
     # tool_choice is identical ({"type": "any"}) so Anthropic's message
     # cache isn't invalidated by a per-call choice change.
     assert choice_person == {"type": "any"}
