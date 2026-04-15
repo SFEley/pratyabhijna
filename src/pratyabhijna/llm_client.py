@@ -5,22 +5,25 @@ detected entity (Person, Event, Project, …) in parallel. Every call
 sends the same large <MESSAGES> block — the sliding episode-history
 window — but with a different tool schema and <ENTITY> payload.
 
-Because the tool schemas differ, automatic prompt caching cannot detect
-the shared prefix; it would only cache up to the first schema difference.
-Explicit cache_control on the content block itself is independent of
-tool-schema variance and puts the breakpoint exactly where we want it.
+Anthropic matches cached prefixes left-to-right through tools → system
+→ messages. If tools[] differs per call, the prefix diverges before the
+shared MESSAGES block is reached, defeating any cache_control marker
+placed downstream. To make caching work across parallel entity-attribute
+calls, we send the *same* tools[] — every entity-type schema — on every
+call, and use tool_choice (which is not part of the cached prefix) to
+select the one the model should actually emit.
 
-CachingAnthropicClient subclasses graphiti's AnthropicClient and
-overrides _generate_response to:
+CachingAnthropicClient subclasses graphiti's AnthropicClient and:
 
-  1. Wrap the system prompt as a cached content block.
-  2. Split the user message content at </MESSAGES>, marking the prefix
-     (task instructions + full episode context) as cache_control: ephemeral.
-  3. Log cache hit/write token counts at DEBUG level for observability.
-
-Calls without a </MESSAGES> tag (EdgeDuplicate deduplication calls,
-etc.) pass through unchanged — their static prefixes are too small to
-reach the cache minimum.
+  1. Emits a stable, deterministic tools[] containing every entity-type
+     model registered via `shared_tool_models`, whenever the current
+     response_model is one of them. Other response_models fall through
+     to the parent's single-tool behavior.
+  2. Wraps the system prompt as a cached content block.
+  3. Splits the user message content at the last </MESSAGES>, marking
+     the prefix (task instructions + full episode context) as
+     cache_control: ephemeral.
+  4. Logs cache hit/write token counts at DEBUG level for observability.
 """
 
 from __future__ import annotations
@@ -57,6 +60,46 @@ _CACHE_SPLIT_TAG = "</MESSAGES>"
 
 class CachingAnthropicClient(AnthropicClient):
     """AnthropicClient with explicit cache_control on the <MESSAGES> prefix."""
+
+    def __init__(
+        self,
+        *args: typing.Any,
+        shared_tool_models: typing.Iterable[type[BaseModel]] | None = None,
+        **kwargs: typing.Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        # Sort by name so the emitted tools[] is byte-identical across
+        # calls, giving the prompt cache a stable prefix to match.
+        self._shared_tool_models: tuple[type[BaseModel], ...] = tuple(
+            sorted(shared_tool_models or (), key=lambda m: m.__name__)
+        )
+        self._shared_tool_names: frozenset[str] = frozenset(
+            m.__name__ for m in self._shared_tool_models
+        )
+
+    def _create_tool(
+        self,
+        response_model: type[BaseModel] | None = None,
+    ) -> tuple[list[typing.Any], typing.Any]:
+        if (
+            response_model is not None
+            and response_model.__name__ in self._shared_tool_names
+        ):
+            tools: list[dict[str, typing.Any]] = [
+                {
+                    "name": m.__name__,
+                    "description": m.model_json_schema().get(
+                        "description", f"Extract {m.__name__} information"
+                    ),
+                    "input_schema": m.model_json_schema(),
+                }
+                for m in self._shared_tool_models
+            ]
+            tool_choice = {"type": "tool", "name": response_model.__name__}
+            return typing.cast(list[typing.Any], tools), typing.cast(
+                typing.Any, tool_choice
+            )
+        return super()._create_tool(response_model)
 
     async def _generate_response(
         self,

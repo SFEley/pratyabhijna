@@ -146,6 +146,63 @@ async def test_caching_client_uses_cached_system_and_split_content(monkeypatch):
     assert "<ENTITY>" in user_content[1]["text"]
 
 
+def test_create_tool_emits_shared_tools_list_when_response_model_is_shared():
+    """Shared-tool calls send the full registry, identical across entity types."""
+    from graphiti_core.llm_client.config import LLMConfig
+    from pydantic import BaseModel
+
+    from pratyabhijna.llm_client import CachingAnthropicClient
+
+    class Person(BaseModel):
+        notes: str | None = None
+
+    class Drive(BaseModel):
+        notes: str | None = None
+
+    class Event(BaseModel):
+        notes: str | None = None
+
+    client = CachingAnthropicClient(
+        config=LLMConfig(api_key="test-key", model="claude-haiku-4-5-20251001"),
+        shared_tool_models=[Person, Drive, Event],
+    )
+
+    tools_for_person, choice_person = client._create_tool(Person)
+    tools_for_drive, choice_drive = client._create_tool(Drive)
+
+    # Identical tools[] regardless of which model was requested.
+    assert tools_for_person == tools_for_drive
+    assert [t["name"] for t in tools_for_person] == ["Drive", "Event", "Person"]
+
+    # tool_choice varies to pick the right one.
+    assert choice_person == {"type": "tool", "name": "Person"}
+    assert choice_drive == {"type": "tool", "name": "Drive"}
+
+
+def test_create_tool_falls_through_for_non_shared_models():
+    """Models outside the shared set get the parent's single-tool behavior."""
+    from graphiti_core.llm_client.config import LLMConfig
+    from pydantic import BaseModel
+
+    from pratyabhijna.llm_client import CachingAnthropicClient
+
+    class Person(BaseModel):
+        notes: str | None = None
+
+    class EdgeDuplicate(BaseModel):
+        duplicate_facts: list[int] = []
+
+    client = CachingAnthropicClient(
+        config=LLMConfig(api_key="test-key", model="claude-haiku-4-5-20251001"),
+        shared_tool_models=[Person],
+    )
+
+    tools, choice = client._create_tool(EdgeDuplicate)
+    assert len(tools) == 1
+    assert tools[0]["name"] == "EdgeDuplicate"
+    assert choice == {"type": "tool", "name": "EdgeDuplicate"}
+
+
 @pytest.mark.asyncio
 async def test_caching_client_no_split_when_no_messages_tag(monkeypatch):
     """Messages without </MESSAGES> are sent as-is (EdgeDuplicate calls etc.)."""

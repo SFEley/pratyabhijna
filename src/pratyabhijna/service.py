@@ -32,6 +32,7 @@ def _build_llm_client(config: PratyabhijnaConfig):
 
         return CachingAnthropicClient(
             config=LLMConfig(api_key=llm.api_key or None, model=llm.model),
+            shared_tool_models=list(PRATYABHIJNA_ENTITY_TYPES.values()),
         )
     if llm.provider == "openai":
         from graphiti_core.llm_client.openai_client import OpenAIClient
