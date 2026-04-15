@@ -20,8 +20,8 @@ Pratyabhijna's memory system solves context loss across sessions for two users (
 - All slow operations are **async** — queue work, return immediately, background workers process.
 - Identity reconstruction uses a **file-backed bootstrap** — SOUL/IDENTITY (protected) and THREADS/CHRONICLE/USER (context) in the subject's git repo are canonical; the graph carries atoms, not tier text. The synthesizer writes context-layer files on main and drafts protected-layer changes on a review branch for deliberate solo-session merge. See `doc/architecture.md`.
 - The subject identity is **configurable** — `subject_name` in config, not hardcoded. Vesper is the first deployment, not the only possible one.
-- `bootstrap` is a **pure read** — returns cached synthesis + delta. Rebuilds are triggered by write handlers, not by the read path.
-- Synthesis is **write-triggered with kick-forward delay** — identity writes schedule a singleton rebuild task; each new write pushes it forward by the configured delay (default 2 hours). Synthesis runs after the session goes quiet.
+- `bootstrap` is the **primary synthesis trigger** — checks staleness on each call and schedules a run if stale. Also returns cached synthesis + delta.
+- Synthesis is a **singleton task** — only one pending rebuild at a time. The `correct` handler provides a belt-and-suspenders trigger when corrections touch identity-typed entities.
 - The AI **selectively decides** what to remember. Episodes include conversational context for provenance.
 
 ## Architecture

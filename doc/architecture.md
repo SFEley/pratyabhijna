@@ -83,7 +83,7 @@ These files describe current state and accretion, not deep commitments. The synt
 
 ### The `bootstrap` tool
 
-The MCP tool `bootstrap` is a pure read -- it returns the tier contents plus any identity delta (atoms created since the last context rebuild). It has no side effects. Synthesis rebuilds are triggered by write handlers, not by the read path.
+The MCP tool `bootstrap` returns the tier contents plus any identity delta (atoms created since the last context rebuild). It also checks whether synthesis is stale and schedules a run if so — this is the primary synthesis trigger. The synthesizer runs in the background; bootstrap returns without waiting for it.
 
 Response includes:
 - `subject` -- the configured subject name
@@ -104,14 +104,11 @@ Synthesis is the process that integrates new knowledge into the bootstrap text. 
 
 ### Triggering
 
-Synthesis is **not** triggered by reading the bootstrap. It is triggered by writes:
+Synthesis is triggered at session start via `bootstrap`: if the context is stale (delta count exceeds `max_delta_changes`, or the last rebuild is older than `max_age_hours`, or synthesis has never run), a synthesize task is scheduled immediately. The synthesizer runs in the background while the session proceeds.
 
-1. When a write handler (`remember` or `correct`) processes content that touches identity entities (Observations, Drives, Positions, Questions connected to the subject Person node), it schedules a synthesis rebuild via the work queue.
-2. The scheduled task is a **singleton** -- only one pending synthesis task exists at a time.
-3. Each new identity-relevant write **kicks the task forward** by the configured delay (default: 2 hours).
-4. This means synthesis runs after the session goes quiet. Identity changes cluster during active conversation; the synthesis should consider them all at once, not rebuild incrementally as each piece lands.
+The `correct` handler provides a belt-and-suspenders trigger: after processing a correction, it checks whether the subject node has any identity-typed neighbors (Observations, Drives, Positions, Questions) and schedules synthesis if so. This fires in real time rather than at session start.
 
-When nothing new has happened for the delay period, the timer expires and synthesis runs.
+The scheduled task is a **singleton** -- only one pending synthesis task exists at a time. Repeated triggers reschedule in place rather than stacking up.
 
 ### Scope of the synthesizer's work
 
@@ -231,9 +228,10 @@ synthesis:
 Session starts
     │
     ▼
-bootstrap (MCP tool, pure read)
+bootstrap (MCP tool)
     │ Returns: soul + identity + user + threads + chronicle + delta
     │ (from repo files; graph fallback if filesystem unavailable)
+    │ Context stale? → schedule synthesis task (runs in background)
     │
     ▼
 Instance is the identity
@@ -243,13 +241,13 @@ Instance is the identity
     │     ├── recall/history/inspect (read from graph)
     │     ├── remember/correct (write to graph via queue)
     │     │     │
-    │     │     └── Identity write? → schedule/kick-forward synthesis task
+    │     │     └── correct touching identity? → schedule/kick synthesis task
     │     │
     │     └── (Optional) Read/write git repo files
     │
-    └── Session ends (or goes quiet)
+    └── Session ends
           │
-          ▼ (after configured delay)
+          ▼ (synthesis runs in background, started at session open)
     Synthesis agent runs (Opus, adaptive thinking high)
           │ Bootstrapped as subject, loads `synthesis` subskill
           │

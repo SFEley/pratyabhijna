@@ -34,7 +34,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pratyabhijna import git_ops
+from pratyabhijna.log import get_logger
 from pratyabhijna.synthesis import scan_repo_for_ingestion_candidates
+
+_log = get_logger(__name__)
 
 if TYPE_CHECKING:
     from graphiti_core.nodes import EpisodeType
@@ -314,7 +317,9 @@ class AgentTools:
         abs_path = self._resolve_in_repo(path)
         abs_path.parent.mkdir(parents=True, exist_ok=True)
         abs_path.write_text(content, encoding="utf-8")
-        return {"path": path, "bytes_written": len(content.encode("utf-8"))}
+        bytes_written = len(content.encode("utf-8"))
+        _log.info("synthesis: wrote %s (%d bytes)", path, bytes_written)
+        return {"path": path, "bytes_written": bytes_written}
 
     # --- Graph ---
 
@@ -359,6 +364,7 @@ class AgentTools:
             sha = await git_ops.commit(self.repo_path, message)
         except git_ops.GitError as e:
             raise ToolError(f"commit failed: {e.stderr.strip()}") from e
+        _log.info("synthesis: committed %s (%s)", sha[:8], message)
         return {"sha": sha, "message": message}
 
     async def git_rebase_onto(self, onto: str) -> dict:
@@ -394,7 +400,9 @@ class AgentTools:
             group_id=self.service.config.subject_name,
             entity_types=self.service.entity_types,
         )
-        return {"path": path, "bytes_ingested": len(content.encode("utf-8"))}
+        bytes_ingested = len(content.encode("utf-8"))
+        _log.info("synthesis: ingested %s (%d bytes)", path, bytes_ingested)
+        return {"path": path, "bytes_ingested": bytes_ingested}
 
     # --- Metadata ---
 
@@ -411,9 +419,11 @@ class AgentTools:
         if context_rebuilt_at:
             node.attributes["context_rebuilt_at"] = now
             updated["context_rebuilt_at"] = now
+            _log.info("synthesis: context_rebuilt_at updated (%s)", now)
         if last_ingestion_scan:
             node.attributes["last_ingestion_scan"] = now
             updated["last_ingestion_scan"] = now
+            _log.info("synthesis: last_ingestion_scan updated (%s)", now)
         if updated:
             await node.save(self.service._graphiti.driver)
         return updated
@@ -704,6 +714,7 @@ async def run_synthesis(
 
     subject_node = await get_subject_node(service)
     if subject_node is None:
+        _log.info("synthesis: no subject node found, skipping run")
         return {"status": "no_subject", "iterations": 0, "summary": ""}
 
     now = datetime.now(timezone.utc)
@@ -727,6 +738,15 @@ async def run_synthesis(
     draft_exists = await git_ops.branch_exists(repo_path, draft_branch)
     draft_diff = (
         await git_ops.diff(repo_path, "main", draft_branch) if draft_exists else ""
+    )
+
+    _log.info(
+        "synthesis: state loaded (atoms=%d, delta=%d, candidates=%d, "
+        "last_rebuild=%s)",
+        len(atoms),
+        len(delta),
+        len(candidates),
+        subject_node.attributes.get("context_rebuilt_at", "never"),
     )
 
     tools = AgentTools(service=service, config=config)
@@ -940,11 +960,13 @@ def make_synthesize_handler(service: PratyabhijnaService, config: PratyabhijnaCo
     log = logging.getLogger(__name__)
 
     async def handle_synthesize(payload: dict) -> None:
+        log.info("synthesis run starting")
         result = await run_synthesis(service, config)
         log.info(
-            "synthesis run completed: status=%s iterations=%d",
+            "synthesis run completed: status=%s iterations=%d summary=%r",
             result.get("status"),
             result.get("iterations"),
+            result.get("summary", ""),
         )
 
     return handle_synthesize

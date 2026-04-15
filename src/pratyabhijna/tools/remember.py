@@ -6,7 +6,7 @@ background processing via Graphiti's add_episode.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from pratyabhijna.log import get_logger
@@ -60,15 +60,10 @@ def _resolve_reference_time(occurred_at: str | None) -> datetime:
 def make_handler(service: PratyabhijnaService, queue: WorkQueue | None = None):
     """Create the add_episode queue handler bound to a service instance.
 
-    When ``queue`` is provided, handlers schedule a singleton synthesis
-    task via ``queue.reschedule_or_enqueue`` whenever the processed
-    content is identity-relevant (``memory_type == 'identity'``). The
-    task runs after ``synthesis.rebuild_delay_hours``; multiple identity
-    writes within the window kick the same task forward instead of
-    stacking up.
-
-    When ``queue`` is None, scheduling is skipped — used in contexts
-    (e.g. seeding) where triggering synthesis isn't desired.
+    ``queue`` is accepted for interface compatibility but is no longer
+    used here — synthesis is scheduled from the bootstrap tool, not from
+    individual write handlers. Pass ``None`` in contexts (e.g. seeding)
+    where triggering synthesis isn't desired.
     """
 
     async def handle_add_episode(payload: dict[str, Any]) -> None:
@@ -88,11 +83,5 @@ def make_handler(service: PratyabhijnaService, queue: WorkQueue | None = None):
             entity_types=service.entity_types,
         )
         _log.info("add_episode complete (type=%s)", payload["memory_type"])
-
-        if queue is not None and payload.get("memory_type") == "identity":
-            delay = service.config.synthesis.rebuild_delay_hours
-            run_at = datetime.now(timezone.utc) + timedelta(hours=delay)
-            await queue.reschedule_or_enqueue("synthesize", {}, run_at=run_at)
-            _log.info("synthesis scheduled (run_at=%s)", run_at.isoformat())
 
     return handle_add_episode
