@@ -26,10 +26,11 @@ def _build_llm_client(config: PratyabhijnaConfig):
     """Construct LLM client from config."""
     llm = config.llm
     if llm.provider == "anthropic":
-        from graphiti_core.llm_client.anthropic_client import AnthropicClient
         from graphiti_core.llm_client.config import LLMConfig
 
-        return AnthropicClient(
+        from pratyabhijna.llm_client import CachingAnthropicClient
+
+        return CachingAnthropicClient(
             config=LLMConfig(api_key=llm.api_key or None, model=llm.model),
         )
     if llm.provider == "openai":
