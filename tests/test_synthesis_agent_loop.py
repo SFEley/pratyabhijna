@@ -442,7 +442,9 @@ async def test_run_synthesis_system_prompt_includes_subskill(service, config):
 
     await run_synthesis(service, config, client=client)
 
-    system = client.calls[0]["system"]
+    system = " ".join(
+        block["text"] for block in client.calls[0]["system"] if block.get("type") == "text"
+    )
     assert "TestSubject" in system
     # Subskill content markers
     assert "synthesizer" in system.lower()
@@ -458,7 +460,11 @@ async def test_run_synthesis_opening_message_has_identity_files(
 
     await run_synthesis(service, config, client=client)
 
-    opening = client.calls[0]["messages"][0]["content"]
+    opening = " ".join(
+        block["text"]
+        for block in client.calls[0]["messages"][0]["content"]
+        if block.get("type") == "text"
+    )
     assert "SOUL.md" in opening
     assert "IDENTITY.md" in opening
 
