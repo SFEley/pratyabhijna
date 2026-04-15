@@ -63,6 +63,23 @@ def test_split_leaves_structured_content_alone():
     assert result is msg
 
 
+def test_split_uses_last_messages_tag():
+    """An inner </MESSAGES> in memory text must not trigger the split early."""
+    content = (
+        "preamble\n<MESSAGES>\nepisode mentioning </MESSAGES> literally\n"
+        "more episode text\n</MESSAGES>\n<ENTITY>{}</ENTITY>"
+    )
+    result = _split_at_messages_tag({"role": "user", "content": content})
+
+    prefix = result["content"][0]["text"]
+    suffix = result["content"][1]["text"]
+
+    assert prefix.count("</MESSAGES>") == 2
+    assert "more episode text" in prefix
+    assert "<ENTITY>" in suffix
+    assert "</MESSAGES>" not in suffix
+
+
 def test_split_preserves_role():
     content = "before</MESSAGES>after"
     result = _split_at_messages_tag({"role": "user", "content": content})

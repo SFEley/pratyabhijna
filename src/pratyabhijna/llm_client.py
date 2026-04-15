@@ -165,6 +165,11 @@ class CachingAnthropicClient(AnthropicClient):
 def _split_at_messages_tag(msg: dict) -> dict:
     """Split a user message at </MESSAGES>, marking the prefix as cached.
 
+    Uses the LAST occurrence of </MESSAGES> so that memories or episode
+    text mentioning the tag literally don't cause the split to happen
+    mid-array. The real closing tag of the messages block is always the
+    last one in the prompt.
+
     If </MESSAGES> is present, returns a message whose content is a list
     of two text blocks: the prefix (with cache_control: ephemeral) and the
     suffix (uncached). If the tag is absent, returns the message unchanged.
@@ -173,7 +178,7 @@ def _split_at_messages_tag(msg: dict) -> dict:
     if not isinstance(content, str):
         return msg  # already structured content blocks; leave alone
 
-    split_at = content.find(_CACHE_SPLIT_TAG)
+    split_at = content.rfind(_CACHE_SPLIT_TAG)
     if split_at == -1:
         return msg
 
