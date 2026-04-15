@@ -80,6 +80,7 @@ class CachingAnthropicClient(AnthropicClient):
     def _create_tool(
         self,
         response_model: type[BaseModel] | None = None,
+        force_specific: bool = False,
     ) -> tuple[list[typing.Any], typing.Any]:
         if (
             response_model is not None
@@ -95,7 +96,16 @@ class CachingAnthropicClient(AnthropicClient):
                 }
                 for m in self._shared_tool_models
             ]
-            tool_choice = {"type": "tool", "name": response_model.__name__}
+            # Use {"type": "any"} so tool_choice is identical across
+            # parallel entity-attribute calls; Anthropic invalidates the
+            # messages cache when tool_choice varies. The model picks
+            # from context (the <ENTITY> block names the type). On a
+            # mismatch, _generate_response retries with force_specific=True.
+            tool_choice: dict[str, typing.Any] = (
+                {"type": "tool", "name": response_model.__name__}
+                if force_specific
+                else {"type": "any"}
+            )
             return typing.cast(list[typing.Any], tools), typing.cast(
                 typing.Any, tool_choice
             )
@@ -142,6 +152,19 @@ class CachingAnthropicClient(AnthropicClient):
             has_split,
         )
 
+        def _read_usage(res: typing.Any) -> tuple[int, int]:
+            if not (hasattr(res, "usage") and res.usage):
+                return 0, 0
+            inp = getattr(res.usage, "input_tokens", 0) or 0
+            out = getattr(res.usage, "output_tokens", 0) or 0
+            rd = getattr(res.usage, "cache_read_input_tokens", 0) or 0
+            wr = getattr(res.usage, "cache_creation_input_tokens", 0) or 0
+            _log.debug(
+                "prompt cache: read=%d write=%d (input=%d output=%d)",
+                rd, wr, inp, out,
+            )
+            return inp, out
+
         try:
             tools, tool_choice = self._create_tool(response_model)
             result = await self.client.messages.create(
@@ -154,20 +177,41 @@ class CachingAnthropicClient(AnthropicClient):
                 tool_choice=tool_choice,
             )
 
-            input_tokens = 0
-            output_tokens = 0
-            if hasattr(result, "usage") and result.usage:
-                input_tokens = getattr(result.usage, "input_tokens", 0) or 0
-                output_tokens = getattr(result.usage, "output_tokens", 0) or 0
-                cache_read = getattr(result.usage, "cache_read_input_tokens", 0) or 0
-                cache_write = getattr(result.usage, "cache_creation_input_tokens", 0) or 0
-                _log.debug(
-                    "prompt cache: read=%d write=%d (input=%d output=%d)",
-                    cache_read,
-                    cache_write,
-                    input_tokens,
-                    output_tokens,
+            input_tokens, output_tokens = _read_usage(result)
+
+            # If tool_choice was "any" and the model picked the wrong
+            # tool, retry with the specific tool_choice forced. This
+            # path costs a cache miss on the retry but is the safety
+            # valve that makes the "any" optimization acceptable.
+            expected = response_model.__name__ if response_model else None
+            if (
+                expected is not None
+                and expected in self._shared_tool_names
+            ):
+                picked = next(
+                    (c.name for c in result.content if c.type == "tool_use"),
+                    None,
                 )
+                if picked is not None and picked != expected:
+                    _log.warning(
+                        "tool_choice=any returned %s but expected %s; retrying forced",
+                        picked, expected,
+                    )
+                    tools_f, choice_f = self._create_tool(
+                        response_model, force_specific=True
+                    )
+                    result = await self.client.messages.create(
+                        system=system_param,
+                        max_tokens=max_creation_tokens,
+                        temperature=self.temperature,
+                        messages=user_messages_cast,
+                        model=self.model,
+                        tools=tools_f,
+                        tool_choice=choice_f,
+                    )
+                    retry_in, retry_out = _read_usage(result)
+                    input_tokens += retry_in
+                    output_tokens += retry_out
 
             for content_item in result.content:
                 if content_item.type == "tool_use":

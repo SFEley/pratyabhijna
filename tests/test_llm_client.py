@@ -174,9 +174,14 @@ def test_create_tool_emits_shared_tools_list_when_response_model_is_shared():
     assert tools_for_person == tools_for_drive
     assert [t["name"] for t in tools_for_person] == ["Drive", "Event", "Person"]
 
-    # tool_choice varies to pick the right one.
-    assert choice_person == {"type": "tool", "name": "Person"}
-    assert choice_drive == {"type": "tool", "name": "Drive"}
+    # tool_choice is identical ({"type": "any"}) so Anthropic's message
+    # cache isn't invalidated by a per-call choice change.
+    assert choice_person == {"type": "any"}
+    assert choice_drive == {"type": "any"}
+
+    # force_specific=True pins to the named tool for mismatch retries.
+    _, forced = client._create_tool(Person, force_specific=True)
+    assert forced == {"type": "tool", "name": "Person"}
 
 
 def test_create_tool_falls_through_for_non_shared_models():
