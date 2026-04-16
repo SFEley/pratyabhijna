@@ -222,7 +222,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "set to the repo-relative path so future synthesizer runs "
             "recognize the file as ingested. Use for files returned by the "
             "ingestion scan; skip files whose content doesn't warrant graph "
-            "ingestion per subskill judgment."
+            "ingestion per subskill judgment. "
+            "Returns episode_uuid so callers can chain ordered sequences "
+            "via saga_previous_episode_uuid."
         ),
         "input_schema": {
             "type": "object",
@@ -230,6 +232,21 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "path": {
                     "type": "string",
                     "description": "Repo-relative path of the file to ingest.",
+                },
+                "saga": {
+                    "type": "string",
+                    "description": (
+                        "Optional saga name (e.g. 'solo-sessions'). Groups "
+                        "this episode into an ordered multi-part sequence."
+                    ),
+                },
+                "saga_previous_episode_uuid": {
+                    "type": "string",
+                    "description": (
+                        "UUID of the immediately preceding episode in this saga. "
+                        "Use the episode_uuid returned by the prior ingest_file "
+                        "call to chain episodes in order."
+                    ),
                 },
             },
             "required": ["path"],
@@ -384,14 +401,19 @@ class AgentTools:
 
     # --- Ingestion ---
 
-    async def ingest_file(self, path: str) -> dict:
+    async def ingest_file(
+        self,
+        path: str,
+        saga: str | None = None,
+        saga_previous_episode_uuid: str | None = None,
+    ) -> dict:
         abs_path = self._resolve_in_repo(path)
         if not abs_path.is_file():
             raise ToolError(f"not a regular file: {path}")
         content = abs_path.read_text(encoding="utf-8")
         from graphiti_core.nodes import EpisodeType  # local import to avoid top-level dep at schema time
 
-        await self.service._graphiti.add_episode(
+        result = await self.service._graphiti.add_episode(
             name=path,
             episode_body=content,
             source=EpisodeType.text,
@@ -399,10 +421,21 @@ class AgentTools:
             reference_time=datetime.now(timezone.utc),
             group_id=self.service.config.subject_name,
             entity_types=self.service.entity_types,
+            saga=saga,
+            saga_previous_episode_uuid=saga_previous_episode_uuid,
         )
         bytes_ingested = len(content.encode("utf-8"))
-        _log.info("synthesis: ingested %s (%d bytes)", path, bytes_ingested)
-        return {"path": path, "bytes_ingested": bytes_ingested}
+        _log.info(
+            "synthesis: ingested %s (%d bytes%s)",
+            path,
+            bytes_ingested,
+            f", saga={saga}" if saga else "",
+        )
+        return {
+            "path": path,
+            "bytes_ingested": bytes_ingested,
+            "episode_uuid": result.episode.uuid,
+        }
 
     # --- Metadata ---
 
