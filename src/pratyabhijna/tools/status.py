@@ -19,6 +19,7 @@ surfaces ``None`` / ``0`` for degraded metrics.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from pratyabhijna.log import get_logger
@@ -41,15 +42,15 @@ async def status(
         "version": _VERSION,
         "db_connected": service.is_connected,
         "subject_name": service.config.subject_name,
-        "queue": _collect_queue(queue_db_path),
+        "queue": await _collect_queue(queue_db_path),
         "graph": await _collect_graph(service),
         "synthesis": await _collect_synthesis(service),
     }
 
 
-def _collect_queue(db_path: str) -> dict:
+async def _collect_queue(db_path: str) -> dict:
     try:
-        return collect_queue_stats(db_path)
+        return await asyncio.to_thread(collect_queue_stats, db_path)
     except Exception:  # noqa: BLE001 — status should never raise
         _log.warning("collect_queue_stats failed", exc_info=True)
         return {
