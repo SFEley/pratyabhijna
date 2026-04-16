@@ -646,3 +646,125 @@ class TestLastError:
         assert err["task_id"] == task_id
         assert "boom" in err["error"]
         assert "updated_at" in err
+
+
+# ---------------------------------------------------------------------------
+# collect_queue_stats — unified read path for status() (MCP + CLI)
+# ---------------------------------------------------------------------------
+
+class TestCollectQueueStats:
+    """`collect_queue_stats(db_path)` reads queue counters from SQLite directly.
+
+    Used by both the MCP status tool and the CLI status subcommand so they
+    surface the same information without instantiating a live WorkQueue
+    (which would clobber the running server's worker).
+    """
+
+    def test_missing_db_returns_zero_state(self, tmp_path):
+        """A nonexistent DB path returns zeros and empty breakdown."""
+        from pratyabhijna.queue import collect_queue_stats
+
+        stats = collect_queue_stats(str(tmp_path / "does_not_exist.sqlite"))
+        assert stats["depth"] == 0
+        assert stats["last_write"] is None
+        assert stats["dead_letters"] == 0
+        assert stats["last_error"] is None
+        assert stats["by_task_type"] == {}
+
+    async def test_empty_db_returns_zero_state(self, tmp_path):
+        """A DB with schema but no rows returns zeros and empty breakdown."""
+        from pratyabhijna.queue import WorkQueue, collect_queue_stats
+
+        db_path = str(tmp_path / "empty.sqlite")
+        q = WorkQueue(db_path=db_path, poll_interval=0.05)
+        q.register("noop", _noop_handler)
+        await q.start()
+        await q.stop()
+
+        stats = collect_queue_stats(db_path)
+        assert stats["depth"] == 0
+        assert stats["last_write"] is None
+        assert stats["dead_letters"] == 0
+        assert stats["last_error"] is None
+        assert stats["by_task_type"] == {}
+
+    async def test_counts_completed_by_task_type(self, tmp_path):
+        """`by_task_type` splits counts per task type and status."""
+        from pratyabhijna.queue import WorkQueue, collect_queue_stats
+
+        db_path = str(tmp_path / "by_type.sqlite")
+        q = WorkQueue(db_path=db_path, poll_interval=0.05)
+        q.register("add_episode", _noop_handler)
+        q.register("correct_memory", _noop_handler)
+        await q.start()
+
+        await q.enqueue("add_episode", {})
+        await q.enqueue("add_episode", {})
+        await q.enqueue("add_episode", {})
+        await q.enqueue("correct_memory", {})
+
+        async def all_done():
+            return (await q.depth()) == 0
+
+        await wait_for(all_done)
+        await q.stop()
+
+        stats = collect_queue_stats(db_path)
+        assert stats["by_task_type"]["add_episode"]["completed"] == 3
+        assert stats["by_task_type"]["correct_memory"]["completed"] == 1
+        assert stats["by_task_type"]["add_episode"].get("dead_letter", 0) == 0
+
+    async def test_counts_dead_letters_by_task_type(self, tmp_path):
+        """Dead-lettered tasks show up under their task type."""
+        from pratyabhijna.queue import WorkQueue, collect_queue_stats
+
+        db_path = str(tmp_path / "dead_by_type.sqlite")
+        q = WorkQueue(
+            db_path=db_path,
+            max_retries=1,
+            poll_interval=0.05,
+            backoff_base_seconds=0.01,
+        )
+        q.register("correct_memory", _failing_handler)
+        await q.start()
+
+        task_id = await q.enqueue("correct_memory", {})
+
+        async def is_dead():
+            t = await q.get_task(task_id)
+            return t and t["status"] == "dead_letter"
+
+        await wait_for(is_dead)
+        await q.stop()
+
+        stats = collect_queue_stats(db_path)
+        assert stats["by_task_type"]["correct_memory"]["dead_letter"] == 1
+        assert stats["dead_letters"] == 1
+
+    async def test_matches_existing_queue_methods(self, tmp_path):
+        """`collect_queue_stats` returns the same top-level values as live WorkQueue methods."""
+        from pratyabhijna.queue import WorkQueue, collect_queue_stats
+
+        db_path = str(tmp_path / "parity.sqlite")
+        q = WorkQueue(db_path=db_path, poll_interval=0.05)
+        q.register("add_episode", _noop_handler)
+        await q.start()
+
+        await q.enqueue("add_episode", {})
+
+        async def all_done():
+            return (await q.depth()) == 0
+
+        await wait_for(all_done)
+
+        live_depth = await q.depth()
+        live_last_write = await q.last_write()
+        live_dead = len(await q.dead_letters())
+        live_err = await q.last_error()
+        await q.stop()
+
+        stats = collect_queue_stats(db_path)
+        assert stats["depth"] == live_depth
+        assert stats["last_write"] == live_last_write
+        assert stats["dead_letters"] == live_dead
+        assert stats["last_error"] == live_err

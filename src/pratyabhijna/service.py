@@ -217,3 +217,61 @@ class PratyabhijnaService:
         if not records:
             return None
         return await EpisodicNode.get_by_uuid(driver, records[0]["uuid"])
+
+    # --- Graph-level counts (used by status) ---------------------------------
+
+    async def count_nodes_total(self) -> int:
+        """Total number of nodes across all labels."""
+        records, _, _ = await self._graphiti.driver.execute_query(
+            "MATCH (n) RETURN count(n) AS n", routing_="r"
+        )
+        return records[0]["n"] if records else 0
+
+    async def count_nodes_by_label(self) -> dict[str, int]:
+        """Node counts per label.
+
+        Graphiti entity nodes carry multiple labels (e.g. ``Entity`` plus
+        custom types like ``Person``), so these counts do not sum to
+        ``count_nodes_total`` — that's by design.
+        """
+        records, _, _ = await self._graphiti.driver.execute_query(
+            "MATCH (n) UNWIND labels(n) AS label "
+            "RETURN label, count(*) AS n",
+            routing_="r",
+        )
+        return {r["label"]: r["n"] for r in records}
+
+    async def count_edges_total(self) -> int:
+        """Total number of relationships across all types."""
+        records, _, _ = await self._graphiti.driver.execute_query(
+            "MATCH ()-[r]->() RETURN count(r) AS n", routing_="r"
+        )
+        return records[0]["n"] if records else 0
+
+    async def count_edges_by_type(self) -> dict[str, int]:
+        """Relationship counts per Neo4j relationship type.
+
+        Uses the structural type (``RELATES_TO``, ``MENTIONS``, etc.), not
+        the semantic edge name (``values``, ``works_on``). The type is
+        cheap to group on; the name would require reading a property off
+        every edge.
+        """
+        records, _, _ = await self._graphiti.driver.execute_query(
+            "MATCH ()-[r]->() RETURN type(r) AS t, count(*) AS n",
+            routing_="r",
+        )
+        return {r["t"]: r["n"] for r in records}
+
+    async def count_supersessions(self) -> int:
+        """Count edges that have been superseded in the temporal model.
+
+        Graphiti sets ``invalid_at`` on an ``EntityEdge`` when a newer
+        episode contradicts it — this is the count of facts the graph
+        currently records as no-longer-true.
+        """
+        records, _, _ = await self._graphiti.driver.execute_query(
+            "MATCH ()-[r]->() WHERE r.invalid_at IS NOT NULL "
+            "RETURN count(r) AS n",
+            routing_="r",
+        )
+        return records[0]["n"] if records else 0

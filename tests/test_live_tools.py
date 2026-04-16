@@ -380,3 +380,80 @@ class TestLiveCrossTool:
 
         assert detail["type"] == "edge"
         assert detail["uuid"] == edge_uuid
+
+
+# ---------------------------------------------------------------------------
+# Graph count tests — live Neo4j queries used by status()
+# ---------------------------------------------------------------------------
+
+class TestLiveGraphCounts:
+    """The five count_* methods used by status()'s graph block.
+
+    Run against a seeded graph so the counts are non-trivial. These
+    exercise the actual Cypher queries — unit tests mock the driver, so
+    this is where query syntax, return-tuple shape, and label/property
+    naming get verified against a real Neo4j instance.
+    """
+
+    async def test_count_nodes_total(self, seeded_service):
+        total = await seeded_service.count_nodes_total()
+        assert isinstance(total, int)
+        assert total >= 2  # at least the two seeded episodes
+
+    async def test_count_nodes_by_label(self, seeded_service):
+        by_label = await seeded_service.count_nodes_by_label()
+        assert isinstance(by_label, dict)
+        # Seeded graph always has episodes; entity extraction should
+        # produce at least one entity node.
+        assert by_label.get("Episodic", 0) >= 2
+        assert by_label.get("Entity", 0) >= 1
+        # Multi-label nodes: sum-by-label should exceed or equal total
+        total = await seeded_service.count_nodes_total()
+        assert sum(by_label.values()) >= total
+
+    async def test_count_edges_total(self, seeded_service):
+        total = await seeded_service.count_edges_total()
+        assert isinstance(total, int)
+        assert total >= 0
+
+    async def test_count_edges_by_type(self, seeded_service):
+        by_type = await seeded_service.count_edges_by_type()
+        assert isinstance(by_type, dict)
+        # Each edge has exactly one relationship type, so these sum to total
+        total = await seeded_service.count_edges_total()
+        assert sum(by_type.values()) == total
+
+    async def test_count_supersessions(self, seeded_service):
+        supersessions = await seeded_service.count_supersessions()
+        assert isinstance(supersessions, int)
+        assert supersessions >= 0
+
+
+class TestLiveStatusTool:
+    """End-to-end status() call against a live service."""
+
+    async def test_status_returns_full_nested_shape(self, seeded_service, tmp_path):
+        from pratyabhijna.tools.status import status
+
+        result = await status(
+            service=seeded_service,
+            queue_db_path=str(tmp_path / "live_status_queue.sqlite"),
+        )
+
+        assert result["version"] == "0.1.0"
+        assert result["db_connected"] is True
+        assert result["subject_name"] == seeded_service.config.subject_name
+
+        assert set(result["queue"].keys()) >= {
+            "depth", "last_write", "dead_letters", "last_error", "by_task_type",
+        }
+        assert set(result["graph"].keys()) == {
+            "nodes_total", "nodes_by_label",
+            "edges_total", "edges_by_type",
+            "supersessions",
+        }
+        assert set(result["synthesis"].keys()) == {"last_run", "delta_count"}
+
+        # Graph block should reflect actual counts, not None (degradation path)
+        assert result["graph"]["nodes_total"] is not None
+        assert result["graph"]["nodes_total"] >= 2
