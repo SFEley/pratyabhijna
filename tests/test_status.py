@@ -11,32 +11,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 
 # ---------------------------------------------------------------------------
-# Stub mode — no service/queue wired (Phase 1 backward compat)
-# ---------------------------------------------------------------------------
-
-class TestStatusStub:
-    """Stub path returns a minimal nested dict; used when service unavailable."""
-
-    @pytest.mark.asyncio
-    async def test_returns_dict(self):
-        from pratyabhijna.tools.status import status
-        result = await status()
-        assert isinstance(result, dict)
-
-    @pytest.mark.asyncio
-    async def test_includes_version(self):
-        from pratyabhijna.tools.status import status
-        result = await status()
-        assert result["version"] == "0.1.0"
-
-    @pytest.mark.asyncio
-    async def test_includes_db_connected(self):
-        from pratyabhijna.tools.status import status
-        result = await status()
-        assert result["db_connected"] is False
-
-
-# ---------------------------------------------------------------------------
 # Wired mode — live service + queue db_path
 # ---------------------------------------------------------------------------
 

@@ -33,29 +33,10 @@ _VERSION = "0.1.0"
 
 
 async def status(
-    service: PratyabhijnaService | None = None,
-    queue_db_path: str | None = None,
+    service: PratyabhijnaService,
+    queue_db_path: str,
 ) -> dict:
-    """Return system health info as a nested dict.
-
-    Stub path (``service is None``) returns a minimal dict for Phase 1
-    backward compatibility. Wired path assembles all three blocks.
-    """
-    if service is None:
-        # Shape-invariant stub so destructuring consumers don't KeyError.
-        return {
-            "version": _VERSION,
-            "db_connected": False,
-            "subject_name": None,
-            "queue": _collect_queue(None),
-            "graph": {
-                "nodes_total": None, "nodes_by_label": {},
-                "edges_total": None, "edges_by_type": {},
-                "supersessions": None,
-            },
-            "synthesis": {"last_run": None, "delta_count": None},
-        }
-
+    """Return system health info as a nested dict."""
     return {
         "version": _VERSION,
         "db_connected": service.is_connected,
@@ -66,15 +47,7 @@ async def status(
     }
 
 
-def _collect_queue(db_path: str | None) -> dict:
-    if db_path is None:
-        return {
-            "depth": 0,
-            "last_write": None,
-            "dead_letters": 0,
-            "last_error": None,
-            "by_task_type": {},
-        }
+def _collect_queue(db_path: str) -> dict:
     try:
         return collect_queue_stats(db_path)
     except Exception:  # noqa: BLE001 — status should never raise
