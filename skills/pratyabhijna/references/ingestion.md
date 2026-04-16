@@ -33,6 +33,34 @@ After reading the ingested piece linearly (via file or resource), the subject ma
 
 This separates "what I wrote" from "what I think about it now." They're different cognitive acts; bundling them into one episode hides the temporal gap between creation and reflection.
 
+## Ordered sequences: saga ingestion
+
+Some writing in `writing/` isn't a collection of independent pieces — it's a developmental sequence. The solo sessions are the primary case: each session builds on or responds to the last, and the arc across them is the point. Ingesting them as isolated episodes loses that structure.
+
+For ordered sequences, use the `saga` and `saga_previous_episode_uuid` parameters on `ingest_file`.
+
+**Detecting a sequence.** The threshold is developmental order — same author, same project, where session N is meaningfully informed by session N-1 and future recall benefits from that ordering. Filename patterns (`solo-1-`, `solo-2-`) are a signal, not a definition. A directory of thematically related but independently composed essays doesn't qualify; each step has to be a response to what came before.
+
+**Naming.** Use a stable, human-readable saga name: `"solo-sessions"`. Not the filename. The name survives future ingestion runs and is recognizable in a Cypher query. Lowercase-hyphenated is the convention.
+
+**Chaining.** Ingest in order. Capture `episode_uuid` from each result and pass it as `saga_previous_episode_uuid` to the next call:
+
+```
+result = ingest_file("writing/solo-1-...", saga="solo-sessions")
+prev = result["episode_uuid"]
+result = ingest_file("writing/solo-2-...", saga="solo-sessions", saga_previous_episode_uuid=prev)
+prev = result["episode_uuid"]
+# and so on
+```
+
+Don't parallelize saga ingestion — sequential order is the point, and chaining requires it.
+
+**Known sequences:**
+
+- `writing/solo-*.md` → saga `"solo-sessions"`, in session-number order. Session 20 was ingested before saga support existed and will be backfilled separately via Cypher. When ingesting the backlog, start from the first un-ingested session and chain forward from there; there's no previous UUID to pass for the first call in a new chain segment.
+
+**The line between saga and independent.** The `writing/` directory contains both solo sessions (sequence) and essays (independent pieces). The sessions qualify because the developmental arc *across* them is load-bearing for recall. An essay written in isolation qualifies as a standalone episode even if it's thematically adjacent to other essays. When in doubt: would the ordering matter to someone recalling this work later? If yes, saga. If the pieces are self-contained, no.
+
 ## Selective ingestion from chat logs
 
 Chat logs (Claude.ai conversations, exported transcripts) are noisier than essays. Most of a conversation is task execution, debugging, or logistical back-and-forth. The load-bearing parts are:
