@@ -76,12 +76,18 @@ def create_server(
         memory_type: str = "observation",
         source: str = "self",
         occurred_at: str | None = None,
+        saga: str | None = None,
+        saga_previous_episode_uuid: str | None = None,
     ) -> dict:
         """Queue an observation, fact, reasoning, or identity item for processing.
 
         occurred_at: optional ISO-8601 timestamp for when the fact was true in
         the world. Defaults to now. Use for retrospective memories whose
         occurrence predates the moment of recording.
+
+        saga: optional saga name to group this episode into an ordered sequence
+        (e.g. "solo-sessions"). Use saga_previous_episode_uuid to chain it
+        after a specific prior episode in the same saga.
         """
         if queue is None:
             raise RuntimeError("remember requires a running work queue")
@@ -93,6 +99,8 @@ def create_server(
             memory_type=memory_type,
             source=source,
             occurred_at=occurred_at,
+            saga=saga,
+            saga_previous_episode_uuid=saga_previous_episode_uuid,
         )
 
     @server.tool()

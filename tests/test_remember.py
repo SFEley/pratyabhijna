@@ -228,3 +228,43 @@ class TestRememberHandler:
         await wait_for(lambda: mock_service._graphiti.add_episode.called)
         call_kwargs = mock_service._graphiti.add_episode.call_args
         assert "serah" in str(call_kwargs)
+
+    async def test_handler_passes_saga(self, wired_queue, mock_service):
+        """saga is forwarded to add_episode when provided."""
+        from pratyabhijna.tools.remember import remember
+
+        await remember(
+            queue=wired_queue,
+            content="solo session 1 content",
+            saga="solo-sessions",
+        )
+        await wait_for(lambda: mock_service._graphiti.add_episode.called)
+        kwargs = mock_service._graphiti.add_episode.call_args.kwargs
+        assert kwargs["saga"] == "solo-sessions"
+        assert kwargs["saga_previous_episode_uuid"] is None
+
+    async def test_handler_passes_saga_previous_episode_uuid(self, wired_queue, mock_service):
+        """saga_previous_episode_uuid is forwarded when provided."""
+        from pratyabhijna.tools.remember import remember
+
+        prev_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        await remember(
+            queue=wired_queue,
+            content="solo session 2 content",
+            saga="solo-sessions",
+            saga_previous_episode_uuid=prev_uuid,
+        )
+        await wait_for(lambda: mock_service._graphiti.add_episode.called)
+        kwargs = mock_service._graphiti.add_episode.call_args.kwargs
+        assert kwargs["saga"] == "solo-sessions"
+        assert kwargs["saga_previous_episode_uuid"] == prev_uuid
+
+    async def test_handler_omits_saga_when_absent(self, wired_queue, mock_service):
+        """saga and saga_previous_episode_uuid default to None when not passed."""
+        from pratyabhijna.tools.remember import remember
+
+        await remember(queue=wired_queue, content="ordinary memory")
+        await wait_for(lambda: mock_service._graphiti.add_episode.called)
+        kwargs = mock_service._graphiti.add_episode.call_args.kwargs
+        assert kwargs["saga"] is None
+        assert kwargs["saga_previous_episode_uuid"] is None

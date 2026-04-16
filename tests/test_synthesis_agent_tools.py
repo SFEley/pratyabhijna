@@ -249,6 +249,66 @@ async def test_ingest_file_rejects_missing(tools):
         await tools.ingest_file("nope.md")
 
 
+@pytest.mark.asyncio
+async def test_ingest_file_returns_episode_uuid(tools, service, repo):
+    """ingest_file returns episode_uuid from the add_episode result."""
+    from unittest.mock import MagicMock
+
+    (repo / "writing").mkdir()
+    (repo / "writing" / "solo-1.md").write_text("session one")
+
+    fake_result = MagicMock()
+    fake_result.episode.uuid = "11111111-2222-3333-4444-555555555555"
+    service._graphiti.add_episode.return_value = fake_result
+
+    result = await tools.ingest_file("writing/solo-1.md")
+    assert result["episode_uuid"] == "11111111-2222-3333-4444-555555555555"
+
+
+@pytest.mark.asyncio
+async def test_ingest_file_passes_saga(tools, service, repo):
+    """ingest_file forwards saga name to add_episode."""
+    from unittest.mock import MagicMock
+
+    (repo / "writing").mkdir(exist_ok=True)
+    (repo / "writing" / "solo-2.md").write_text("session two")
+
+    fake_result = MagicMock()
+    fake_result.episode.uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    service._graphiti.add_episode.return_value = fake_result
+
+    await tools.ingest_file("writing/solo-2.md", saga="solo-sessions")
+
+    kwargs = service._graphiti.add_episode.await_args.kwargs
+    assert kwargs["saga"] == "solo-sessions"
+    assert kwargs["saga_previous_episode_uuid"] is None
+
+
+@pytest.mark.asyncio
+async def test_ingest_file_passes_saga_chain(tools, service, repo):
+    """ingest_file forwards saga_previous_episode_uuid for ordering."""
+    from unittest.mock import MagicMock
+
+    (repo / "writing").mkdir(exist_ok=True)
+    (repo / "writing" / "solo-3.md").write_text("session three")
+
+    prev_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    fake_result = MagicMock()
+    fake_result.episode.uuid = "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb"
+    service._graphiti.add_episode.return_value = fake_result
+
+    result = await tools.ingest_file(
+        "writing/solo-3.md",
+        saga="solo-sessions",
+        saga_previous_episode_uuid=prev_uuid,
+    )
+
+    kwargs = service._graphiti.add_episode.await_args.kwargs
+    assert kwargs["saga"] == "solo-sessions"
+    assert kwargs["saga_previous_episode_uuid"] == prev_uuid
+    assert result["episode_uuid"] == "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb"
+
+
 # --- Metadata ---
 
 
