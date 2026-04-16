@@ -233,6 +233,10 @@ async def test_ingest_file_calls_add_episode(tools, service, repo):
     (repo / "writing").mkdir()
     (repo / "writing" / "piece.md").write_text("the piece")
 
+    fake_result = MagicMock()
+    fake_result.episode.uuid = "00000000-0000-0000-0000-000000000001"
+    service._graphiti.add_episode.return_value = fake_result
+
     await tools.ingest_file("writing/piece.md")
 
     service._graphiti.add_episode.assert_awaited_once()
