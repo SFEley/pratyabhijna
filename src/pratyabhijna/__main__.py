@@ -236,54 +236,6 @@ def run_deadletters(config: PratyabhijnaConfig, argv: list[str]) -> int:
 TOOL_COMMANDS = {"status", "bootstrap", "inspect", "history", "recall"}
 
 
-def _cli_queue_stats(db_path: str) -> dict:
-    """Read queue counters directly from SQLite.
-
-    The ``status`` CLI subcommand needs queue depth, last write, and
-    dead-letter info without starting a ``WorkQueue`` — starting one
-    would run ``_recover_crashed`` (clobbering the live server's
-    running task) and spawn a second worker loop. Direct SQL under
-    WAL mode is safe and matches how ``deadletters`` reads the file.
-    """
-    import sqlite3
-    from pathlib import Path
-
-    if not Path(db_path).exists():
-        return {
-            "queue_depth": 0,
-            "last_write": None,
-            "dead_letters": 0,
-            "last_error": None,
-        }
-
-    with sqlite3.connect(db_path, timeout=5.0) as conn:
-        depth = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status IN ('pending', 'running')"
-        ).fetchone()[0]
-        last_write_row = conn.execute(
-            "SELECT completed_at FROM tasks WHERE status = 'completed' "
-            "ORDER BY completed_at DESC LIMIT 1"
-        ).fetchone()
-        dead_count = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = 'dead_letter'"
-        ).fetchone()[0]
-        last_err_row = conn.execute(
-            "SELECT id, error, updated_at FROM tasks WHERE status = 'dead_letter' "
-            "ORDER BY updated_at DESC LIMIT 1"
-        ).fetchone()
-
-    return {
-        "queue_depth": depth,
-        "last_write": last_write_row[0] if last_write_row else None,
-        "dead_letters": dead_count,
-        "last_error": (
-            {"task_id": last_err_row[0], "error": last_err_row[1], "updated_at": last_err_row[2]}
-            if last_err_row
-            else None
-        ),
-    }
-
-
 def _parse_recall_args(argv: list[str]) -> tuple[str, str | None, str | None] | None:
     """Parse ``recall QUERY [--type T] [--time-range R]``.
 
@@ -337,12 +289,13 @@ def run_tool(config: PratyabhijnaConfig, action: str, argv: list[str]) -> int:
     call: Callable[[Any], Awaitable[dict]] | None = None
 
     if action == "status":
+        from pratyabhijna.tools.status import status as _status
+
         async def call(service):
-            return {
-                "version": "0.1.0",
-                "db_connected": service.is_connected,
-                **_cli_queue_stats(config.queue.db_path),
-            }
+            return await _status(
+                service=service,
+                queue_db_path=config.queue.db_path,
+            )
 
     elif action == "bootstrap":
         from pratyabhijna.tools.bootstrap import bootstrap
@@ -416,7 +369,7 @@ Commands:
 
   seed [--name NAME]              Seed subject identity node
 
-  status                          System orientation (DB, queue, dead-letters)
+  status                          System orientation (queue, graph, synthesis)
   bootstrap                       Subject identity tiers
   inspect UUID                    Node or edge detail
   history ENTITY                  Entity relationship timeline

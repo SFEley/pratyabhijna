@@ -63,10 +63,10 @@ def create_server(
 
     @server.tool()
     async def status() -> dict:
-        """System orientation — DB health, queue depth, last write time."""
+        """System orientation — queue, graph, and synthesis blocks."""
         from pratyabhijna.tools.status import status as _status
 
-        return await _status(service=service, queue=queue)
+        return await _status(service=service, queue_db_path=queue.db_path)
 
     # --- Phase 3b: write tools ---
 

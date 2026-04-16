@@ -398,3 +398,75 @@ class WorkQueue:
                 error,
             )
         await self._db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Module-level stats reader (shared by MCP status and CLI status)
+# ---------------------------------------------------------------------------
+
+def collect_queue_stats(db_path: str) -> dict:
+    """Read queue counters from SQLite without instantiating a WorkQueue.
+
+    Both the MCP `status` tool and the `python -m pratyabhijna status`
+    subcommand use this to surface queue health. Starting a ``WorkQueue``
+    from the CLI path would run ``_recover_crashed`` (clobbering any task
+    the live server has in-flight) and spawn a second worker loop.
+
+    Uses stdlib ``sqlite3`` for a brief read-only connection; the WAL mode
+    set by the running WorkQueue lets this coexist safely.
+
+    Returns a dict with:
+      - ``depth`` — count of pending + running tasks
+      - ``last_write`` — ISO timestamp of most recent completed task, or None
+      - ``dead_letters`` — count of dead-lettered tasks
+      - ``last_error`` — `{task_id, error, updated_at}` of the most recent
+        dead-letter, or None
+      - ``by_task_type`` — nested dict ``{task_type: {status: count}}`` with
+        one entry per (task_type, status) pair that has any rows
+    """
+    import sqlite3
+
+    if not Path(db_path).exists():
+        return {
+            "depth": 0,
+            "last_write": None,
+            "dead_letters": 0,
+            "last_error": None,
+            "by_task_type": {},
+        }
+
+    with sqlite3.connect(db_path, timeout=5.0) as conn:
+        depth = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status IN ('pending', 'running')"
+        ).fetchone()[0]
+        last_write_row = conn.execute(
+            "SELECT completed_at FROM tasks WHERE status = 'completed' "
+            "ORDER BY completed_at DESC LIMIT 1"
+        ).fetchone()
+        dead_count = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'dead_letter'"
+        ).fetchone()[0]
+        last_err_row = conn.execute(
+            "SELECT id, error, updated_at FROM tasks WHERE status = 'dead_letter' "
+            "ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+        breakdown_rows = conn.execute(
+            "SELECT task_type, status, COUNT(*) FROM tasks GROUP BY task_type, status"
+        ).fetchall()
+
+    by_task_type: dict[str, dict[str, int]] = {}
+    for task_type, status, count in breakdown_rows:
+        by_task_type.setdefault(task_type, {})[status] = count
+
+    return {
+        "depth": depth,
+        "last_write": last_write_row[0] if last_write_row else None,
+        "dead_letters": dead_count,
+        "last_error": (
+            {"task_id": last_err_row[0], "error": last_err_row[1],
+             "updated_at": last_err_row[2]}
+            if last_err_row
+            else None
+        ),
+        "by_task_type": by_task_type,
+    }
