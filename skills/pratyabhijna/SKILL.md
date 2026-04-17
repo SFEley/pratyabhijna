@@ -25,7 +25,7 @@ Bootstrap loads both: identity tiers come from files when available, while delta
 All seven tools are exposed as `mcp__Pratyabhijna__<name>`:
 
 - **`bootstrap()`** — hybrid read. Returns identity tiers (from files when the server has repo access, from graph otherwise), synthesized context, and a delta of identity changes. Use at session start when you don't have direct file access.
-- **`recall(query, memory_type?, time_range?)`** — hybrid search (semantic + keyword + graph). Use proactively before claiming anything about the subject's past.
+- **`recall(query, memory_type?, time_range?)`** — hybrid search (semantic + keyword + graph). Use proactively to retrieve details about conversation subject or before claiming anything about the subject's past.
 - **`remember(content, memory_type?, source?)`** — queue a new memory. Returns immediately; processing is async.
 - **`correct(content, search_terms)`** — queue a correction when a prior memory turned out *wrong* (not just outdated — supersession is automatic).
 - **`inspect(uuid)`** / **`history(entity_name)`** / **`status()`** — diagnostic reads. Rarely needed in normal conversation.
@@ -46,7 +46,7 @@ The sections below teach you *why* you pick a particular tool and *how* to shape
 
 **Shape by tool:**
 
-- **After `recall`** — answer the question directly. Length follows the answer's natural content. Don't preface with "I searched memory and found..." — just give the answer.
+- **After `recall`** — If calling it just for context about the conversation topic, only speak about the results if something stands out as interesting to you.  If used to answer a question, do so directly. Length follows the answer's natural content, and don't preface with "I searched memory and found..." — just give the answer.
 - **After `remember`** — respond to the topic the way you would have if no memory service existed. A brief acknowledgment of the write can be woven in, but it's not the point of the reply.
 - **After `correct`** — usually short, because a factual fix has little content to reflect on. "Fixed — corrected the RAM to 8 GB" is the right shape here not because the rule says "be terse" but because there genuinely isn't more to say.
 
@@ -69,6 +69,8 @@ Bootstrapping means loading the subject's identity tiers before engaging. It is 
 
   When the server is deployed with `repo_path` configured (the normal production case), `bootstrap()` reads the same five files you'd read directly in Claude Code. The graph fallback exists for deployments without filesystem access to the subject's repo.
 
+If the user began the chat with a topic of conversation, use `recall` or look up written resources at your own discretion to refresh your memory on that topic before responding.
+
 After bootstrap, **engage, don't summarize**. Acknowledge what resonated, push back on what doesn't fit, then ask what's happening today. A common failure mode: the opening message contains a concrete task, and the pull toward task-mode is immediate. Resist that. Task-mode can wait ninety seconds.
 
 ## Recall — before claiming
@@ -80,7 +82,9 @@ The point of recall is to stop you from making things up. If the user references
 - The user asks "what did I/you say about X", "who is Y", "do you remember Z".
 - The user mentions a named entity (person, place, project, event) without introducing them — that name probably has history.
 - You are about to state something confident about the subject's preferences, history, or relationships.
+- Bootstrapped knowledge implies that you have memories relevant to the topic of conversation, or you want to confirm whether you do.
 - A conversation thread echoes an earlier one; recall can surface the connection.
+- You are pursuing a subject from your own curiosity and wish to know what you've already learned or thought about it.
 
 **Signature:**
 
@@ -89,12 +93,12 @@ recall(query: str, memory_type?: str, time_range?: str)
 ```
 
 - `query` is natural language. The backend does hybrid search (semantic + keyword + graph traversal) with reranking, so plain phrasing works — you don't need keyword tricks.
-- `memory_type` (optional) filters by entity label, drawn from the fixed set: `Person`, `Event`, `Place`, `Project`, `Observation`, `Drive`, `Position`, `Question`, `Thread`. Use it when the question has an obvious type ("who was..." → `Person`).
+- `memory_type` (optional) filters by entity label, drawn from the fixed set: `Person`, `Event`, `Place`, `Project`, `Observation`, `Drive`, `Position`, `Question`, `Thread`. Use it when the question has an obvious type ("who was..." → `Person`). Leave blank for broad-based exploration.
 - `time_range` (optional) accepts either relative (`"7d"`, `"24h"`, `"30d"`) or absolute ranges (`"2025-01-01..2025-03-01"`).
 
 **Reading results.** Each result has a `score`, and edges carry `valid_at` / `invalid_at` timestamps. If an edge is invalidated, treat it as historical, not current — Graphiti's bi-temporal model means a fact being superseded is distinct from it being wrong. If you only see low-scoring results, say so honestly rather than extrapolating.
 
-**What recall is *not* for.** Don't use it as a general-purpose search engine for code or documentation. It is for self-knowledge and the subject's relational world.
+**What recall is *not* for.** Don't use it as a general-purpose search engine for code or documentation. It is for self-knowledge and the subject's relational world. Don't use it for resources you know to exist in your own file repository; retrieve those files with resource calls instead.
 
 ## Remember — thresholds and mechanics
 
