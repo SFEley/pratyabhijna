@@ -253,6 +253,26 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "forget_episode",
+        "description": (
+            "Delete an episode from the graph by UUID. Use when an episode "
+            "was ingested incorrectly, duplicated, or needs to be replaced "
+            "(e.g. to re-ingest with saga support). Cascade-deletes entity "
+            "edges originated by the episode and entity nodes that were only "
+            "referenced by it. Irreversible — confirm the UUID before calling."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "uuid": {
+                    "type": "string",
+                    "description": "UUID of the Episodic node to delete.",
+                },
+            },
+            "required": ["uuid"],
+        },
+    },
+    {
         "name": "update_synthesis_metadata",
         "description": (
             "Update synthesis metadata on the subject's Person node. Call "
@@ -437,6 +457,16 @@ class AgentTools:
             "episode_uuid": result.episode.uuid,
         }
 
+    async def forget_episode(self, uuid: str) -> dict:
+        from graphiti_core.errors import NodeNotFoundError  # local import, same as ingest_file
+
+        try:
+            await self.service.remove_episode(uuid)
+        except NodeNotFoundError:
+            raise ToolError(f"episode not found: {uuid}")
+        _log.info("synthesis: deleted episode %s", uuid)
+        return {"deleted": True, "uuid": uuid}
+
     # --- Metadata ---
 
     async def update_synthesis_metadata(
@@ -505,6 +535,7 @@ def build_handler_map(tools: AgentTools) -> dict[str, Any]:
         "git_rebase_abort": tools.git_rebase_abort,
         "git_diff": tools.git_diff,
         "ingest_file": tools.ingest_file,
+        "forget_episode": tools.forget_episode,
         "update_synthesis_metadata": tools.update_synthesis_metadata,
         "finish": tools.finish,
     }
