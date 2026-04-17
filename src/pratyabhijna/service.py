@@ -218,6 +218,18 @@ class PratyabhijnaService:
             return None
         return await EpisodicNode.get_by_uuid(driver, records[0]["uuid"])
 
+    async def remove_episode(self, uuid: str) -> None:
+        """Delete an episode and its orphaned edges/nodes from the graph.
+
+        Delegates to graphiti.remove_episode(), which:
+        - Deletes entity edges originated by this episode.
+        - Deletes entity nodes referenced only by this episode.
+        - Deletes the episodic node itself.
+
+        Raises NodeNotFoundError if the episode doesn't exist.
+        """
+        await self._graphiti.remove_episode(uuid)
+
     # --- Graph-level counts (used by status) ---------------------------------
 
     async def count_nodes_total(self) -> int:
