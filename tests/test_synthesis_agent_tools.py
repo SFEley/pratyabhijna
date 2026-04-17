@@ -67,6 +67,7 @@ def service():
     svc._graphiti = MagicMock()
     svc._graphiti.add_episode = AsyncMock()
     svc._graphiti.remove_episode = AsyncMock()
+    svc.remove_episode = AsyncMock()
     svc._graphiti.driver = MagicMock()
     return svc
 
@@ -320,7 +321,7 @@ async def test_ingest_file_passes_saga_chain(tools, service, repo):
 @pytest.mark.asyncio
 async def test_forget_episode_calls_remove_episode(tools, service):
     await tools.forget_episode("aaaa-bbbb")
-    service._graphiti.remove_episode.assert_awaited_once_with("aaaa-bbbb")
+    service.remove_episode.assert_awaited_once_with("aaaa-bbbb")
 
 
 @pytest.mark.asyncio
@@ -332,7 +333,7 @@ async def test_forget_episode_returns_uuid(tools, service):
 @pytest.mark.asyncio
 async def test_forget_episode_raises_tool_error_on_not_found(tools, service):
     from graphiti_core.errors import NodeNotFoundError
-    service._graphiti.remove_episode.side_effect = NodeNotFoundError("aaaa-bbbb")
+    service.remove_episode.side_effect = NodeNotFoundError("aaaa-bbbb")
     with pytest.raises(ToolError, match="not found"):
         await tools.forget_episode("aaaa-bbbb")
 

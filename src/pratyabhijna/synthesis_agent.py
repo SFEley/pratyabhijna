@@ -461,7 +461,7 @@ class AgentTools:
         from graphiti_core.errors import NodeNotFoundError  # local import, same as ingest_file
 
         try:
-            await self.service._graphiti.remove_episode(uuid)
+            await self.service.remove_episode(uuid)
         except NodeNotFoundError:
             raise ToolError(f"episode not found: {uuid}")
         _log.info("synthesis: deleted episode %s", uuid)
