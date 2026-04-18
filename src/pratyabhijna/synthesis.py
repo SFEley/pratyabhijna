@@ -47,6 +47,7 @@ BOOTSTRAP_RELATIVE_PATHS = frozenset(
         "memory/THREADS.md",
         "memory/CHRONICLE.md",
         "memory/MEMORY.md",
+        "memory/SYNTHESIS.md",
     }
 )
 

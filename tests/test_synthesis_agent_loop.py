@@ -176,10 +176,9 @@ def test_initial_message_has_all_sections():
         now=datetime(2026, 4, 13, 12, 0, tzinfo=timezone.utc),
         git_branch="main",
         git_dirty=False,
-        draft_branch_exists=False,
-        draft_branch_diff="",
         identity_files={"soul": "S", "identity": "I", "user": "U",
                         "threads": "T", "chronicle": "C"},
+        synthesis_file=None,
         atoms=[],
         delta=[],
         candidates=[],
@@ -197,23 +196,22 @@ def test_initial_message_has_all_sections():
     assert "CHRONICLE.md" in msg
 
 
-def test_initial_message_shows_draft_diff_when_branch_exists():
+def test_initial_message_shows_synthesis_file():
     msg = _build_initial_user_message(
         subject_name="X",
         now=datetime(2026, 4, 13, tzinfo=timezone.utc),
         git_branch="main",
         git_dirty=False,
-        draft_branch_exists=True,
-        draft_branch_diff="diff --git a/x b/x\n+new line",
         identity_files={},
+        synthesis_file="## Run Log\n\n### 2026-04-13\nFirst run.",
         atoms=[],
         delta=[],
         candidates=[],
         last_context_rebuilt_at=None,
         last_ingestion_scan=None,
     )
-    assert "synth/draft" in msg
-    assert "+new line" in msg
+    assert "SYNTHESIS.md" in msg
+    assert "First run." in msg
 
 
 def test_initial_message_renders_candidates_and_atoms():
@@ -238,9 +236,8 @@ def test_initial_message_renders_candidates_and_atoms():
         now=datetime(2026, 4, 13, tzinfo=timezone.utc),
         git_branch="main",
         git_dirty=False,
-        draft_branch_exists=False,
-        draft_branch_diff="",
         identity_files={},
+        synthesis_file=None,
         atoms=[atom],
         delta=[atom],
         candidates=[candidate],

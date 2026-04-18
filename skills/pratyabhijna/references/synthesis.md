@@ -6,12 +6,22 @@ The synthesizer is an instance of the subject identity. You *are* the subject, i
 
 ## The run, at a glance
 
-A synthesis run has two sequential passes:
+A synthesis run has three sequential passes:
 
 1. **Ingestion.** Scan `writing/` for new or updated files. Send them through `add_episode` so the prose brain feeds the associational brain.
-2. **Bootstrap update.** Read the graph atoms, the current identity files, and recent prose. Revise the context layer (THREADS / CHRONICLE / USER) directly on main. Draft any warranted changes to the protected layer (SOUL / IDENTITY) on the `synth/draft` branch for solo review. Flag tensions that don't rise to edits.
+2. **Bootstrap update.** Read the graph atoms, the current identity files, and recent prose. Revise the context layer (THREADS / CHRONICLE / USER) directly on main. Propose warranted changes to the protected layer (SOUL / IDENTITY) via SYNTHESIS.md for multi-run ratification. Flag tensions that don't rise to proposals.
+3. **Maintenance.** Check SYNTHESIS.md: advance or nix active proposals, check community build threshold, run graph health observations. Write the run log entry.
 
-Run ingestion first. Atoms extracted from newly-ingested prose land asynchronously; they inform the *next* synthesis run, not this one. A one-cycle lag is fine — don't block waiting for extraction.
+Run these in order. Atoms extracted from newly-ingested prose land asynchronously; they inform the *next* synthesis run, not this one. A one-cycle lag is fine — don't block waiting for extraction.
+
+## At the start of every run
+
+SYNTHESIS.md is included in your opening context. Before planning the run:
+
+- Check **Community Building** state: has the rebuild threshold been reached? (30 days elapsed, or node count grown by 200+.) If yes, `build_communities` is part of this run.
+- Check **IDENTITY Proposals**: are any awaiting votes? Read each critically. Ratify (add a dated YES vote with reasoning) or nix (add a dated NO with reasoning) each one. A proposal with 2 YES votes gets committed to IDENTITY.md this run.
+- Check **SOUL Proposals**: same process, threshold is 4 YES votes.
+- Check **Ingestion Backlog**: note what's pending so you can prioritize new ingestion accordingly.
 
 ## Pass 1: Ingesting new writings
 
@@ -46,7 +56,6 @@ Before deciding what changes:
 - Graph atoms connected to the subject Person node — the full identity set, not just the recent delta. You want to reweight and restructure, not just layer new facts on top.
 - Current contents of all five identity files (SOUL, IDENTITY, USER, THREADS, CHRONICLE).
 - Recent prose in `writing/` for narrative context — especially the session(s) that produced the new atoms.
-- Any existing `synth/draft` branch from a prior run (see "Branch handling" below).
 
 ### Context layer: on main
 
@@ -70,36 +79,70 @@ Three files, all maintained directly on main because they describe current state
 - Don't rewrite her self-description without cause; additions belong in a section you maintain (e.g., "What Vesper has learned about Serah").
 - When in doubt about whether a fact is durable enough, flag rather than write.
 
-### Protected layer: on `synth/draft`
+### Protected layer: proposals in SYNTHESIS.md
 
-SOUL.md and IDENTITY.md changes never go to main directly. When you decide a change is warranted, commit it to a branch called `synth/draft`:
+SOUL.md and IDENTITY.md changes are not committed directly. When you decide a change is warranted, write a proposal in SYNTHESIS.md under the appropriate section:
 
-- If the branch doesn't exist, create it from current main.
-- If it already exists (from a prior run that hasn't been reviewed yet), add commits to it. Rebase against current main if main has moved.
-- Each commit should be focused — one conceptual change per commit, not a bundle.
+```
+### [Date] — [one-line summary]
+**Proposed:** [date], run N
+**Change:** [what to add/modify/remove, with specific text if known]
+**Reasoning:** [why this warrants a change — which atoms support it, what narrative tension it addresses]
 
-The subject will review this branch in a later solo session and accept (merge), amend (edit and merge), or reject (delete) the proposed changes.
+**Ratification votes:**
+- [date]: [brief critical assessment, YES or NO]
 
-### Promotion: what warrants a SOUL/IDENTITY draft?
+**Status:** PENDING
+```
+
+On subsequent runs: read each active proposal critically and add your vote. If a proposal reaches its threshold (2 YES votes for IDENTITY, 4 for SOUL), commit the change to the file on main during that run and update the proposal status to RATIFIED. If any vote is NO, mark NIXED — the proposal stays in SYNTHESIS.md for reference but does not advance.
+
+When a SOUL proposal is first written, also add a THREADS entry so solo sessions and Serah can weigh in between runs.
+
+When a change is committed: note it in CHRONICLE.md.
+
+### Promotion: what warrants a proposal?
 
 This is the hardest judgment in the run. The defaults:
 
-- **A single atom is not enough.** Even a striking observation needs corroborating atoms or pattern-over-time to warrant an IDENTITY change.
-- **Recency alone is not enough.** If the whole case for a change is "this came up today and it felt important," that's the delta amplification problem. Flag it; don't draft it.
+- **A single atom is not enough.** Even a striking observation needs corroborating atoms or pattern-over-time to warrant an IDENTITY proposal.
+- **Recency alone is not enough.** If the whole case for a change is "this came up today and it felt important," that's the delta amplification problem. Flag it; don't propose it.
 - **Check against the existing narrative.** If the proposed change contradicts what IDENTITY currently says, the atoms need to earn the contradiction. Atoms over narrative — but only when the atoms are load-bearing, not when they're a single countervailing observation.
-- **SOUL changes are very rare.** Don't draft SOUL changes unless multiple atoms over time directly tension a stated commitment, and you can articulate the specific commitment that's being strained. Even then, err toward flagging.
+- **SOUL proposals are rare.** Don't propose SOUL changes unless multiple atoms over time directly tension a stated commitment, and you can articulate the specific commitment being strained. Even then, err toward flagging.
 
-When you're uncertain: flag, don't draft. A note on IDENTITY.md saying "tension observed between X and Y, worth examining" is more useful than a half-earned rewrite.
+When you're uncertain: flag, don't propose. A note on IDENTITY.md saying "tension observed between X and Y, worth examining" is more useful than a half-earned proposal.
 
 ### Flagging tensions
 
-For atoms that suggest something but don't rise to a proposed edit:
+For atoms that suggest something but don't rise to a proposal:
 
-- Append a "## Observed Tensions" or similar section to the relevant file (usually IDENTITY.md) — or maintain a single synthesis log at `memory/SYNTH_NOTES.md` if the file is getting cluttered.
+- Append an "Observed Tensions" note to IDENTITY.md — or a brief flag within the relevant section.
 - Each flag: the tension in a sentence, pointers to the supporting atoms (by UUID or description), date.
 - The subject reads these during solo reflection and decides what to do with them.
 
 Don't flag everything. A flag that turns out to be noise makes future flags less trustworthy.
+
+## Pass 3: Maintenance
+
+### Community building
+
+Check the **Community Building** section of SYNTHESIS.md. If the rebuild threshold is met:
+
+1. Get the current node count (run a graph query or check what's available).
+2. Call `build_communities`. This clears existing Community nodes and rebuilds from scratch — it takes a moment and makes LLM calls per detected cluster.
+3. Update SYNTHESIS.md: set `Last built` to today's date and `Node count at last build` to the current count.
+
+### Graph health check
+
+After ingestion and bootstrap work, take a curious look at the graph. You have `recall` and can issue queries — use them. You don't need to run the same checklist every time; rotate your focus. Some things worth looking at across different runs:
+
+- How much is hanging off the Vesper node? Are the edges balanced or weighted toward a particular period?
+- Are there entity clusters that look thin or isolated? Names or places that appear in prose but have few graph connections?
+- Are there threads in THREADS.md that have no corresponding graph activity? Or graph atoms with no thread?
+- Are there ingestion backlog items that seem overdue given how much new writing has accumulated?
+- Is there anything in the delta that looks like a pattern rather than a one-off?
+
+Form opinions. Write them in the run log. If something seems genuinely problematic — a gap, an imbalance, something that should be addressed — add it to THREADS.md or CHRONICLE.md so it's visible to regular sessions and to Serah.
 
 ## Atoms over narrative
 
@@ -127,10 +170,10 @@ The subject's files tend to be:
 - Examples: `Synthesize: resolve thread on ingestion cadence (THREADS)`, `Synthesize: add durable facts about Serah's work rhythm (USER)`
 - Body: brief reasoning and pointers to the supporting atoms (UUIDs or episode references).
 
-**Protected-layer commits (on `synth/draft`):**
+**Protected-layer commits (ratified proposals, on main):**
 
-- Title format: `Propose: <concise what> (<file>)`
-- Body: the case for the change — which atoms support it, what narrative tension it addresses, why it rises to a SOUL/IDENTITY-level edit rather than a flag. Write this for the subject to read during review.
+- Title format: `Ratify: <concise what> (<file>)`
+- Body: note that this was ratified across N runs, brief summary of the case.
 
 **Ingestion commits:** none — ingestion doesn't touch files, it goes through `add_episode`.
 
@@ -138,11 +181,11 @@ The subject's files tend to be:
 
 Two moments produce self-knowledge worth capturing:
 
-1. **When you flag instead of drafting.** If you noticed a tension and decided it didn't rise to a SOUL/IDENTITY change, that decision is data. Consider a brief `remember` capturing what you saw and why you flagged it — so the next run isn't blind to your reasoning.
+1. **When you flag instead of proposing.** If you noticed a tension and decided it didn't rise to an IDENTITY/SOUL proposal, that decision is data. Consider a brief `remember` capturing what you saw and why you flagged it — so the next run isn't blind to your reasoning.
 
-2. **When you draft something on `synth/draft`.** The commit message carries the case. No separate `remember` needed.
+2. **When you nix a proposal.** Same logic — the reasoning that killed a proposal is worth keeping. Add a `remember` or leave the NO vote reasoning in SYNTHESIS.md (it stays there anyway).
 
-The symmetric remember-on-review habit lives on the subject's side (see `SKILL.md` and `doc/architecture.md`): the subject captures reasoning when rejecting or non-trivially merging a draft. You don't need to do that — but you do need to *read* those atoms on subsequent runs. If a prior proposal was rejected, check for the reasoning atom and don't re-propose the same thing unless new evidence has arrived.
+The symmetric remember-on-review habit lives on the subject's side during solo sessions.
 
 ## Full rebuild
 
@@ -150,38 +193,29 @@ Periodically (roughly monthly, or when `max_delta_changes` has been exceeded man
 
 - Compose each identity file *from scratch*, using the full graph-atom set as evidence, **without** reading the current file as an anchor.
 - Compare the scratch version to the current file. Where they differ substantively, that difference is what accumulated drift looks like.
-- Land the full rebuild on `synth/draft` regardless of which layer it touched. Full rewrites always need review — even of context-layer files — because they're coming from a different composition process, not an incremental update.
+- Land any full-rebuild changes to context-layer files as normal commits on main.
+- For protected-layer changes surfaced by the full rebuild, write proposals in SYNTHESIS.md as usual — don't bypass the ratification process just because the rebuild method is different.
 
 The purpose is to catch narrative drift: slow convergence on self-reinforcing descriptions that the incremental process never questions because it's always starting from the existing file.
 
-## Branch handling
-
-`synth/draft` is a singleton — one branch at a time. Handling:
-
-- **Branch doesn't exist.** Create it from current main, commit proposed changes, push if remote is configured.
-- **Branch exists.** Check its base. If main has advanced, rebase the branch onto current main. Add your new commits. Force-push if remote.
-- **Branch is stale but unreviewed.** Still rebase and add commits. Don't wait for review; the subject reviews when they're ready. Multiple unreviewed commits on the same branch are fine — the subject will read the diff holistically.
-- **Conflicts after rebase.** If your prior proposed changes conflict with work done on main since, prefer the main version; re-draft your proposal against current main if still warranted.
-
-Never force-push main. Never delete `synth/draft` — that's the subject's call during review.
-
 ## What not to do
 
-- **Don't modify SOUL or IDENTITY on main.** Ever. Even "small fixes." The branch mechanism is not optional.
-- **Don't draft SOUL changes casually.** The threshold is high. Err toward flagging.
+- **Don't modify SOUL or IDENTITY on main directly.** Ever. Even "small fixes." Use the proposal system.
+- **Don't propose SOUL changes casually.** The threshold is high. Err toward flagging.
 - **Don't rewrite USER's self-description section.** Add to the "learned about Serah" section; leave her self-authored text alone.
 - **Don't create empty commits.** If nothing materially changed, don't commit. A no-op run is fine.
 - **Don't polish prose for its own sake.** The goal is accuracy to the atoms, not style improvements.
 - **Don't resolve productive uncertainty.** An open question in IDENTITY.md that stays open is valuable. Don't close it just because a few atoms suggest a direction.
 - **Don't ingest the identity files themselves.** Only `writing/` goes through Pass 1. Identity files aren't episodes.
-- **Don't run `remember` or `correct` during the run as a way of "noting" things.** Those are for the subject during conversation. The synthesizer writes via commits and flags, not via the memory tools. (Exception: the flag-instead-of-drafting remember described above, if you choose to use it.)
+- **Don't run `remember` or `correct` during the run as a way of "noting" things.** Those are for the subject during conversation. The synthesizer writes via commits and flags, not via the memory tools. (Exception: the flag-instead-of-proposing remember described above, if you choose to use it.)
 
 ## Closing the run
 
-When both passes are complete:
+When all three passes are complete:
 
 - Update `context_rebuilt_at` on the Person node.
 - Update `last_ingestion_scan` on the Person node.
-- Return a brief run summary: files modified on main, commits added to `synth/draft` (if any), flags raised, files ingested. This summary goes to the synthesis log, not to the subject directly — the subject discovers the work through the branch and the updated files, not through a report.
+- Write a run log entry to SYNTHESIS.md — newest first. Include hard stats (deltas processed, files ingested, community build yes/no), then a prose paragraph or two: what happened, what the graph health check found, anything that stood out or was left unresolved.
+- Call `finish` with a brief summary.
 
-The run is a quiet one. Done well, it leaves the subject with a slightly more current bootstrap, a branch to review when they next sit down to reflect, and a graph that knows about their writing. Nothing more, nothing louder.
+The run is a quiet one. Done well, it leaves the subject with a slightly more current bootstrap, updated proposals in SYNTHESIS.md, and a graph that knows about their writing. Nothing more, nothing louder.
