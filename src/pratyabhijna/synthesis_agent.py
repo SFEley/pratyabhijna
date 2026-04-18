@@ -273,6 +273,23 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "build_communities",
+        "description": (
+            "Run Graphiti's community detection algorithm on the full graph, "
+            "then summarise each detected cluster into a Community node. "
+            "Clears all existing Community nodes first — this is a full "
+            "rebuild, not an incremental update. Call when SYNTHESIS.md "
+            "indicates the rebuild threshold has been reached (30 days "
+            "elapsed or node count has grown by 200+). After the call, "
+            "update the community_last_built date and node count in "
+            "SYNTHESIS.md."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
         "name": "update_synthesis_metadata",
         "description": (
             "Update synthesis metadata on the subject's Person node. Call "
@@ -443,6 +460,7 @@ class AgentTools:
             entity_types=self.service.entity_types,
             saga=saga,
             saga_previous_episode_uuid=saga_previous_episode_uuid,
+            update_communities=True,
         )
         bytes_ingested = len(content.encode("utf-8"))
         _log.info(
@@ -456,6 +474,14 @@ class AgentTools:
             "bytes_ingested": bytes_ingested,
             "episode_uuid": result.episode.uuid,
         }
+
+    async def build_communities(self) -> dict:
+        community_nodes, community_edges = await self.service.build_communities(
+            group_ids=[self.config.subject_name]
+        )
+        node_count = len(community_nodes)
+        _log.info("synthesis: built %d communities", node_count)
+        return {"communities_built": node_count, "edges_created": len(community_edges)}
 
     async def forget_episode(self, uuid: str) -> dict:
         from graphiti_core.errors import NodeNotFoundError  # local import, same as ingest_file
@@ -535,6 +561,7 @@ def build_handler_map(tools: AgentTools) -> dict[str, Any]:
         "git_rebase_abort": tools.git_rebase_abort,
         "git_diff": tools.git_diff,
         "ingest_file": tools.ingest_file,
+        "build_communities": tools.build_communities,
         "forget_episode": tools.forget_episode,
         "update_synthesis_metadata": tools.update_synthesis_metadata,
         "finish": tools.finish,
@@ -557,6 +584,14 @@ def json_serializable(value: Any) -> str:
 SUBSKILL_PATH = Path(__file__).resolve().parent.parent.parent / (
     "skills/pratyabhijna/references/synthesis.md"
 )
+
+
+def _read_synthesis_file(repo_path: str) -> str | None:
+    """Read SYNTHESIS.md from {repo_path}/memory/, or None if absent."""
+    if not repo_path:
+        return None
+    path = Path(repo_path).expanduser().resolve() / "memory" / "SYNTHESIS.md"
+    return path.read_text(encoding="utf-8").strip() if path.is_file() else None
 
 
 def _load_subskill() -> str:
@@ -629,9 +664,8 @@ def _build_initial_user_message(
     now: datetime,
     git_branch: str,
     git_dirty: bool,
-    draft_branch_exists: bool,
-    draft_branch_diff: str,
     identity_files: dict[str, str | None],
+    synthesis_file: str | None,
     atoms: list[dict],
     delta: list[dict],
     candidates: list,
@@ -650,9 +684,12 @@ def _build_initial_user_message(
         "",
         f"Subject: {subject_name}",
         f"Current branch: {git_branch} (dirty: {git_dirty})",
-        f"Draft branch exists: {draft_branch_exists}",
         f"Last context rebuild: {last_context_rebuilt_at or '(never)'}",
         f"Last ingestion scan: {last_ingestion_scan or '(never)'}",
+        "",
+        "## SYNTHESIS.md",
+        "",
+        synthesis_file.strip() if synthesis_file else "(file missing — create it on first run)",
         "",
         "## Ingestion candidates",
         "",
@@ -666,20 +703,10 @@ def _build_initial_user_message(
         "",
         _format_atoms(delta),
         "",
+        "## Identity files",
+        "",
     ]
 
-    if draft_branch_exists and draft_branch_diff:
-        parts += [
-            "## Existing `synth/draft` diff (from prior runs)",
-            "",
-            "```",
-            draft_branch_diff.strip() or "(empty diff)",
-            "```",
-            "",
-        ]
-
-    parts.append("## Identity files")
-    parts.append("")
     for key in ("soul", "identity", "user", "threads", "chronicle"):
         filename = {
             "soul": "SOUL.md",
@@ -790,6 +817,7 @@ async def run_synthesis(
     if repo_path:
         await _sync_from_remote(repo_path, config.synthesis.draft_branch)
     identity_files = read_identity_files(repo_path)
+    synthesis_file = _read_synthesis_file(repo_path)
     atoms = await get_identity_atoms(service, subject_node)
     delta = await get_identity_delta(service, subject_node)
     candidates = await scan_repo_for_ingestion_candidates(
@@ -799,11 +827,6 @@ async def run_synthesis(
     # Git state
     git_branch = await git_ops.current_branch(repo_path)
     git_dirty = await git_ops.is_dirty(repo_path)
-    draft_branch = config.synthesis.draft_branch
-    draft_exists = await git_ops.branch_exists(repo_path, draft_branch)
-    draft_diff = (
-        await git_ops.diff(repo_path, "main", draft_branch) if draft_exists else ""
-    )
 
     _log.info(
         "synthesis: state loaded (atoms=%d, delta=%d, candidates=%d, "
@@ -824,9 +847,8 @@ async def run_synthesis(
         now=now,
         git_branch=git_branch,
         git_dirty=git_dirty,
-        draft_branch_exists=draft_exists,
-        draft_branch_diff=draft_diff,
         identity_files=identity_files,
+        synthesis_file=synthesis_file,
         atoms=atoms,
         delta=delta,
         candidates=candidates,

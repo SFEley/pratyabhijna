@@ -5,6 +5,8 @@ Usage:
     python -m pratyabhijna seed [--name NAME] [--soul-file PATH] [--identity-file PATH]
                                                  Seed subject identity
 
+    python -m pratyabhijna synthesis [MINUTES]   Enqueue synthesis run (default: now)
+
     python -m pratyabhijna status                System orientation
     python -m pratyabhijna bootstrap             Subject identity tiers
     python -m pratyabhijna inspect UUID          Node or edge detail
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import sys
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from pratyabhijna.config import PratyabhijnaConfig
@@ -360,6 +363,43 @@ def run_tool(config: PratyabhijnaConfig, action: str, argv: list[str]) -> int:
     return 0
 
 
+def run_synthesis_cmd(config: PratyabhijnaConfig, argv: list[str]) -> int:
+    """Enqueue a synthesis task, optionally delayed by N minutes."""
+    import anyio
+
+    delay_minutes = 0
+    if argv:
+        try:
+            delay_minutes = int(argv[0])
+            if delay_minutes < 0:
+                raise ValueError
+        except ValueError:
+            print(
+                "Usage: python -m pratyabhijna synthesis [MINUTES]",
+                file=sys.stderr,
+            )
+            return 2
+
+    async def _run():
+        queue = WorkQueue(db_path=config.queue.db_path)
+        queue.register("synthesize", lambda _: None)  # stub: handler runs in server process
+        await queue.start()
+        try:
+            run_at = datetime.now(timezone.utc)
+            if delay_minutes:
+                run_at += timedelta(minutes=delay_minutes)
+            task_id = await queue.reschedule_or_enqueue("synthesize", {}, run_at=run_at)
+            if delay_minutes:
+                print(f"Synthesis scheduled in {delay_minutes}m (task {task_id})")
+            else:
+                print(f"Synthesis queued (task {task_id})")
+        finally:
+            await queue.stop()
+
+    anyio.run(_run)
+    return 0
+
+
 _HELP = """\
 Usage: python -m pratyabhijna [COMMAND]
 
@@ -368,6 +408,8 @@ Commands:
   help                            Show this message
 
   seed [--name NAME]              Seed subject identity node
+
+  synthesis [MINUTES]             Enqueue a synthesis run (default: now)
 
   status                          System orientation (queue, graph, synthesis)
   bootstrap                       Subject identity tiers
@@ -393,6 +435,9 @@ def main():
 
     if len(sys.argv) > 1 and sys.argv[1] == "seed":
         sys.exit(run_seed(config, sys.argv[2:]))
+
+    if len(sys.argv) > 1 and sys.argv[1] == "synthesis":
+        sys.exit(run_synthesis_cmd(config, sys.argv[2:]))
 
     if len(sys.argv) > 1 and sys.argv[1] in TOOL_COMMANDS:
         sys.exit(run_tool(config, sys.argv[1], sys.argv[2:]))

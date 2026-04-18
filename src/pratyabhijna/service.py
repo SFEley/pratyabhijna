@@ -218,6 +218,10 @@ class PratyabhijnaService:
             return None
         return await EpisodicNode.get_by_uuid(driver, records[0]["uuid"])
 
+    async def build_communities(self, group_ids: list[str]) -> tuple:
+        """Rebuild Community nodes from scratch for the given group IDs."""
+        return await self._graphiti.build_communities(group_ids=group_ids)
+
     async def remove_episode(self, uuid: str) -> None:
         """Delete an episode and its orphaned edges/nodes from the graph.
 

@@ -95,6 +95,7 @@ def make_handler(service: PratyabhijnaService, queue: WorkQueue | None = None):
             source_description="correction",
             reference_time=reference_time,
             entity_types=service.entity_types,
+            update_communities=True,
             **({"custom_extraction_instructions": extraction_hint}
                if extraction_hint else {}),
         )
