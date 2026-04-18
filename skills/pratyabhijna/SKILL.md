@@ -26,7 +26,7 @@ All seven tools are exposed as `mcp__Pratyabhijna__<name>`:
 
 - **`bootstrap()`** — hybrid read. Returns identity tiers (from files when the server has repo access, from graph otherwise), synthesized context, and a delta of identity changes. Use at session start when you don't have direct file access.
 - **`recall(query, memory_type?, time_range?)`** — hybrid search (semantic + keyword + graph). Use proactively to retrieve details about conversation subject or before claiming anything about the subject's past.
-- **`remember(content, memory_type?, source?)`** — queue a new memory. Returns immediately; processing is async.
+- **`remember(content, memory_type?, source?, occurred_at?, saga?)`** — queue a new memory. Returns immediately; processing is async.
 - **`correct(content, search_terms)`** — queue a correction when a prior memory turned out *wrong* (not just outdated — supersession is automatic).
 - **`inspect(uuid)`** / **`history(entity_name)`** / **`status()`** — diagnostic reads. Rarely needed in normal conversation.
 
