@@ -117,7 +117,6 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "'Position', 'Question')."
                     ),
                 },
-                "limit": {"type": "integer", "default": 10},
             },
             "required": ["query"],
         },

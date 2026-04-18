@@ -220,14 +220,10 @@ async def test_git_rebase_abort_safe_when_none_running(tools):
 
 @pytest.mark.asyncio
 async def test_recall_delegates_to_service(tools, service):
+    from graphiti_core.search.search_config import SearchResults
     from graphiti_core.search.search_filters import SearchFilters
 
-    fake_results = MagicMock()
-    fake_results.nodes = []
-    fake_results.edges = []
-    fake_results.node_reranker_scores = []
-    fake_results.edge_reranker_scores = []
-    service.recall = AsyncMock(return_value=fake_results)
+    service.recall = AsyncMock(return_value=SearchResults())
 
     result = await tools.recall("my query", memory_type="Observation")
 
