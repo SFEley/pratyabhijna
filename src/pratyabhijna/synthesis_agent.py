@@ -377,16 +377,9 @@ class AgentTools:
 
     # --- Graph ---
 
-    async def recall(
-        self,
-        query: str,
-        memory_type: str | None = None,
-        limit: int = 10,
-    ) -> dict:
-        results = await self.service.recall(
-            query=query, memory_type=memory_type, limit=limit
-        )
-        return {"results": results}
+    async def recall(self, query: str, memory_type: str | None = None, **_) -> dict:
+        from pratyabhijna.tools.recall import recall as recall_tool
+        return await recall_tool(self.service, query=query, memory_type=memory_type)
 
     # --- Git ---
 

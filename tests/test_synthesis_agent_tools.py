@@ -220,11 +220,21 @@ async def test_git_rebase_abort_safe_when_none_running(tools):
 
 @pytest.mark.asyncio
 async def test_recall_delegates_to_service(tools, service):
-    result = await tools.recall("my query", memory_type="Observation", limit=5)
-    service.recall.assert_awaited_once_with(
-        query="my query", memory_type="Observation", limit=5
-    )
-    assert result["results"] == [{"fact": "x"}]
+    from graphiti_core.search.search_filters import SearchFilters
+
+    fake_results = MagicMock()
+    fake_results.nodes = []
+    fake_results.edges = []
+    fake_results.node_reranker_scores = []
+    fake_results.edge_reranker_scores = []
+    service.recall = AsyncMock(return_value=fake_results)
+
+    result = await tools.recall("my query", memory_type="Observation")
+
+    call_kwargs = service.recall.call_args.kwargs
+    assert call_kwargs["query"] == "my query"
+    assert call_kwargs["search_filter"] == SearchFilters(node_labels=["Observation"])
+    assert result["results"] == []
 
 
 # --- Ingestion ---
