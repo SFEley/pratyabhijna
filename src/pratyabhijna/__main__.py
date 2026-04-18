@@ -382,12 +382,13 @@ def run_synthesis_cmd(config: PratyabhijnaConfig, argv: list[str]) -> int:
 
     async def _run():
         queue = WorkQueue(db_path=config.queue.db_path)
+        queue.register("synthesize", lambda _: None)  # stub: handler runs in server process
         await queue.start()
         try:
-            run_at = None
+            run_at = datetime.now(timezone.utc)
             if delay_minutes:
-                run_at = datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)
-            task_id = await queue.enqueue("synthesize", {}, run_at=run_at)
+                run_at += timedelta(minutes=delay_minutes)
+            task_id = await queue.reschedule_or_enqueue("synthesize", {}, run_at=run_at)
             if delay_minutes:
                 print(f"Synthesis scheduled in {delay_minutes}m (task {task_id})")
             else:

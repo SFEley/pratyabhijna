@@ -476,7 +476,7 @@ class AgentTools:
         }
 
     async def build_communities(self) -> dict:
-        community_nodes, community_edges = await self.service._graphiti.build_communities(
+        community_nodes, community_edges = await self.service.build_communities(
             group_ids=[self.config.subject_name]
         )
         node_count = len(community_nodes)
