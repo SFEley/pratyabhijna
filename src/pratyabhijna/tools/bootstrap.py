@@ -58,11 +58,21 @@ async def bootstrap(
 
     base = {"subject": service.config.subject_name, **tiers}
 
+    _available_tools = {
+        "remember": "Write a new memory — observation, fact, position, or identity item. Supports `saga` to group episodes into ordered sequences.",
+        "correct": "Fix a prior memory that was wrong (not just outdated).",
+        "recall": "Search memory by semantic + keyword + graph traversal.",
+        "history": "Temporal evolution of an entity or topic.",
+        "inspect": "Detailed view of a specific memory node by UUID.",
+        "status": "System health — queue depth, graph connection, synthesis state.",
+    }
+
     if node is None:
         return {
             **base,
             "context_rebuilt_at": None,
             "delta": [],
+            "available_tools": _available_tools,
             "message": (
                 f"No Person node found for '{service.config.subject_name}'. "
                 "The subject node must be created before bootstrap can "
@@ -86,4 +96,5 @@ async def bootstrap(
         **base,
         "context_rebuilt_at": node.attributes.get("context_rebuilt_at"),
         "delta": delta,
+        "available_tools": _available_tools,
     }

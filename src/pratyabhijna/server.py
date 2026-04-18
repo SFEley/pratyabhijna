@@ -168,7 +168,12 @@ def create_server(
 
     @server.tool()
     async def bootstrap() -> dict:
-        """Return identity synthesis + recent delta for bootstrap reconstruction."""
+        """Return identity tiers, synthesis delta, and available tools for session start.
+
+        Call first at the beginning of every session. The response includes the full
+        list of tools available during the session — notably `remember` (write a new
+        memory) and `correct` (fix a wrong memory), in addition to read tools.
+        """
         if service is None:
             raise RuntimeError("bootstrap requires a connected service")
         from pratyabhijna.tools.bootstrap import bootstrap as _bootstrap
