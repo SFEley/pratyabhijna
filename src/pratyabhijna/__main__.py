@@ -382,8 +382,8 @@ def run_synthesis_cmd(config: PratyabhijnaConfig, argv: list[str]) -> int:
 
     async def _run():
         queue = WorkQueue(db_path=config.queue.db_path)
-        queue.register("synthesize", lambda _: None)  # stub: handler runs in server process
-        await queue.start()
+        queue.register("synthesize", lambda _: None)
+        await queue.start(run_worker=False)
         try:
             run_at = datetime.now(timezone.utc)
             if delay_minutes:

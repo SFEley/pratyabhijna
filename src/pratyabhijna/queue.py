@@ -89,8 +89,13 @@ class WorkQueue:
 
     # --- Lifecycle ---
 
-    async def start(self) -> None:
-        """Open DB, create schema, recover crashed tasks, start worker loop."""
+    async def start(self, run_worker: bool = True) -> None:
+        """Open DB, create schema, recover crashed tasks, start worker loop.
+
+        Pass run_worker=False to open the DB for enqueuing only, without
+        starting the worker loop. Useful for CLI commands that write tasks
+        intended for the server process to execute.
+        """
         if self._running:
             return
 
@@ -106,7 +111,8 @@ class WorkQueue:
         await self._migrate()
         await self._recover_crashed()
         self._running = True
-        self._worker_task = asyncio.create_task(self._worker_loop())
+        if run_worker:
+            self._worker_task = asyncio.create_task(self._worker_loop())
 
     async def _migrate(self) -> None:
         """Apply in-place schema upgrades for existing databases.
