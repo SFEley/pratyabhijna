@@ -855,7 +855,10 @@ async def run_synthesis(
         # or config YAML). Falls through to anthropic's default env-var
         # resolution (ANTHROPIC_API_KEY) when unset.
         api_key = config.llm.api_key or None
-        client = anthropic.AsyncAnthropic(api_key=api_key)
+        # 5-minute timeout matches the prompt cache TTL: if a streaming
+        # response stalls longer than the cache would live anyway, abort
+        # and let the queue retry with fresh cached context.
+        client = anthropic.AsyncAnthropic(api_key=api_key, timeout=300.0)
 
     # Adaptive thinking on Opus 4.6 / Sonnet 4.6: the model decides
     # when and how much to think; we guide via the `effort` parameter
