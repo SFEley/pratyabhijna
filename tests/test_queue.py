@@ -366,7 +366,17 @@ class TestPersistence:
         assert received == [{"survived": True}]
         await q2.stop()
 
+    async def _simulate_crash(self, db_path: str, task_id: str) -> None:
+        """Force a task back to 'running' in the DB to simulate a mid-task crash."""
+        import aiosqlite
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(
+                "UPDATE tasks SET status = 'running' WHERE id = ?", (task_id,)
+            )
+            await db.commit()
+
     async def test_running_task_recovered_on_restart(self, tmp_path):
+        """Crashed task is rescheduled with backoff and eventually completes."""
         from pratyabhijna.queue import WorkQueue
 
         db_path = str(tmp_path / "recover.sqlite")
@@ -377,35 +387,31 @@ class TestPersistence:
             started.set()
             await gate.wait()
 
-        # First instance: start a task, then kill the queue mid-processing
         q1 = WorkQueue(db_path=db_path, max_retries=3, poll_interval=0.05)
         q1.register("test", blocking_handler)
         await q1.start()
         task_id = await q1.enqueue("test", {"recover": True})
 
         await asyncio.wait_for(started.wait(), timeout=2.0)
-        # Task is now running. Stop without letting it finish.
-        gate.set()  # Unblock so stop() can complete
+        gate.set()
         await q1.stop()
+        await self._simulate_crash(db_path, task_id)
 
-        # Manually set it back to running to simulate a crash
-        import aiosqlite
-        async with aiosqlite.connect(db_path) as db:
-            await db.execute(
-                "UPDATE tasks SET status = 'running' WHERE id = ?",
-                (task_id,),
-            )
-            await db.commit()
-
-        # Second instance: should recover the running task
         recovered = []
 
         async def capture(payload: dict) -> None:
             recovered.append(payload)
 
-        q2 = WorkQueue(db_path=db_path, max_retries=3, poll_interval=0.05)
+        # Tiny backoff so the retry fires immediately in the test.
+        q2 = WorkQueue(db_path=db_path, max_retries=3, poll_interval=0.05, backoff_base_seconds=0.01)
         q2.register("test", capture)
         await q2.start()
+
+        # After recovery: attempts=1, error set, run_at in the near past.
+        t = await q2.get_task(task_id)
+        assert t["status"] == "pending"
+        assert t["attempts"] == 1
+        assert "ServiceRestart" in t["error"]
 
         async def is_done():
             t = await q2.get_task(task_id)
@@ -413,6 +419,64 @@ class TestPersistence:
 
         await wait_for(is_done)
         assert recovered == [{"recover": True}]
+        await q2.stop()
+
+    async def test_running_task_dead_lettered_when_attempts_exhausted(self, tmp_path):
+        """Crashed task is dead-lettered if it has no retries remaining."""
+        from pratyabhijna.queue import WorkQueue
+
+        db_path = str(tmp_path / "recover_dl.sqlite")
+
+        async def always_succeed(payload: dict) -> None:
+            pass
+
+        q1 = WorkQueue(db_path=db_path, max_retries=1, poll_interval=0.05)
+        q1.register("test", always_succeed)
+        await q1.start()
+        task_id = await q1.enqueue("test", {"data": "x"})
+        await q1.stop()
+        await self._simulate_crash(db_path, task_id)
+
+        # Set attempts=0 so after +1 it equals max_retries=1 → dead-letter.
+        import aiosqlite
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute("UPDATE tasks SET attempts = 0 WHERE id = ?", (task_id,))
+            await db.commit()
+
+        q2 = WorkQueue(db_path=db_path, max_retries=1, poll_interval=0.05)
+        q2.register("test", always_succeed)
+        await q2.start()
+
+        t = await q2.get_task(task_id)
+        assert t["status"] == "dead_letter"
+        assert t["attempts"] == 1
+        assert "ServiceRestart" in t["error"]
+        await q2.stop()
+
+    async def test_recover_crashed_skipped_when_run_worker_false(self, tmp_path):
+        """CLI-mode start (run_worker=False) must not touch running tasks."""
+        from pratyabhijna.queue import WorkQueue
+
+        db_path = str(tmp_path / "recover_cli.sqlite")
+
+        async def noop(payload: dict) -> None:
+            pass
+
+        q1 = WorkQueue(db_path=db_path, max_retries=3, poll_interval=0.05)
+        q1.register("test", noop)
+        await q1.start()
+        task_id = await q1.enqueue("test", {})
+        await q1.stop()
+        await self._simulate_crash(db_path, task_id)
+
+        # Open in CLI mode — running task must be left untouched.
+        q2 = WorkQueue(db_path=db_path, max_retries=3, poll_interval=0.05)
+        q2.register("test", noop)
+        await q2.start(run_worker=False)
+
+        t = await q2.get_task(task_id)
+        assert t["status"] == "running"
+        assert t["attempts"] == 0
         await q2.stop()
 
 

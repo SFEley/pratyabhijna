@@ -109,9 +109,9 @@ class WorkQueue:
         await self._db.execute("PRAGMA busy_timeout = 5000")
         await self._db.executescript(_SCHEMA)
         await self._migrate()
-        await self._recover_crashed()
         self._running = True
         if run_worker:
+            await self._recover_crashed()
             self._worker_task = asyncio.create_task(self._worker_loop())
 
     async def _migrate(self) -> None:
@@ -297,11 +297,54 @@ class WorkQueue:
     # --- Internal ---
 
     async def _recover_crashed(self) -> None:
-        """Reset any 'running' tasks back to 'pending' on startup."""
-        await self._db.execute(
-            "UPDATE tasks SET status = 'pending', updated_at = ? WHERE status = 'running'",
-            (_now(),),
-        )
+        """Recover tasks left in 'running' state by a previous service crash.
+
+        Called only when run_worker=True (i.e. the main service process, not a
+        CLI enqueue call). Each interrupted task gets its attempt count
+        incremented and is rescheduled with the standard backoff delay. Tasks
+        that have exhausted max_attempts are dead-lettered instead.
+        """
+        async with self._db.execute(
+            "SELECT id, task_type, attempts, max_attempts FROM tasks WHERE status = 'running'"
+        ) as cursor:
+            crashed = await cursor.fetchall()
+
+        if not crashed:
+            return
+
+        now_dt = datetime.now(timezone.utc)
+        now = _iso(now_dt)
+        error_text = "ServiceRestart: task was interrupted when the service stopped"
+
+        for row in crashed:
+            task_id, task_type, attempts, max_attempts = row[0], row[1], row[2], row[3]
+            attempts += 1
+
+            if attempts >= max_attempts:
+                await self._db.execute(
+                    "UPDATE tasks SET status = 'dead_letter', attempts = ?, "
+                    "error = ?, updated_at = ? WHERE id = ?",
+                    (attempts, error_text, now, task_id),
+                )
+                _log.error(
+                    "task %s:%s dead-lettered after service restart "
+                    "(attempt %d/%d exhausted)",
+                    task_type, task_id, attempts, max_attempts,
+                )
+            else:
+                delay_seconds = (attempts ** 2) * self.backoff_base_seconds
+                next_run_at = _iso(now_dt + timedelta(seconds=delay_seconds))
+                await self._db.execute(
+                    "UPDATE tasks SET status = 'pending', attempts = ?, "
+                    "error = ?, updated_at = ?, run_at = ? WHERE id = ?",
+                    (attempts, error_text, now, next_run_at, task_id),
+                )
+                _log.error(
+                    "task %s:%s was interrupted by service restart "
+                    "(attempt %d/%d), retrying in %.1fs",
+                    task_type, task_id, attempts, max_attempts, delay_seconds,
+                )
+
         await self._db.commit()
 
     async def _worker_loop(self) -> None:
