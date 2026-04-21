@@ -452,7 +452,6 @@ class AgentTools:
             entity_types=self.service.entity_types,
             saga=saga,
             saga_previous_episode_uuid=saga_previous_episode_uuid,
-            update_communities=True,
         )
         bytes_ingested = len(content.encode("utf-8"))
         _log.info(
