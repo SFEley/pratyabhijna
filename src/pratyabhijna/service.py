@@ -220,7 +220,14 @@ class PratyabhijnaService:
 
     async def build_communities(self, group_ids: list[str]) -> tuple:
         """Rebuild Community nodes from scratch for the given group IDs."""
-        return await self._graphiti.build_communities(group_ids=group_ids)
+        from pratyabhijna.communities import DEFAULT_SAMPLE_SIZE, build_communities
+
+        return await build_communities(
+            self._graphiti.driver,
+            self._graphiti.llm_client,
+            group_ids,
+            sample_size=DEFAULT_SAMPLE_SIZE,
+        )
 
     async def remove_episode(self, uuid: str) -> None:
         """Delete an episode and its orphaned edges/nodes from the graph.
