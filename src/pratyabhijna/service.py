@@ -11,7 +11,7 @@ from graphiti_core import Graphiti
 from graphiti_core.driver.neo4j_driver import Neo4jDriver
 from graphiti_core.edges import EntityEdge
 from graphiti_core.errors import EdgeNotFoundError, NodeNotFoundError
-from graphiti_core.nodes import EntityNode, EpisodicNode
+from graphiti_core.nodes import CommunityNode, EntityNode, EpisodicNode
 from graphiti_core.search.search_config import SearchResults
 from graphiti_core.search.search_config_recipes import (
     COMBINED_HYBRID_SEARCH_CROSS_ENCODER,
@@ -284,6 +284,65 @@ class PratyabhijnaService:
             routing_="r",
         )
         return {r["t"]: r["n"] for r in records}
+
+    # --- Community queries (used by communities tool) -------------------------
+
+    async def get_all_communities(self, group_id: str) -> list[CommunityNode]:
+        """Return all Community nodes for the given group."""
+        return await CommunityNode.get_by_group_ids(self._graphiti.driver, [group_id])
+
+    async def get_community_member_counts(
+        self, community_uuids: list[str]
+    ) -> dict[str, int]:
+        """Return member counts per community UUID in one query."""
+        if not community_uuids:
+            return {}
+        records, _, _ = await self._graphiti.driver.execute_query(
+            "MATCH (c:Community)-[:HAS_MEMBER]->(e) "
+            "WHERE c.uuid IN $uuids "
+            "RETURN c.uuid AS uuid, count(e) AS member_count",
+            uuids=community_uuids,
+            routing_="r",
+        )
+        return {r["uuid"]: r["member_count"] for r in records}
+
+    async def get_community_by_name(
+        self, name: str, group_id: str
+    ) -> CommunityNode | None:
+        """Find a community by case-insensitive name. Returns None if not found."""
+        driver = self._graphiti.driver
+        records, _, _ = await driver.execute_query(
+            "MATCH (c:Community {group_id: $group_id}) "
+            "WHERE toLower(c.name) = toLower($name) "
+            "RETURN c.uuid AS uuid "
+            "LIMIT 1",
+            group_id=group_id,
+            name=name,
+            routing_="r",
+        )
+        if not records:
+            return None
+        return await CommunityNode.get_by_uuid(driver, records[0]["uuid"])
+
+    async def get_community_members(self, community_uuid: str) -> list[dict]:
+        """Return member entity stubs for a community, ordered by name."""
+        records, _, _ = await self._graphiti.driver.execute_query(
+            "MATCH (c:Community {uuid: $uuid})-[:HAS_MEMBER]->(e:Entity) "
+            "RETURN e.uuid AS uuid, e.name AS name, labels(e) AS labels, "
+            "e.summary AS summary "
+            "ORDER BY e.name",
+            uuid=community_uuid,
+            routing_="r",
+        )
+        return [
+            {
+                "uuid": r["uuid"],
+                "name": r["name"],
+                "labels": r["labels"],
+                "summary": r["summary"],
+            }
+            for r in records
+        ]
 
     async def count_supersessions(self) -> int:
         """Count edges that have been superseded in the temporal model.

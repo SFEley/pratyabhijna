@@ -164,6 +164,17 @@ def create_server(
 
         return await _inspect(service=service, uuid=uuid)
 
+    @server.tool()
+    async def communities(
+        name: str | None = None,
+    ) -> dict:
+        """List all communities or display a single community with its members."""
+        if service is None:
+            raise RuntimeError("communities requires a connected service")
+        from pratyabhijna.tools.communities import communities as _communities
+
+        return await _communities(service=service, name=name)
+
     # --- Phase 5: bootstrap ---
 
     @server.tool()

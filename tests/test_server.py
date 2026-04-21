@@ -15,6 +15,7 @@ EXPECTED_TOOLS = [
     "history",
     "inspect",
     "status",
+    "communities",
 ]
 
 
