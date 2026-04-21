@@ -95,7 +95,6 @@ def make_handler(service: PratyabhijnaService, queue: WorkQueue | None = None):
             entity_types=service.entity_types,
             saga=saga,
             saga_previous_episode_uuid=saga_prev,
-            update_communities=True,
         )
         _log.info("add_episode complete (type=%s)", payload["memory_type"])
 
