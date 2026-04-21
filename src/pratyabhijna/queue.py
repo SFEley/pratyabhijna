@@ -380,6 +380,7 @@ class WorkQueue:
             (now, now),
         )
         if cursor.rowcount == 0:
+            await self._db.rollback()
             return None
         await self._db.commit()
 

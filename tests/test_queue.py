@@ -832,3 +832,31 @@ class TestCollectQueueStats:
         assert stats["last_write"] == live_last_write
         assert stats["dead_letters"] == live_dead
         assert stats["last_error"] == live_err
+
+
+# ---------------------------------------------------------------------------
+# Transaction hygiene
+# ---------------------------------------------------------------------------
+
+
+class TestClaimNextTransactionHygiene:
+    async def test_claim_next_does_not_leave_open_transaction_when_idle(self, tmp_path):
+        """_claim_next must not hold an open SQLite transaction when the queue is empty.
+
+        Root cause of 'database is locked': the UPDATE in _claim_next begins an
+        implicit transaction even when rowcount==0. Without a rollback (or commit),
+        that transaction holds a RESERVED lock for the full poll interval, blocking
+        the CLI's INSERT in enqueue().
+        """
+        from pratyabhijna.queue import WorkQueue
+
+        db_path = str(tmp_path / "tx_hygiene.sqlite")
+        q = WorkQueue(db_path=db_path, poll_interval=0.5)
+        q.register("add_episode", _noop_handler)
+        await q.start(run_worker=False)
+
+        result = await q._claim_next()
+        assert result is None
+        assert not q._db.in_transaction
+
+        await q.stop()
