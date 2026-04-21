@@ -26,29 +26,11 @@ class TestMainImport:
 # ---------------------------------------------------------------------------
 
 class TestLifespan:
-    async def test_lifespan_registers_queue_handlers(self):
-        """FastMCP lifespan registers handlers only — no start/stop (that's ASGI-level)."""
-        from pratyabhijna.__main__ import build_lifespan
+    async def test_lifespan_does_not_register_or_start_or_stop(self):
+        """FastMCP lifespan is session-only — no handler registration, no start/stop.
 
-        service = MagicMock()
-        queue = MagicMock()
-        queue.register = MagicMock()
-
-        lifespan_cm = build_lifespan(service, queue)
-        app = MagicMock()
-
-        async with lifespan_cm(app):
-            pass
-
-        registered_types = [call.args[0] for call in queue.register.call_args_list]
-        assert "add_episode" in registered_types
-        assert "correct_memory" in registered_types
-        assert "synthesize" in registered_types
-
-    async def test_lifespan_does_not_start_or_stop_service(self):
-        """FastMCP lifespan must not start/stop service or queue — lifecycle is ASGI-level.
-
-        Service/queue startup lives in build_http_app's wrapped_lifespan so that
+        Handlers are registered by register_queue_handlers() before queue.start().
+        Service/queue lifecycle lives in build_http_app's wrapped_lifespan so that
         crash recovery runs at uvicorn startup, before any MCP session exists.
         """
         from pratyabhijna.__main__ import build_lifespan
@@ -72,6 +54,38 @@ class TestLifespan:
         service.stop.assert_not_called()
         queue.start.assert_not_called()
         queue.stop.assert_not_called()
+        queue.register.assert_not_called()
+
+    async def test_register_queue_handlers_registers_all_types(self):
+        """register_queue_handlers registers synthesize, add_episode, correct_memory."""
+        from pratyabhijna.__main__ import register_queue_handlers
+
+        service = MagicMock()
+        service.config = MagicMock()
+        queue = MagicMock()
+        queue.register = MagicMock()
+
+        register_queue_handlers(service, queue)
+
+        registered_types = [call.args[0] for call in queue.register.call_args_list]
+        assert "synthesize" in registered_types
+        assert "add_episode" in registered_types
+        assert "correct_memory" in registered_types
+
+    async def test_register_queue_handlers_synthesize_registered_first(self):
+        """synthesize handler must be registered before add_episode and correct_memory."""
+        from pratyabhijna.__main__ import register_queue_handlers
+
+        service = MagicMock()
+        service.config = MagicMock()
+        queue = MagicMock()
+        queue.register = MagicMock()
+
+        register_queue_handlers(service, queue)
+
+        registered_types = [call.args[0] for call in queue.register.call_args_list]
+        assert registered_types.index("synthesize") < registered_types.index("add_episode")
+        assert registered_types.index("synthesize") < registered_types.index("correct_memory")
 
 
 # ---------------------------------------------------------------------------

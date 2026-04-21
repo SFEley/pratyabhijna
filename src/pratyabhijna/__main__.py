@@ -44,27 +44,38 @@ log = get_logger(__name__)
 def build_lifespan(service: PratyabhijnaService, queue: WorkQueue):
     """Create the async lifespan context manager for the MCP server.
 
-    Registers queue handlers only. Service and queue lifecycle (start/stop,
-    crash recovery) are managed by the ASGI-level lifespan in
-    ``oauth.build_http_app``, which runs at uvicorn startup before any MCP
-    session exists. FastMCP's lifespan fires per MCP session, so it cannot
-    own start/stop — the queue worker would not run until the first client
-    connected, and crashed tasks would not be recovered on restart.
+    Handlers must be registered before this lifespan is used (call
+    ``register_queue_handlers`` after constructing the queue). Service and
+    queue lifecycle (start/stop, crash recovery) are managed by the
+    ASGI-level lifespan in ``oauth.build_http_app``, which runs at uvicorn
+    startup before any MCP session exists. FastMCP's lifespan fires per MCP
+    session, so it cannot own start/stop — the queue worker would not run
+    until the first client connected, and crashed tasks would not be
+    recovered on restart.
     """
 
     @asynccontextmanager
     async def lifespan(app: FastMCP):
-        # Register synthesize first so remember/correct handlers — which
-        # schedule synthesize tasks via reschedule_or_enqueue — can
-        # reference it. WorkQueue.reschedule_or_enqueue validates the
-        # handler exists before inserting.
-        queue.register("synthesize", make_synthesize_handler(service, service.config))
-        queue.register("add_episode", remember_make_handler(service, queue=queue))
-        queue.register("correct_memory", correct_make_handler(service, queue=queue))
         log.info("Pratyabhijna MCP session ready")
         yield
 
     return lifespan
+
+
+def register_queue_handlers(
+    service: PratyabhijnaService, queue: WorkQueue
+) -> None:
+    """Register all task handlers on the queue before it starts.
+
+    Must be called before ``queue.start()`` so that crash-recovered tasks
+    dispatched by the worker loop always find their handlers present.
+    Synthesize is registered first because the remember/correct handlers
+    call ``reschedule_or_enqueue("synthesize", ...)`` and that method
+    validates the handler exists before inserting.
+    """
+    queue.register("synthesize", make_synthesize_handler(service, service.config))
+    queue.register("add_episode", remember_make_handler(service, queue=queue))
+    queue.register("correct_memory", correct_make_handler(service, queue=queue))
 
 
 def _parse_seed_args(argv: list[str]) -> str | None | False:
@@ -493,6 +504,7 @@ def main():
         config.queue.poll_interval,
         config.queue.backoff_base_seconds,
     )
+    register_queue_handlers(service, queue)
     lifespan = build_lifespan(service, queue)
     # When running behind a reverse proxy (server.url set), disable FastMCP's
     # DNS rebinding protection — the proxy forwards Host: <external-domain>,

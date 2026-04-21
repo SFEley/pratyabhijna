@@ -23,6 +23,10 @@ so storage must be brought up in a separate lifespan layer.
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
+from pratyabhijna.log import get_logger
+
+log = get_logger(__name__)
+
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
     from starlette.applications import Starlette
@@ -54,16 +58,31 @@ def build_http_app(
     @asynccontextmanager
     async def wrapped_lifespan(inner_app):
         await service.start()
-        await queue.start()
-        if oauth_storage is not None:
-            await oauth_storage.start()
+        try:
+            await queue.start()
+            if oauth_storage is not None:
+                try:
+                    await oauth_storage.start()
+                except BaseException:
+                    await queue.stop()
+                    raise
+        except BaseException:
+            await service.stop()
+            raise
         try:
             async with original_lifespan(inner_app):
                 yield
         finally:
-            if oauth_storage is not None:
-                await oauth_storage.stop()
-            await queue.stop()
+            log.info("Pratyabhijna shutting down")
+            try:
+                if oauth_storage is not None:
+                    await oauth_storage.stop()
+            except Exception:
+                log.exception("Error stopping OAuth storage")
+            try:
+                await queue.stop()
+            except Exception:
+                log.exception("Error stopping queue")
             await service.stop()
 
     app.router.lifespan_context = wrapped_lifespan
