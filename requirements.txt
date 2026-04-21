@@ -65,7 +65,7 @@ fsspec==2026.3.0
     # via huggingface-hub
 future==1.0.0
     # via ffmpeg-python
-graphiti-core @ git+https://github.com/SFEley/graphiti.git@8e734f298e838e1ca04feec45494d5f4913e65a7
+graphiti-core @ git+https://github.com/SFEley/graphiti.git@32534618278c1f5ec5a524c49e7c789abb53a06f
     # via pratyabhijna (pyproject.toml)
 h11==0.16.0
     # via
