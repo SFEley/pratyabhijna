@@ -52,7 +52,7 @@ class TestStatusTopLevel:
     async def test_includes_version(self, tmp_path):
         from pratyabhijna.tools.status import status
         result = await status(service=_make_service(), queue_db_path=str(tmp_path / "q.db"))
-        assert result["version"] == "0.2.0"
+        assert result["version"] == "0.2.1"
 
     @pytest.mark.asyncio
     async def test_reflects_db_connected(self, tmp_path):

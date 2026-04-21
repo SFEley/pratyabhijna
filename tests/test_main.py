@@ -206,7 +206,7 @@ class TestRunTool:
 
         assert rc == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["version"] == "0.2.0"
+        assert payload["version"] == "0.2.1"
         assert payload["db_connected"] is True
         assert payload["subject_name"] == "Vesper"
         assert payload["queue"]["depth"] == 0
