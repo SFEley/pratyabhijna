@@ -44,16 +44,16 @@ log = get_logger(__name__)
 def build_lifespan(service: PratyabhijnaService, queue: WorkQueue):
     """Create the async lifespan context manager for the MCP server.
 
-    Starts the service (Neo4j + Graphiti) and work queue on entry,
-    registers queue handlers, and stops both on exit. OAuth storage
-    lifecycle is handled separately in ``oauth.build_http_app`` — it
-    needs to run at Starlette-app level, not inside this MCP-server
-    lifespan which only fires when an MCP session is established.
+    Registers queue handlers only. Service and queue lifecycle (start/stop,
+    crash recovery) are managed by the ASGI-level lifespan in
+    ``oauth.build_http_app``, which runs at uvicorn startup before any MCP
+    session exists. FastMCP's lifespan fires per MCP session, so it cannot
+    own start/stop — the queue worker would not run until the first client
+    connected, and crashed tasks would not be recovered on restart.
     """
 
     @asynccontextmanager
     async def lifespan(app: FastMCP):
-        await service.start()
         # Register synthesize first so remember/correct handlers — which
         # schedule synthesize tasks via reschedule_or_enqueue — can
         # reference it. WorkQueue.reschedule_or_enqueue validates the
@@ -61,14 +61,8 @@ def build_lifespan(service: PratyabhijnaService, queue: WorkQueue):
         queue.register("synthesize", make_synthesize_handler(service, service.config))
         queue.register("add_episode", remember_make_handler(service, queue=queue))
         queue.register("correct_memory", correct_make_handler(service, queue=queue))
-        await queue.start()
-        log.info("Pratyabhijna server ready")
-        try:
-            yield
-        finally:
-            await queue.stop()
-            await service.stop()
-            log.info("Pratyabhijna server stopped")
+        log.info("Pratyabhijna MCP session ready")
+        yield
 
     return lifespan
 
@@ -535,28 +529,25 @@ def main():
         )
 
     if config.server.url:
+        # Always drive uvicorn directly so service/queue startup happens at
+        # ASGI startup (before any MCP session). FastMCP's built-in lifespan
+        # only fires per MCP session, so queue crash recovery would not run
+        # until the first client connected if we relied on server.run().
+        import asyncio
+
+        import uvicorn
+
+        from pratyabhijna.oauth import build_http_app
+
         log.info("Starting streamable-http transport on 127.0.0.1:%d", config.server.port)
-        if oauth_provider is not None:
-            # OAuth routes are hit before any MCP session exists, so OAuth
-            # storage must start at ASGI startup (FastMCP's built-in lifespan
-            # only runs per MCP session). build_http_app wraps the Starlette
-            # app's lifespan accordingly; we then drive uvicorn directly.
-            import asyncio
-
-            import uvicorn
-
-            from pratyabhijna.oauth import build_http_app
-
-            starlette_app = build_http_app(server, oauth_storage)
-            uvicorn_config = uvicorn.Config(
-                starlette_app,
-                host="127.0.0.1",
-                port=config.server.port,
-                log_level=config.log_level.lower(),
-            )
-            asyncio.run(uvicorn.Server(uvicorn_config).serve())
-        else:
-            server.run(transport="streamable-http")
+        starlette_app = build_http_app(server, service, queue, oauth_storage)
+        uvicorn_config = uvicorn.Config(
+            starlette_app,
+            host="127.0.0.1",
+            port=config.server.port,
+            log_level=config.log_level.lower(),
+        )
+        asyncio.run(uvicorn.Server(uvicorn_config).serve())
     else:
         server.run(transport="stdio")
 

@@ -26,33 +26,31 @@ class TestMainImport:
 # ---------------------------------------------------------------------------
 
 class TestLifespan:
-    async def test_lifespan_starts_and_stops_service(self):
-        """Entering lifespan starts service and queue; exiting stops them."""
+    async def test_lifespan_registers_queue_handlers(self):
+        """FastMCP lifespan registers handlers only — no start/stop (that's ASGI-level)."""
         from pratyabhijna.__main__ import build_lifespan
-        from pratyabhijna.tools.remember import make_handler as remember_handler
-        from pratyabhijna.tools.correct import make_handler as correct_handler
 
         service = MagicMock()
-        service.start = AsyncMock()
-        service.stop = AsyncMock()
-
         queue = MagicMock()
-        queue.start = AsyncMock()
-        queue.stop = AsyncMock()
         queue.register = MagicMock()
 
         lifespan_cm = build_lifespan(service, queue)
         app = MagicMock()
 
         async with lifespan_cm(app):
-            service.start.assert_called_once()
-            queue.start.assert_called_once()
+            pass
 
-        queue.stop.assert_called_once()
-        service.stop.assert_called_once()
+        registered_types = [call.args[0] for call in queue.register.call_args_list]
+        assert "add_episode" in registered_types
+        assert "correct_memory" in registered_types
+        assert "synthesize" in registered_types
 
-    async def test_lifespan_registers_queue_handlers(self):
-        """Lifespan registers add_episode and correct_memory handlers."""
+    async def test_lifespan_does_not_start_or_stop_service(self):
+        """FastMCP lifespan must not start/stop service or queue — lifecycle is ASGI-level.
+
+        Service/queue startup lives in build_http_app's wrapped_lifespan so that
+        crash recovery runs at uvicorn startup, before any MCP session exists.
+        """
         from pratyabhijna.__main__ import build_lifespan
 
         service = MagicMock()
@@ -70,32 +68,10 @@ class TestLifespan:
         async with lifespan_cm(app):
             pass
 
-        registered_types = [call.args[0] for call in queue.register.call_args_list]
-        assert "add_episode" in registered_types
-        assert "correct_memory" in registered_types
-
-    async def test_lifespan_stops_on_exception(self):
-        """Service and queue are stopped even if an error occurs."""
-        from pratyabhijna.__main__ import build_lifespan
-
-        service = MagicMock()
-        service.start = AsyncMock()
-        service.stop = AsyncMock()
-
-        queue = MagicMock()
-        queue.start = AsyncMock()
-        queue.stop = AsyncMock()
-        queue.register = MagicMock()
-
-        lifespan_cm = build_lifespan(service, queue)
-        app = MagicMock()
-
-        with pytest.raises(RuntimeError, match="test error"):
-            async with lifespan_cm(app):
-                raise RuntimeError("test error")
-
-        queue.stop.assert_called_once()
-        service.stop.assert_called_once()
+        service.start.assert_not_called()
+        service.stop.assert_not_called()
+        queue.start.assert_not_called()
+        queue.stop.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +206,7 @@ class TestRunTool:
 
         assert rc == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["version"] == "0.1.0"
+        assert payload["version"] == "0.2.0"
         assert payload["db_connected"] is True
         assert payload["subject_name"] == "Vesper"
         assert payload["queue"]["depth"] == 0

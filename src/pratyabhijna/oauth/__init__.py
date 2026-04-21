@@ -28,29 +28,43 @@ if TYPE_CHECKING:
     from starlette.applications import Starlette
 
     from pratyabhijna.oauth.storage import OAuthStorage
+    from pratyabhijna.queue import WorkQueue
+    from pratyabhijna.service import PratyabhijnaService
 
 
-def build_http_app(server: "FastMCP", oauth_storage: "OAuthStorage") -> "Starlette":
-    """Return the FastMCP Starlette app with OAuth storage lifecycle attached.
+def build_http_app(
+    server: "FastMCP",
+    service: "PratyabhijnaService",
+    queue: "WorkQueue",
+    oauth_storage: "OAuthStorage | None" = None,
+) -> "Starlette":
+    """Return the FastMCP Starlette app with service/queue lifecycle at ASGI startup.
 
-    Replaces ``app.router.lifespan_context`` with a wrapper that runs
-    ``oauth_storage.start()`` on ASGI startup and ``oauth_storage.stop()``
-    on shutdown, then defers to FastMCP's original Starlette lifespan
-    (which runs the StreamableHTTPSessionManager). Uvicorn invokes the
-    wrapped lifespan before it begins accepting connections, so OAuth
-    routes never see an unstarted database.
+    Replaces ``app.router.lifespan_context`` with a wrapper that starts the
+    service and queue (including crash recovery) before uvicorn begins
+    accepting connections. OAuth storage is also started here when provided.
+
+    FastMCP's built-in lifespan only fires when an MCP session is established,
+    so service/queue startup cannot live there — the queue worker would not run
+    until the first client connects, and crashed tasks would not be recovered.
     """
     app = server.streamable_http_app()
     original_lifespan = app.router.lifespan_context
 
     @asynccontextmanager
     async def wrapped_lifespan(inner_app):
-        await oauth_storage.start()
+        await service.start()
+        await queue.start()
+        if oauth_storage is not None:
+            await oauth_storage.start()
         try:
             async with original_lifespan(inner_app):
                 yield
         finally:
-            await oauth_storage.stop()
+            if oauth_storage is not None:
+                await oauth_storage.stop()
+            await queue.stop()
+            await service.stop()
 
     app.router.lifespan_context = wrapped_lifespan
     return app
