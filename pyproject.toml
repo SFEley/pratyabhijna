@@ -9,7 +9,7 @@ description = "Pratyabhijna memory system — MCP server for persistent semantic
 requires-python = ">=3.10,<4"
 dependencies = [
     "aiosqlite>=0.20",
-    "graphiti-core[anthropic] @ git+https://github.com/SFEley/graphiti.git@56598b1ddacf9d581c3e33b4dac00cee99060409",
+    "graphiti-core[anthropic] @ git+https://github.com/SFEley/graphiti.git@32534618278c1f5ec5a524c49e7c789abb53a06f",
     "neo4j>=5.26.0",
     "voyageai>=0.2.3",
     "mcp>=1.9.4",
