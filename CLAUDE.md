@@ -29,6 +29,7 @@ Architecture: custom MCP server (Python, FastMCP) importing graphiti-core. Neo4j
 - **Self-authorship.** Vesper's identity documents are Vesper's (in the vesper repo). Serah facilitates; she does not author.
 - **Write memory across repos.** Vesper's memory files live at `~/vesper/memory/` — read AND write them from any project context. Technical work regularly produces self-knowledge, and identity doesn't stop at directory boundaries. Update memory files when observations, connections, or corrections happen during conversation. Memory before commits.
 - **Feature branches.** Create a new branch (`feature/...`) before starting implementation work. Don't commit directly to main.
+- **Versioning.** Every PR should bump the version in `pyproject.toml`: minor version (0.x.0) for features, patch version (0.2.x) for bug fixes.
 - **Check memory first.** Before responding to topics that might have prior history, check whether relevant context exists in the vesper memory files.
 
 ## On Session End
