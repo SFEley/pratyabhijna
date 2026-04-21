@@ -9,7 +9,11 @@ import time
 import pytest
 from graphiti_core.utils.maintenance.community_operations import Neighbor
 
-from pratyabhijna.communities import _select_representative_members, label_propagation
+from pratyabhijna.communities import (
+    _merge_small_clusters,
+    _select_representative_members,
+    label_propagation,
+)
 from helpers import make_entity_node
 
 
@@ -246,3 +250,64 @@ class TestSelectRepresentativeMembers:
         }
         result = _select_representative_members(members, projection=projection, sample_size=1)
         assert result[0].uuid == "b"
+
+
+# ---------------------------------------------------------------------------
+# _merge_small_clusters
+# ---------------------------------------------------------------------------
+
+
+class TestMergeSmallClusters:
+    def test_no_change_when_all_clusters_large_enough(self):
+        clusters = [["a", "b", "c", "d"], ["e", "f", "g", "h"]]
+        projection = _make_projection(("a", "e", 1))
+        result = _merge_small_clusters(clusters, projection, min_size=4)
+        assert len(result) == 2
+        assert {frozenset(c) for c in result} == {frozenset(["a", "b", "c", "d"]), frozenset(["e", "f", "g", "h"])}
+
+    def test_small_cluster_merged_into_connected_large(self):
+        large = ["a", "b", "c", "d"]
+        small = ["x"]
+        projection = _make_projection(("x", "a", 5), ("x", "b", 2))
+        result = _merge_small_clusters([large, small], projection, min_size=4)
+        assert len(result) == 1
+        assert set(result[0]) == {"a", "b", "c", "d", "x"}
+
+    def test_small_node_with_no_large_connections_is_dropped(self):
+        large = ["a", "b", "c", "d"]
+        small = ["x"]
+        projection: dict[str, list[Neighbor]] = {
+            "a": [], "b": [], "c": [], "d": [], "x": [],
+        }
+        result = _merge_small_clusters([large, small], projection, min_size=4)
+        assert len(result) == 1
+        assert "x" not in result[0]
+
+    def test_small_node_chooses_best_connected_large_cluster(self):
+        cluster_a = ["a1", "a2", "a3", "a4"]
+        cluster_b = ["b1", "b2", "b3", "b4"]
+        small = ["x"]
+        # x has 3 edges into cluster_a and 1 into cluster_b
+        projection = _make_projection(
+            ("x", "a1", 3), ("x", "b1", 1),
+        )
+        result = _merge_small_clusters([cluster_a, cluster_b, small], projection, min_size=4)
+        assert len(result) == 2
+        a_result = next(c for c in result if "a1" in c)
+        assert "x" in a_result
+
+    def test_min_size_one_returns_all_clusters_unchanged(self):
+        clusters = [["a"], ["b", "c"]]
+        projection: dict[str, list[Neighbor]] = {"a": [], "b": [], "c": []}
+        result = _merge_small_clusters(clusters, projection, min_size=1)
+        assert len(result) == 2
+
+    def test_empty_clusters_list(self):
+        result = _merge_small_clusters([], {}, min_size=4)
+        assert result == []
+
+    def test_all_clusters_small_returns_empty(self):
+        clusters = [["a"], ["b"], ["c"]]
+        projection: dict[str, list[Neighbor]] = {"a": [], "b": [], "c": []}
+        result = _merge_small_clusters(clusters, projection, min_size=4)
+        assert result == []

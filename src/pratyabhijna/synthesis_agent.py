@@ -468,7 +468,8 @@ class AgentTools:
 
     async def build_communities(self) -> dict:
         community_nodes, community_edges = await self.service.build_communities(
-            group_ids=[self.config.subject_name]
+            group_ids=[self.config.subject_name],
+            min_community_size=self.config.synthesis.min_community_size,
         )
         node_count = len(community_nodes)
         _log.info("synthesis: built %d communities", node_count)

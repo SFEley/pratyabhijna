@@ -70,6 +70,9 @@ class SynthesisConfig(BaseModel):
     # Periodic from-scratch rebuild lands on draft_branch regardless
     # of which layer it touched.
     full_rebuild_cadence_days: int = 30
+    # Minimum cluster size after label propagation. Sub-threshold clusters are
+    # merged into their best-connected large cluster before community nodes are built.
+    min_community_size: int = 4
     # Upper bound on tool-use loop iterations, as a circuit breaker.
     max_iterations: int = 40
     # Bound on how far back the ingestion scan looks.

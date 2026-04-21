@@ -17,25 +17,83 @@ from collections import defaultdict, deque
 from graphiti_core.edges import CommunityEdge
 from graphiti_core.llm_client import LLMClient
 from graphiti_core.nodes import CommunityNode, EntityNode
+from graphiti_core.prompts.models import Message
 from graphiti_core.utils.datetime_utils import utc_now
 from graphiti_core.utils.maintenance.community_operations import (
     MAX_SUMMARY_CHARS,
     Neighbor,
     build_community_edges,
-    generate_summary_description,
     remove_communities,
     summarize_pair,
     truncate_at_sentence,
 )
+from pydantic import BaseModel, Field
 
 from pratyabhijna.log import get_logger
 
 _log = get_logger(__name__)
 
 DEFAULT_SAMPLE_SIZE = 10
+DEFAULT_MIN_COMMUNITY_SIZE = 4
 MAX_CONCURRENCY = 10
 OSCILLATION_WINDOW = 8
 RNG_SEED = 42
+
+
+# ---------------------------------------------------------------------------
+# Response model and prompt for combined summary + name generation
+# ---------------------------------------------------------------------------
+
+
+class _CommunityResult(BaseModel):
+    summary: str = Field(
+        ...,
+        description=(
+            f"Concise factual summary under {MAX_SUMMARY_CHARS} characters. "
+            "Preserve all key names, dates, roles, and facts."
+        ),
+    )
+    name: str = Field(
+        ...,
+        description=(
+            "Short 2-5 word topic label in title case, no punctuation. "
+            "Examples: 'Mycorrhizal Network Research', 'Monteverdi 1610 Vespers', "
+            "'Physarum Habituation Experiments'."
+        ),
+    )
+
+
+def _finalize_prompt(raw_summary: str) -> list[Message]:
+    return [
+        Message(
+            role="system",
+            content="You are a helpful assistant that cleans up community summaries and produces concise topic labels.",
+        ),
+        Message(
+            role="user",
+            content=(
+                f"Given the following community summary, produce:\n"
+                f"1. A cleaned factual summary under {MAX_SUMMARY_CHARS} characters.\n"
+                f"2. A short 2-5 word topic label in title case with no punctuation "
+                f"(e.g. 'Mycorrhizal Network Research', 'Monteverdi 1610 Vespers').\n\n"
+                f"Summary:\n{raw_summary}"
+            ),
+        ),
+    ]
+
+
+async def _finalize_community(
+    llm_client: LLMClient, raw_summary: str
+) -> tuple[str, str]:
+    """Single LLM call returning (summary, name) for a community."""
+    response = await llm_client.generate_response(
+        _finalize_prompt(raw_summary),
+        response_model=_CommunityResult,
+        prompt_name="pratyabhijna.finalize_community",
+    )
+    summary = truncate_at_sentence(response.get("summary", raw_summary), MAX_SUMMARY_CHARS)
+    name = response.get("name", "") or "community"
+    return summary, name
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +206,59 @@ def label_propagation(projection: dict[str, list[Neighbor]]) -> list[list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Small-cluster merging
+# ---------------------------------------------------------------------------
+
+
+def _merge_small_clusters(
+    uuid_clusters: list[list[str]],
+    projection: dict[str, list[Neighbor]],
+    min_size: int,
+) -> list[list[str]]:
+    """Reassign nodes from sub-threshold clusters into their best-connected large cluster.
+
+    Nodes with no edges into any large cluster are dropped (they receive no
+    community membership). Returns only clusters that meet or exceed min_size.
+    """
+    if min_size <= 1:
+        return uuid_clusters
+
+    large = [c for c in uuid_clusters if len(c) >= min_size]
+    small = [c for c in uuid_clusters if len(c) < min_size]
+
+    if not small:
+        return large
+
+    # Build UUID → large-cluster-index map for fast lookup.
+    node_to_large: dict[str, int] = {}
+    for idx, cluster in enumerate(large):
+        for uuid in cluster:
+            node_to_large[uuid] = idx
+
+    # Accumulate reassigned nodes per large cluster.
+    additions: dict[int, list[str]] = defaultdict(list)
+    for cluster in small:
+        for uuid in cluster:
+            tally: dict[int, int] = defaultdict(int)
+            for nb in projection.get(uuid, []):
+                dest = node_to_large.get(nb.node_uuid)
+                if dest is not None:
+                    tally[dest] += nb.edge_count
+            if tally:
+                best = max(tally, key=lambda k: (tally[k], k))
+                additions[best].append(uuid)
+            # else: no edges to any large cluster — node is dropped
+
+    if not additions:
+        return large
+
+    result = [list(cluster) for cluster in large]
+    for idx, nodes in additions.items():
+        result[idx].extend(nodes)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Member sampling
 # ---------------------------------------------------------------------------
 
@@ -219,8 +330,11 @@ async def _build_community_node(
         summaries = new_summaries
         length = len(summaries)
 
-    summary = truncate_at_sentence(summaries[0], MAX_SUMMARY_CHARS) if summaries else ""
-    name = await generate_summary_description(llm_client, summary) if summary else "community"
+    raw = summaries[0] if summaries else ""
+    if raw:
+        summary, name = await _finalize_community(llm_client, raw)
+    else:
+        summary, name = "", "community"
 
     now = utc_now()
     node = CommunityNode(
@@ -295,11 +409,13 @@ async def build_communities(
     group_ids: list[str] | None,
     *,
     sample_size: int = DEFAULT_SAMPLE_SIZE,
+    min_community_size: int = DEFAULT_MIN_COMMUNITY_SIZE,
 ) -> tuple[list[CommunityNode], list[CommunityEdge]]:
     """Cluster entities into communities and build a summary node for each.
 
     Clears all existing Community nodes first (full rebuild). Uses async label
-    propagation with top-k member sampling to bound LLM cost.
+    propagation with top-k member sampling to bound LLM cost. Sub-threshold
+    clusters are merged into their best-connected large cluster.
 
     Args:
         driver: Neo4j driver (from graphiti._graphiti.driver).
@@ -308,6 +424,9 @@ async def build_communities(
         sample_size: Maximum number of members used for LLM summarization per
             community. Only the top-k by in-community weighted degree are used;
             all members still appear in HAS_MEMBER edges.
+        min_community_size: Communities smaller than this are merged into their
+            best-connected large cluster. Nodes with no large-cluster connections
+            are dropped. Default 4.
     """
     await remove_communities(driver)
 
@@ -335,6 +454,7 @@ async def build_communities(
             continue
 
         uuid_clusters = label_propagation(projection)
+        uuid_clusters = _merge_small_clusters(uuid_clusters, projection, min_community_size)
 
         # Resolve UUID lists to EntityNode lists via a single fetch.
         all_entities = await EntityNode.get_by_group_ids(driver, [group_id])
