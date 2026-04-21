@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pratyabhijna"
-version = "0.2.0"
+version = "0.2.1"
 description = "Pratyabhijna memory system — MCP server for persistent semantic memory"
 requires-python = ">=3.10,<4"
 dependencies = [
@@ -41,4 +41,4 @@ filterwarnings = [
 ]
 
 [tool.uv.sources]
-graphiti-core = { git = "https://github.com/SFEley/graphiti.git", rev = "8e734f298e838e1ca04feec45494d5f4913e65a7" }
+graphiti-core = { git = "https://github.com/SFEley/graphiti.git", rev = "32534618278c1f5ec5a524c49e7c789abb53a06f" }

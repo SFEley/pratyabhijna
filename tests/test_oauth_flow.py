@@ -18,6 +18,8 @@ import hashlib
 import secrets
 from urllib.parse import parse_qs, urlparse
 
+from unittest.mock import AsyncMock, MagicMock
+
 import httpx
 import pytest
 from mcp.server.auth.settings import (
@@ -32,6 +34,17 @@ from pratyabhijna.oauth import build_http_app
 from pratyabhijna.oauth.login import register_login_routes
 from pratyabhijna.oauth.provider import OAuthTTLs, PratyabhijnaOAuthProvider
 from pratyabhijna.oauth.storage import OAuthStorage
+
+
+def _mock_service_and_queue():
+    """Return (service, queue) mocks suitable for build_http_app in tests."""
+    service = MagicMock()
+    service.start = AsyncMock()
+    service.stop = AsyncMock()
+    queue = MagicMock()
+    queue.start = AsyncMock()
+    queue.stop = AsyncMock()
+    return service, queue
 
 
 PASSWORD = "shared-secret-for-login"
@@ -449,8 +462,9 @@ class TestBuildHttpAppLifecycle:
 
         # Now wrap: build_http_app sees a Starlette app whose
         # lifespan_context is already noop_lifespan, and wraps it with
-        # the oauth_storage start/stop.
-        app = build_http_app(server, storage)
+        # the service/queue/oauth_storage start/stop.
+        service, queue = _mock_service_and_queue()
+        app = build_http_app(server, service, queue, storage)
 
         assert start_calls == []
         async with app.router.lifespan_context(app):
@@ -490,7 +504,8 @@ class TestBuildHttpAppLifecycle:
         raw_app = server.streamable_http_app()
         raw_app.router.lifespan_context = noop_lifespan
 
-        app = build_http_app(server, storage)
+        service, queue = _mock_service_and_queue()
+        app = build_http_app(server, service, queue, storage)
 
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(

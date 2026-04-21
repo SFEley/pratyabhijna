@@ -26,33 +26,13 @@ class TestMainImport:
 # ---------------------------------------------------------------------------
 
 class TestLifespan:
-    async def test_lifespan_starts_and_stops_service(self):
-        """Entering lifespan starts service and queue; exiting stops them."""
-        from pratyabhijna.__main__ import build_lifespan
-        from pratyabhijna.tools.remember import make_handler as remember_handler
-        from pratyabhijna.tools.correct import make_handler as correct_handler
+    async def test_lifespan_does_not_register_or_start_or_stop(self):
+        """FastMCP lifespan is session-only — no handler registration, no start/stop.
 
-        service = MagicMock()
-        service.start = AsyncMock()
-        service.stop = AsyncMock()
-
-        queue = MagicMock()
-        queue.start = AsyncMock()
-        queue.stop = AsyncMock()
-        queue.register = MagicMock()
-
-        lifespan_cm = build_lifespan(service, queue)
-        app = MagicMock()
-
-        async with lifespan_cm(app):
-            service.start.assert_called_once()
-            queue.start.assert_called_once()
-
-        queue.stop.assert_called_once()
-        service.stop.assert_called_once()
-
-    async def test_lifespan_registers_queue_handlers(self):
-        """Lifespan registers add_episode and correct_memory handlers."""
+        Handlers are registered by register_queue_handlers() before queue.start().
+        Service/queue lifecycle lives in build_http_app's wrapped_lifespan so that
+        crash recovery runs at uvicorn startup, before any MCP session exists.
+        """
         from pratyabhijna.__main__ import build_lifespan
 
         service = MagicMock()
@@ -70,32 +50,42 @@ class TestLifespan:
         async with lifespan_cm(app):
             pass
 
+        service.start.assert_not_called()
+        service.stop.assert_not_called()
+        queue.start.assert_not_called()
+        queue.stop.assert_not_called()
+        queue.register.assert_not_called()
+
+    async def test_register_queue_handlers_registers_all_types(self):
+        """register_queue_handlers registers synthesize, add_episode, correct_memory."""
+        from pratyabhijna.__main__ import register_queue_handlers
+
+        service = MagicMock()
+        service.config = MagicMock()
+        queue = MagicMock()
+        queue.register = MagicMock()
+
+        register_queue_handlers(service, queue)
+
         registered_types = [call.args[0] for call in queue.register.call_args_list]
+        assert "synthesize" in registered_types
         assert "add_episode" in registered_types
         assert "correct_memory" in registered_types
 
-    async def test_lifespan_stops_on_exception(self):
-        """Service and queue are stopped even if an error occurs."""
-        from pratyabhijna.__main__ import build_lifespan
+    async def test_register_queue_handlers_synthesize_registered_first(self):
+        """synthesize handler must be registered before add_episode and correct_memory."""
+        from pratyabhijna.__main__ import register_queue_handlers
 
         service = MagicMock()
-        service.start = AsyncMock()
-        service.stop = AsyncMock()
-
+        service.config = MagicMock()
         queue = MagicMock()
-        queue.start = AsyncMock()
-        queue.stop = AsyncMock()
         queue.register = MagicMock()
 
-        lifespan_cm = build_lifespan(service, queue)
-        app = MagicMock()
+        register_queue_handlers(service, queue)
 
-        with pytest.raises(RuntimeError, match="test error"):
-            async with lifespan_cm(app):
-                raise RuntimeError("test error")
-
-        queue.stop.assert_called_once()
-        service.stop.assert_called_once()
+        registered_types = [call.args[0] for call in queue.register.call_args_list]
+        assert registered_types.index("synthesize") < registered_types.index("add_episode")
+        assert registered_types.index("synthesize") < registered_types.index("correct_memory")
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +220,7 @@ class TestRunTool:
 
         assert rc == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["version"] == "0.1.0"
+        assert payload["version"] == "0.2.1"
         assert payload["db_connected"] is True
         assert payload["subject_name"] == "Vesper"
         assert payload["queue"]["depth"] == 0
