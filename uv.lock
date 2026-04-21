@@ -725,7 +725,7 @@ wheels = [
 [[package]]
 name = "graphiti-core"
 version = "0.28.2"
-source = { git = "https://github.com/SFEley/graphiti.git?rev=56598b1ddacf9d581c3e33b4dac00cee99060409#56598b1ddacf9d581c3e33b4dac00cee99060409" }
+source = { git = "https://github.com/SFEley/graphiti.git?rev=32534618278c1f5ec5a524c49e7c789abb53a06f#32534618278c1f5ec5a524c49e7c789abb53a06f" }
 dependencies = [
     { name = "neo4j" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1662,7 +1662,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
-    { name = "graphiti-core", extras = ["anthropic"], git = "https://github.com/SFEley/graphiti.git?rev=56598b1ddacf9d581c3e33b4dac00cee99060409" },
+    { name = "graphiti-core", extras = ["anthropic"], git = "https://github.com/SFEley/graphiti.git?rev=32534618278c1f5ec5a524c49e7c789abb53a06f" },
     { name = "mcp", specifier = ">=1.9.4" },
     { name = "neo4j", specifier = ">=5.26.0" },
     { name = "pydantic-settings", specifier = ">=2.0" },
