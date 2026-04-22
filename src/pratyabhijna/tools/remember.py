@@ -92,6 +92,7 @@ def make_handler(service: PratyabhijnaService, queue: WorkQueue | None = None):
             episode_body=payload["content"],
             source_description=payload["source"],
             reference_time=reference_time,
+            group_id=service.config.subject_name,
             entity_types=service.entity_types,
             saga=saga,
             saga_previous_episode_uuid=saga_prev,
