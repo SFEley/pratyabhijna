@@ -16,6 +16,7 @@ EXPECTED_TOOLS = [
     "inspect",
     "status",
     "communities",
+    "query",
 ]
 
 
