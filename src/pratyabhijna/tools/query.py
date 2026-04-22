@@ -543,4 +543,4 @@ async def query(
         }
     finally:
         if close_client:
-            await client.aclose()
+            await client.close()
