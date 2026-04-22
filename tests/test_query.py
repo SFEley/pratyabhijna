@@ -15,6 +15,7 @@ calls here. Live verification happens through the MCP channel.
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -408,3 +409,28 @@ async def test_iteration_cap_bounds_loops(service):
 
     assert result["iterations"] == query_mod._MAX_ITERATIONS
     assert len(result["cypher_log"]) == query_mod._MAX_ITERATIONS
+
+
+# --- Self-instantiated client cleanup ---
+
+
+@pytest.mark.asyncio
+async def test_query_closes_self_created_client(service, monkeypatch):
+    """When query() instantiates its own AsyncAnthropic, the finally block
+    must call close() — not aclose(). Regression for the bug where the
+    httpx-style aclose() crashed real usage; existing tests always pass
+    client= and never exercise the close_client=True branch.
+    """
+    script = [[_text_block("done")]]
+    fake = FakeClient(script)
+    fake.close = AsyncMock()
+    # If the production code regresses to aclose(), AttributeError surfaces
+    # because the FakeClient has no such attribute.
+
+    fake_anthropic = SimpleNamespace(AsyncAnthropic=lambda **kwargs: fake)
+    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
+
+    result = await query(service, "hello")  # no client= → self-instantiation path
+
+    assert result["response"] == "done"
+    fake.close.assert_awaited_once()
