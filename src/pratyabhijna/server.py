@@ -175,6 +175,29 @@ def create_server(
 
         return await _communities(service=service, name=name)
 
+    @server.tool()
+    async def query(
+        request: str,
+    ) -> dict:
+        """Natural-language graph query and spot maintenance.
+
+        Translates a prose request into Cypher via an adaptive-thinking
+        Sonnet 4.6 sub-agent, runs it, and returns the result. Reads
+        are permissive with a row cap; writes are constrained to minor
+        maintenance (filling gaps, removing duplicates, deleting
+        single orphaned nodes). The sub-agent refuses operations that
+        would exceed legitimate maintenance or damage subject integrity.
+
+        Not a substitute for `recall` or `remember` — use this for
+        ad-hoc investigation and anomaly fixes that the other tools
+        don't cover.
+        """
+        if service is None:
+            raise RuntimeError("query requires a connected service")
+        from pratyabhijna.tools.query import query as _query
+
+        return await _query(service=service, request=request)
+
     # --- Phase 5: bootstrap ---
 
     @server.tool()

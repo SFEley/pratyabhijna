@@ -7,6 +7,8 @@ and graphiti-core.
 
 from __future__ import annotations
 
+import asyncio
+
 from graphiti_core import Graphiti
 from graphiti_core.driver.neo4j_driver import Neo4jDriver
 from graphiti_core.edges import EntityEdge
@@ -366,3 +368,165 @@ class PratyabhijnaService:
             routing_="r",
         )
         return records[0]["n"] if records else 0
+
+    # --- General query execution (used by the query tool) --------------------
+
+    async def execute_read_query(
+        self,
+        cypher: str,
+        params: dict | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Execute a read-only Cypher query and return serialized rows.
+
+        Rows are truncated to ``limit`` regardless of what the query asks
+        for — this is a defence-in-depth cap on context size. Values in
+        rows are normalized to JSON-safe types (Nodes → dicts, datetimes
+        → ISO strings) via ``_serialize_cypher_value``.
+
+        Does not enforce read-only semantics itself; the caller (the
+        query tool's read handler) applies a regex gate before calling
+        this method.
+        """
+        records, _, _ = await self._graphiti.driver.execute_query(
+            cypher,
+            **(params or {}),
+            routing_="r",
+        )
+        rows: list[dict] = []
+        for record in records[:limit]:
+            rows.append({k: _serialize_cypher_value(v) for k, v in record.items()})
+        return rows
+
+    async def execute_write_query(
+        self,
+        cypher: str,
+        params: dict | None = None,
+    ) -> dict:
+        """Execute a Cypher write query and return a counters summary.
+
+        Returns the keys available on the Neo4j ``SummaryCounters`` object:
+        created / deleted nodes and relationships, properties set, labels
+        added / removed. Any counter the driver doesn't expose is omitted
+        rather than defaulted to 0.
+        """
+        _, summary, _ = await self._graphiti.driver.execute_query(
+            cypher,
+            **(params or {}),
+        )
+        counters = getattr(summary, "counters", None)
+        if counters is None:
+            return {}
+        keys = [
+            "nodes_created",
+            "nodes_deleted",
+            "relationships_created",
+            "relationships_deleted",
+            "properties_set",
+            "labels_added",
+            "labels_removed",
+            "indexes_added",
+            "indexes_removed",
+            "constraints_added",
+            "constraints_removed",
+        ]
+        out: dict = {}
+        for key in keys:
+            value = getattr(counters, key, None)
+            if value:
+                out[key] = value
+        return out
+
+    async def introspect_schema(self) -> str:
+        """Return a Markdown snapshot of labels, relationship types, and property keys.
+
+        Runs three introspection queries in parallel. The output is
+        intended for embedding in an LLM system prompt — it is a single
+        text block, not structured data. If the agent needs property
+        detail per label, it can issue targeted reads itself.
+        """
+        driver = self._graphiti.driver
+
+        async def _labels() -> list[str]:
+            records, _, _ = await driver.execute_query(
+                "CALL db.labels() YIELD label RETURN label", routing_="r"
+            )
+            return sorted(r["label"] for r in records)
+
+        async def _rel_types() -> list[str]:
+            records, _, _ = await driver.execute_query(
+                "CALL db.relationshipTypes() YIELD relationshipType "
+                "RETURN relationshipType",
+                routing_="r",
+            )
+            return sorted(r["relationshipType"] for r in records)
+
+        async def _prop_keys() -> list[str]:
+            records, _, _ = await driver.execute_query(
+                "CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey",
+                routing_="r",
+            )
+            return sorted(r["propertyKey"] for r in records)
+
+        labels, rel_types, prop_keys = await asyncio.gather(
+            _labels(), _rel_types(), _prop_keys()
+        )
+
+        def _fmt(items: list[str]) -> str:
+            return ", ".join(items) if items else "(none)"
+
+        return "\n".join(
+            [
+                "### Node labels",
+                _fmt(labels),
+                "",
+                "### Relationship types",
+                _fmt(rel_types),
+                "",
+                "### Property keys (union across nodes and relationships)",
+                _fmt(prop_keys),
+                "",
+                "Property sets vary by label. For schema detail on a specific "
+                "label, query `MATCH (n:<Label>) WITH n LIMIT 1 RETURN keys(n)`.",
+            ]
+        )
+
+
+def _serialize_cypher_value(v):
+    """Recursively convert a Neo4j value to a JSON-safe structure.
+
+    Nodes become {_type: node, element_id, labels, properties}; relationships
+    become {_type: relationship, element_id, type, start, end, properties};
+    datetimes become ISO-8601 strings. Primitives pass through.
+    """
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    if isinstance(v, (list, tuple)):
+        return [_serialize_cypher_value(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _serialize_cypher_value(x) for k, x in v.items()}
+    if hasattr(v, "labels") and hasattr(v, "element_id"):
+        return {
+            "_type": "node",
+            "element_id": v.element_id,
+            "labels": list(v.labels),
+            "properties": {
+                k: _serialize_cypher_value(x) for k, x in dict(v).items()
+            },
+        }
+    if hasattr(v, "type") and hasattr(v, "start_node"):
+        start = getattr(v, "start_node", None)
+        end = getattr(v, "end_node", None)
+        return {
+            "_type": "relationship",
+            "element_id": getattr(v, "element_id", None),
+            "type": v.type,
+            "start": getattr(start, "element_id", None) if start else None,
+            "end": getattr(end, "element_id", None) if end else None,
+            "properties": {
+                k: _serialize_cypher_value(x) for k, x in dict(v).items()
+            },
+        }
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    return str(v)
