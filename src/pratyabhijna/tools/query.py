@@ -452,90 +452,95 @@ async def query(
           "iterations": number of model turns taken,
         }
     """
+    close_client = client is None
     if client is None:
         import anthropic  # deferred — keeps test envs without the dep working
 
         api_key = service.config.llm.api_key or None
         client = anthropic.AsyncAnthropic(api_key=api_key, timeout=300.0)
 
-    cache = await _get_cache(service)
+    try:
+        cache = await _get_cache(service)
 
-    cached_system = [
-        {
-            "type": "text",
-            "text": cache.system_prompt,
+        cached_system = [
+            {
+                "type": "text",
+                "text": cache.system_prompt,
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
+            }
+        ]
+        # Tools render before system in the prefix; mark the last tool's
+        # cache_control so tools and system are cached together with the
+        # 1-hour TTL.
+        cached_tools: list[dict[str, Any]] = [dict(t) for t in TOOL_SCHEMAS]
+        cached_tools[-1] = {
+            **cached_tools[-1],
             "cache_control": {"type": "ephemeral", "ttl": "1h"},
         }
-    ]
-    # Tools render before system in the prefix; mark the last tool's
-    # cache_control so tools and system are cached together with the
-    # 1-hour TTL.
-    cached_tools: list[dict[str, Any]] = [dict(t) for t in TOOL_SCHEMAS]
-    cached_tools[-1] = {
-        **cached_tools[-1],
-        "cache_control": {"type": "ephemeral", "ttl": "1h"},
-    }
 
-    messages: list[dict[str, Any]] = [{"role": "user", "content": request}]
-    cypher_log: list[dict] = []
-    iterations = 0
-    final_text = ""
+        messages: list[dict[str, Any]] = [{"role": "user", "content": request}]
+        cypher_log: list[dict] = []
+        iterations = 0
+        final_text = ""
 
-    while iterations < _MAX_ITERATIONS:
-        iterations += 1
-        create_kwargs = dict(
-            model=service.config.llm.model,
-            max_tokens=_MAX_TOKENS,
-            system=cached_system,
-            tools=cached_tools,
-            messages=messages,
-            thinking={"type": "adaptive"},
-            output_config={"effort": "high"},
-        )
-
-        async with client.messages.stream(**create_kwargs) as stream:
-            response = await stream.get_final_message()
-
-        usage = getattr(response, "usage", None)
-        if usage is not None:
-            _log.debug(
-                "query turn=%d input=%s cache_read=%s cache_create=%s output=%s",
-                iterations,
-                getattr(usage, "input_tokens", None),
-                getattr(usage, "cache_read_input_tokens", None),
-                getattr(usage, "cache_creation_input_tokens", None),
-                getattr(usage, "output_tokens", None),
+        while iterations < _MAX_ITERATIONS:
+            iterations += 1
+            create_kwargs = dict(
+                model=service.config.llm.model,
+                max_tokens=_MAX_TOKENS,
+                system=cached_system,
+                tools=cached_tools,
+                messages=messages,
+                thinking={"type": "adaptive"},
+                output_config={"effort": "high"},
             )
 
-        messages.append({"role": "assistant", "content": response.content})
+            async with client.messages.stream(**create_kwargs) as stream:
+                response = await stream.get_final_message()
 
-        tool_uses = [
-            block for block in response.content
-            if getattr(block, "type", None) == "tool_use"
-        ]
-        text_blocks = [
-            block for block in response.content
-            if getattr(block, "type", None) == "text"
-        ]
-        if text_blocks:
-            final_text = "\n".join(b.text for b in text_blocks).strip()
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                _log.debug(
+                    "query turn=%d input=%s cache_read=%s cache_create=%s output=%s",
+                    iterations,
+                    getattr(usage, "input_tokens", None),
+                    getattr(usage, "cache_read_input_tokens", None),
+                    getattr(usage, "cache_creation_input_tokens", None),
+                    getattr(usage, "output_tokens", None),
+                )
 
-        if response.stop_reason == "end_turn" or not tool_uses:
-            break
+            messages.append({"role": "assistant", "content": response.content})
 
-        tool_results = [
-            await _dispatch_tool_call(service, cypher_log, tu)
-            for tu in tool_uses
-        ]
-        messages.append({"role": "user", "content": tool_results})
+            tool_uses = [
+                block for block in response.content
+                if getattr(block, "type", None) == "tool_use"
+            ]
+            text_blocks = [
+                block for block in response.content
+                if getattr(block, "type", None) == "text"
+            ]
+            if text_blocks:
+                final_text = "\n".join(b.text for b in text_blocks).strip()
 
-    # `refused` means no successful Cypher execution happened. Rejected
-    # attempts (regex-gated mutations in the read path) are logged for
-    # audit but don't count as successful work.
-    executed = any("rejected" not in entry for entry in cypher_log)
-    return {
-        "response": final_text,
-        "cypher_log": cypher_log,
-        "refused": not executed,
-        "iterations": iterations,
-    }
+            if response.stop_reason == "end_turn" or not tool_uses:
+                break
+
+            tool_results = [
+                await _dispatch_tool_call(service, cypher_log, tu)
+                for tu in tool_uses
+            ]
+            messages.append({"role": "user", "content": tool_results})
+
+        # `refused` means no successful Cypher execution happened. Rejected
+        # attempts (regex-gated mutations in the read path) are logged for
+        # audit but don't count as successful work.
+        executed = any("rejected" not in entry for entry in cypher_log)
+        return {
+            "response": final_text,
+            "cypher_log": cypher_log,
+            "refused": not executed,
+            "iterations": iterations,
+        }
+    finally:
+        if close_client:
+            await client.aclose()

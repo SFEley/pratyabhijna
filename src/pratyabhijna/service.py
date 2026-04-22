@@ -433,7 +433,7 @@ class PratyabhijnaService:
         out: dict = {}
         for key in keys:
             value = getattr(counters, key, None)
-            if value:
+            if value is not None:
                 out[key] = value
         return out
 
