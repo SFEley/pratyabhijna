@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pratyabhijna"
-version = "0.5.0"
+version = "0.5.1"
 description = "Pratyabhijna memory system — MCP server for persistent semantic memory"
 requires-python = ">=3.10,<4"
 dependencies = [
     "aiosqlite>=0.20",
-    "graphiti-core[anthropic]",
+    "graphiti-core[anthropic]>=0.28.2,<0.29",
     "neo4j>=5.26.0",
     "voyageai>=0.2.3",
     "mcp>=1.9.4",
@@ -39,6 +39,3 @@ filterwarnings = [
     # graphiti-core 0.28.x uses class-based Pydantic config (their migration, not ours)
     "ignore::pydantic.warnings.PydanticDeprecatedSince20:graphiti_core",
 ]
-
-[tool.uv.sources]
-graphiti-core = { git = "https://github.com/SFEley/graphiti.git", rev = "32534618278c1f5ec5a524c49e7c789abb53a06f" }

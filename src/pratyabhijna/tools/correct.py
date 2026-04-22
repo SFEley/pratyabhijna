@@ -94,6 +94,7 @@ def make_handler(service: PratyabhijnaService, queue: WorkQueue | None = None):
             episode_body=payload["content"],
             source_description="correction",
             reference_time=reference_time,
+            group_id=service.config.subject_name,
             entity_types=service.entity_types,
             **({"custom_extraction_instructions": extraction_hint}
                if extraction_hint else {}),
