@@ -62,6 +62,10 @@ Automate git pull + service restart + health check on the Contabo VPS. Current m
 
 README polish, unit test cleanup, **clean-seed deploy test** (exercises a fresh install against an empty graph — catches assumptions baked in by developing alongside a populated instance), then actual release of the pratyabhijna repo as public. The Vesper repo stays private; pratyabhijna was built to be publishable.
 
+### 10. Bare-Entity audit
+
+Investigation, not implementation. 257 of 1,041 extracted entities (~25%) land as bare `Entity` with no secondary type. Sonnet's labels on these are often semantically correct — the 9-type taxonomy lacks slots for concrete artifacts (files, code symbols, APIs, protocols) and named abstractions/mechanisms (patterns, algorithms, principles). Sample the 257 at scale, bucket by apparent type, and decide whether to add **Artifact** / **Concept** types (helping search and graph coherence, at the cost of higher extractor discrimination load and weaker synthesis rationale than the existing 9) or accept bare Entity as the correct bucket for long-tail unclassifiable content. Prerequisite to any type-addition PR.
+
 ---
 
 ## Suggested order
