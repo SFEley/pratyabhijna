@@ -860,3 +860,40 @@ class TestClaimNextTransactionHygiene:
         assert not q._db.in_transaction
 
         await q.stop()
+
+    async def test_concurrent_enqueue_survives_idle_claim_next(self, tmp_path):
+        """A concurrent enqueue()'s INSERT must not be rolled back by the idle-poll
+        cleanup in _claim_next.
+
+        aiosqlite runs one SQLite connection, and coroutines on that connection
+        interleave between await points. If _claim_next's UPDATE (rowcount=0) is
+        followed by a rollback while an enqueue()'s INSERT is in flight on the
+        same implicit transaction, the INSERT is destroyed — get_task() would
+        return None for a task_id that enqueue() just returned. commit() ends
+        the transaction without nuking the concurrent write.
+        """
+        from pratyabhijna.queue import WorkQueue
+
+        db_path = str(tmp_path / "concurrent_enqueue.sqlite")
+        # Long poll interval so the worker doesn't fire a second _claim_next
+        # and obscure what we're testing.
+        q = WorkQueue(db_path=db_path, poll_interval=10.0)
+        q.register("test", _noop_handler)
+        await q.start(run_worker=False)
+
+        # Force the interleave: _claim_next on an empty queue runs alongside
+        # an enqueue(). Whichever order the aiosqlite thread services them,
+        # _claim_next's cleanup must leave enqueue()'s row intact.
+        async def idle_poll():
+            assert await q._claim_next() is None
+
+        async def do_enqueue():
+            return await q.enqueue("test", {"x": 1})
+
+        _, task_id = await asyncio.gather(idle_poll(), do_enqueue())
+
+        assert await q.get_task(task_id) is not None, (
+            "enqueue()'s INSERT was destroyed by _claim_next cleanup"
+        )
+
+        await q.stop()
