@@ -14,8 +14,10 @@ neo4j:
 
 llm:
   provider: "anthropic"
-    # model: "claude-sonnet-4-6"
-  model: "claude-haiku-4-5-20251001"
+  extraction_model: "claude-haiku-4-5-20251001"
+  query_model: "claude-sonnet-4-6"
+  community_model: "claude-sonnet-4-6"
+  synthesis_model: "claude-opus-4-7"
 
 embedding:
   provider: "voyageai"

@@ -21,12 +21,15 @@ class TestConfigLoading:
         assert config.neo4j.user == "neo4j"
 
     def test_has_llm_settings(self, config_yaml):
-        """Config includes LLM provider and model."""
+        """Config includes LLM provider and per-role model fields."""
         from pratyabhijna.config import PratyabhijnaConfig
 
         config = PratyabhijnaConfig.from_yaml(config_yaml)
         assert config.llm.provider == "openai"
-        assert config.llm.model == "gpt-4o-mini"
+        assert config.llm.extraction_model == "gpt-4o-mini"
+        assert config.llm.query_model == "gpt-4o"
+        assert config.llm.community_model == "gpt-4o"
+        assert config.llm.synthesis_model == "gpt-4o"
 
     def test_has_embedding_settings(self, config_yaml):
         """Config includes embedding provider and model."""
@@ -88,12 +91,12 @@ class TestConfigEnvOverrides:
         assert config.neo4j.uri == "bolt://remotehost:7687"
 
     def test_env_overrides_nested_value(self, config_yaml, monkeypatch):
-        """PRATYABHIJNA_LLM__MODEL overrides the nested llm.model."""
+        """PRATYABHIJNA_LLM__QUERY_MODEL overrides the nested llm.query_model."""
         from pratyabhijna.config import PratyabhijnaConfig
 
-        monkeypatch.setenv("PRATYABHIJNA_LLM__MODEL", "gpt-4o")
+        monkeypatch.setenv("PRATYABHIJNA_LLM__QUERY_MODEL", "claude-opus-4-7")
         config = PratyabhijnaConfig.from_yaml(config_yaml)
-        assert config.llm.model == "gpt-4o"
+        assert config.llm.query_model == "claude-opus-4-7"
 
     def test_env_overrides_subject_name(self, config_yaml, monkeypatch):
         """PRATYABHIJNA_SUBJECT_NAME overrides the configured subject_name."""

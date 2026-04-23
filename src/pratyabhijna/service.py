@@ -25,7 +25,7 @@ from pratyabhijna.entity_types import PRATYABHIJNA_ENTITY_TYPES
 
 
 def _build_llm_client(config: PratyabhijnaConfig):
-    """Construct LLM client from config."""
+    """Graphiti entity-extraction client. Uses llm.extraction_model."""
     llm = config.llm
     if llm.provider == "anthropic":
         from graphiti_core.llm_client.config import LLMConfig
@@ -33,7 +33,7 @@ def _build_llm_client(config: PratyabhijnaConfig):
         from pratyabhijna.llm_client import CachingAnthropicClient
 
         return CachingAnthropicClient(
-            config=LLMConfig(api_key=llm.api_key or None, model=llm.model),
+            config=LLMConfig(api_key=llm.api_key or None, model=llm.extraction_model),
             shared_tool_models=list(PRATYABHIJNA_ENTITY_TYPES.values()),
         )
     if llm.provider == "openai":
@@ -41,7 +41,34 @@ def _build_llm_client(config: PratyabhijnaConfig):
         from graphiti_core.llm_client.config import LLMConfig
 
         return OpenAIClient(
-            config=LLMConfig(api_key=llm.api_key or None, model=llm.model),
+            config=LLMConfig(api_key=llm.api_key or None, model=llm.extraction_model),
+        )
+    raise ValueError(f"Unsupported LLM provider: {llm.provider}")
+
+
+def _build_community_llm_client(config: PratyabhijnaConfig):
+    """Community summarization client. Uses llm.community_model.
+
+    Distinct from the extraction client: no shared tool models (community
+    finalization uses Instructor-style response_model, not tool-use), and
+    the model is typically more capable (Sonnet) because summary + name
+    generation benefits from a stronger model even though call volume is low.
+    """
+    llm = config.llm
+    if llm.provider == "anthropic":
+        from graphiti_core.llm_client.config import LLMConfig
+
+        from pratyabhijna.llm_client import CachingAnthropicClient
+
+        return CachingAnthropicClient(
+            config=LLMConfig(api_key=llm.api_key or None, model=llm.community_model),
+        )
+    if llm.provider == "openai":
+        from graphiti_core.llm_client.openai_client import OpenAIClient
+        from graphiti_core.llm_client.config import LLMConfig
+
+        return OpenAIClient(
+            config=LLMConfig(api_key=llm.api_key or None, model=llm.community_model),
         )
     raise ValueError(f"Unsupported LLM provider: {llm.provider}")
 
@@ -232,9 +259,10 @@ class PratyabhijnaService:
             build_communities,
         )
 
+        community_llm_client = _build_community_llm_client(self.config)
         return await build_communities(
             self._graphiti.driver,
-            self._graphiti.llm_client,
+            community_llm_client,
             group_ids,
             sample_size=DEFAULT_SAMPLE_SIZE,
             min_community_size=min_community_size if min_community_size is not None else DEFAULT_MIN_COMMUNITY_SIZE,
