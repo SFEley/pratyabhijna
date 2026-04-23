@@ -93,7 +93,10 @@ neo4j:
 
 llm:
   provider: "openai"
-  model: "gpt-4o-mini"
+  extraction_model: "gpt-4o-mini"
+  query_model: "gpt-4o"
+  community_model: "gpt-4o"
+  synthesis_model: "gpt-4o"
 
 embedding:
   provider: "openai"

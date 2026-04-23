@@ -31,8 +31,17 @@ class Neo4jConfig(BaseModel):
 
 class LLMConfig(BaseModel):
     provider: str = "anthropic"
-    model: str = "claude-sonnet-4-6"
     api_key: str = ""
+    # Graphiti entity extraction — high-volume, low-complexity tool-use calls.
+    extraction_model: str = "claude-haiku-4-5-20251001"
+    # Natural-language graph queries via the `query` tool. Needs adaptive
+    # thinking, which is only supported on Sonnet 4.6 and Opus.
+    query_model: str = "claude-sonnet-4-6"
+    # Community summary + topic-label generation in communities.py.
+    community_model: str = "claude-sonnet-4-6"
+    # Identity synthesis agent (synthesis_agent.py): adaptive thinking, tool
+    # use, deepest reasoning.
+    synthesis_model: str = "claude-opus-4-7"
 
 
 class EmbeddingConfig(BaseModel):
@@ -63,7 +72,6 @@ class SynthesisConfig(BaseModel):
     max_age_hours: int = 24
     max_delta_changes: int = 3
     rebuild_delay_hours: float = 2.0
-    model: str = "claude-opus-4-6"
     thinking: SynthesisThinkingConfig = Field(default_factory=SynthesisThinkingConfig)
     # Singleton branch for protected-layer proposals awaiting solo review.
     draft_branch: str = "synth/draft"

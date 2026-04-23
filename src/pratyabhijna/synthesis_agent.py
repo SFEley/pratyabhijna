@@ -889,7 +889,7 @@ async def run_synthesis(
     while iterations < config.synthesis.max_iterations:
         iterations += 1
         create_kwargs = dict(
-            model=config.synthesis.model,
+            model=config.llm.synthesis_model,
             max_tokens=max_tokens,
             system=cached_system,
             tools=TOOL_SCHEMAS,

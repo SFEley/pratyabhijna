@@ -486,7 +486,7 @@ async def query(
         while iterations < _MAX_ITERATIONS:
             iterations += 1
             create_kwargs = dict(
-                model=service.config.llm.model,
+                model=service.config.llm.query_model,
                 max_tokens=_MAX_TOKENS,
                 system=cached_system,
                 tools=cached_tools,

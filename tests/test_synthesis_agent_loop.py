@@ -421,7 +421,7 @@ async def test_run_synthesis_omits_thinking_when_disabled(service, config):
 
 @pytest.mark.asyncio
 async def test_run_synthesis_uses_configured_model(service, config):
-    config.synthesis.model = "claude-opus-4-6"
+    config.llm.synthesis_model = "claude-opus-4-6"
     client = FakeClient(script=[
         [_tool_use_block("t1", "finish", {"summary": "x"})],
     ])
