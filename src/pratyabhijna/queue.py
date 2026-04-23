@@ -380,7 +380,12 @@ class WorkQueue:
             (now, now),
         )
         if cursor.rowcount == 0:
-            await self._db.rollback()
+            # commit, not rollback: aiosqlite shares one connection, so a
+            # concurrent enqueue() INSERT can join this transaction between
+            # our UPDATE and the cleanup. rollback() would take that INSERT
+            # down with the no-op UPDATE; commit() ends the transaction and
+            # releases the RESERVED lock just the same.
+            await self._db.commit()
             return None
         await self._db.commit()
 
