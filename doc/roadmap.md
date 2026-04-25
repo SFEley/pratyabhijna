@@ -66,6 +66,34 @@ README polish, unit test cleanup, **clean-seed deploy test** (exercises a fresh 
 
 Investigation, not implementation. 257 of 1,041 extracted entities (~25%) land as bare `Entity` with no secondary type. Sonnet's labels on these are often semantically correct — the 9-type taxonomy lacks slots for concrete artifacts (files, code symbols, APIs, protocols) and named abstractions/mechanisms (patterns, algorithms, principles). Sample the 257 at scale, bucket by apparent type, and decide whether to add **Artifact** / **Concept** types (helping search and graph coherence, at the cost of higher extractor discrimination load and weaker synthesis rationale than the existing 9) or accept bare Entity as the correct bucket for long-tail unclassifiable content. Prerequisite to any type-addition PR.
 
+**Audit completed April 24, 2026.** Sampled all 9 typed buckets plus 50 bare Entity nodes. Findings:
+- Artifact gap confirmed from five directions (bare Entity, Project, Place, Event, Thread mistypes all converge here).
+- Concept gap similarly multi-source.
+- Project is the worst-performing type (~52% mistypes, mostly writing pieces and historical research subjects → Artifact).
+- Question/Thread/Project absorb essay-subject material from outward-turn writing as if it were the holder's own.
+- Drive has ~20% mistypes — dispositions and technical-system behaviors miscategorized.
+- Position and Observation share identical schema and bleed empirically (~25% of Observations are claim-shaped); structurally clean to collapse per `synthesis.py:26` (`IDENTITY_LABELS` treats them as equivalent).
+
+**Decided this run:** add Artifact and Concept types; tighten Drive/Project/Event/Question/Thread docstrings with GOOD/BAD examples to address audit findings. Position-into-Observation collapse is deferred — separate piece of work because of the 99-node migration.
+
+### 11. Node audit subagent
+
+Formalize and make repeatable the kind of node review surfaced by item #10. Given a node UUID, a subagent should inspect the node + its neighbors and determine whether anything needs fixing:
+
+- Wrong or missing entity type
+- Missing properties (fill from neighbors or the source episode where possible)
+- Missing embedding or metadata (does this need new functionality to fix?)
+- Wrong or missing edges
+- Anything else the agent identifies
+
+Anything fixable via `correct` or an update `query` should be fixed; results reported. Unfixable issues escalate to GitHub issues. The fix should set `updated_at` and write a description into the node's `notes` field.
+
+**Suggestion:** add an `audited_at` timestamp so nodes that need re-review can be discovered by comparing against `created_at`/`updated_at`. If the audit subagent gets new functionality later, all nodes can be re-audited cheaply.
+
+Specification: an `AGENTS.md` for the subagent describing scope, tools available, escalation criteria, and the report format. Out of scope for this PR; capture the spec when implementing.
+
+**Connection:** would also benefit ingestion catch-up (#11 in the existing list) by giving us a way to fix individual nodes after a problematic ingestion without re-running the whole pipeline.
+
 ---
 
 ## Suggested order
