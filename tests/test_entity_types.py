@@ -14,9 +14,11 @@ EXPECTED_TYPE_NAMES = [
     "Event",
     "Place",
     "Project",
+    "Artifact",
     "Observation",
     "Drive",
     "Position",
+    "Concept",
     "Question",
     "Thread",
 ]
@@ -94,7 +96,7 @@ class TestFieldConsistency:
         model_class = PRATYABHIJNA_ENTITY_TYPES[type_name]
         assert "notes" in model_class.model_fields
 
-    @pytest.mark.parametrize("type_name", ["Observation", "Position", "Question"])
+    @pytest.mark.parametrize("type_name", ["Observation", "Position", "Question", "Concept"])
     def test_conceptual_types_have_domain(self, type_name):
         """Conceptual types use 'domain' consistently for area-of-thought."""
         from pratyabhijna.entity_types import PRATYABHIJNA_ENTITY_TYPES
@@ -332,3 +334,55 @@ class TestThreadFields:
         from pratyabhijna.entity_types import Thread
 
         assert "description" not in Thread.model_fields
+
+
+class TestArtifactFields:
+    """Artifact: a concrete, named, made thing — pointable rather than abstract."""
+
+    def test_has_kind_field(self):
+        from pratyabhijna.entity_types import Artifact
+
+        assert "kind" in Artifact.model_fields
+
+    def test_has_notes_field(self):
+        from pratyabhijna.entity_types import Artifact
+
+        assert "notes" in Artifact.model_fields
+
+    def test_does_not_have_domain_field(self):
+        """Artifacts are concrete instances; `domain` is for conceptual types."""
+        from pratyabhijna.entity_types import Artifact
+
+        assert "domain" not in Artifact.model_fields
+
+    def test_does_not_have_description_field(self):
+        """Graphiti's summary handles description."""
+        from pratyabhijna.entity_types import Artifact
+
+        assert "description" not in Artifact.model_fields
+
+
+class TestConceptFields:
+    """Concept: a named idea, principle, technique, or framework — nameable but not pointable."""
+
+    def test_has_domain_field(self):
+        from pratyabhijna.entity_types import Concept
+
+        assert "domain" in Concept.model_fields
+
+    def test_has_notes_field(self):
+        from pratyabhijna.entity_types import Concept
+
+        assert "notes" in Concept.model_fields
+
+    def test_does_not_have_kind_field(self):
+        """`kind` is for Artifact (concrete instance subcategory), not Concept."""
+        from pratyabhijna.entity_types import Concept
+
+        assert "kind" not in Concept.model_fields
+
+    def test_does_not_have_status_field(self):
+        """Concepts don't have a lifecycle in the way Projects/Threads/Questions do."""
+        from pratyabhijna.entity_types import Concept
+
+        assert "status" not in Concept.model_fields

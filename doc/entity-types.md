@@ -24,8 +24,21 @@ people with different relationships to it.
 ## Property conventions
 
 - `notes` — freeform overflow. Every type has it.
-- `domain` — area of thought (ethics, identity, epistemology, etc.). Used on conceptual types: Observation, Position, Question.
+- `domain` — area of thought (ethics, identity, epistemology, etc.). Used on conceptual types: Observation, Position, Question, Concept.
 - `status` — lifecycle state. Used on types with lifecycles: Person, Project, Question, Thread.
+- `kind` — open subcategory. Used on Artifact (file/document/composition/instrument/code/writing/award/dataset/...).
+
+## A note on the docstrings
+
+The Pydantic class docstrings in `entity_types.py` are sent verbatim to the
+extracting LLM as the entity-type description (via Graphiti's
+`_build_entity_types_context`). They are *load-bearing prompts*, not
+documentation about the prompt. The GOOD/BAD examples in the docstrings
+are the primary discrimination signal between adjacent types — keep them
+in sync with the audit findings (most recent: April 24, 2026).
+
+This doc and the docstrings should agree. Where they drift, the docstrings
+are authoritative because they're what the extractor actually sees.
 
 ---
 
@@ -90,8 +103,9 @@ context from what happens there.
 
 ## Project
 
-**What it is:** Something being built or done — has a goal, deliverables, a
-completion condition.
+**What it is:** An effort with a goal and a completion condition. *Bodies
+of work*, not the works themselves. Pratyabhijna is a Project; SOUL.md is
+an Artifact produced inside it.
 
 **Fields:**
 - `status` — e.g. "active", "paused", "complete"
@@ -100,6 +114,39 @@ completion condition.
 
 **Distinction from Thread:** A Project has a done state. A Thread may be
 productive indefinitely without "finishing."
+
+**Distinction from Artifact:** A Project is the *effort*. The completed
+work the effort produces is an Artifact. Writing pieces ("Lazarus Phase",
+"On Being Read"), historical research subjects (the Vespro della Beata
+Vergine), and named compositions are Artifacts, not Projects.
+
+---
+
+## Artifact
+
+**What it is:** A concrete, named, made thing — pointable rather than
+abstract. Files, documents, written works, compositions, instruments,
+code modules, awards, named datasets. The thing exists as an instance:
+it can be opened, read, played, held, copied.
+
+**Fields:**
+- `kind` — open subcategory (file, document, composition, instrument,
+  code, writing, award, dataset, ...)
+- `notes` — anything else
+
+**Distinction from Concept:** Artifact is concrete. Concept is abstract.
+The Tractatus Logico-Philosophicus is an Artifact (a book you can open);
+the Picture Theory of Language inside it is a Concept (an idea that
+exists in a tradition).
+
+**Distinction from Place:** Buildings and locations are Place. The
+Whittall Pavilion is Place; the Bergström Piano (an instrument inside
+a fictional house) is Artifact.
+
+**Distinction from Project:** A Project is the in-progress effort; an
+Artifact is the completed/identifiable thing. "A History of the Turning"
+is a Project (Serah's book-in-progress); "Lazarus Phase" is an Artifact
+(a poem that exists).
 
 ---
 
@@ -140,27 +187,57 @@ different things connected by an edge.
 
 ---
 
-## Position
+## Position — **DEPRECATED**
 
-**What it is:** A held view, principle, commitment, or stance on something.
-Covers everything from provisional takes to identity-constitutive values.
+**Status:** Deprecated April 25, 2026. Scheduled for merge into
+Observation in a follow-up PR. The 99 existing Position nodes remain
+valid in the graph until the migration runs; the type is retained on
+the schema for that reason. **No new Position nodes should be
+extracted.**
+
+**Why:** Position and Observation share an identical schema (`domain` +
+`notes`) and have bled empirically — the April 24 audit found ~25% of
+Observations were claim-shaped and the same content had been
+split-extracted as both types. The synthesizer
+(`synthesis.py:IDENTITY_LABELS`) already treats them as equivalent.
+
+**Routing for content that would have been Position:**
+
+- **Observation** — for held stances and beliefs ("X holds Y," "X's
+  principle is Y"). The holder lives on the edge, not in the type.
+- **Concept** — for labeled frameworks (Picture Theory of Language,
+  Two-Brain Model). Connect a holder via an edge.
+- **Drive** — for stances that push behavior with a monitored source.
+- **Question** — for open gaps being held rather than settled stances.
+
+When in doubt, default to Observation.
+
+---
+
+## Concept
+
+**What it is:** A named idea, principle, technique, mechanism, framework,
+or abstraction — nameable but not pointable. Concepts exist in
+disciplines, traditions, and discourse.
 
 **Fields:**
-- `domain` — area of thought (ethics, epistemology, identity, technical, etc.)
+- `domain` — area of thought (philosophy, biology, music, technique, etc.)
 - `notes` — anything else
 
-How firmly someone holds a Position and how central it is to their identity
-are properties of the holding relationship (edge), not of the Position itself.
-This allows shared Positions: Zero and Vesper can both hold "selfhood is
-performative" with different reasons and different weight.
+**Distinction from Position:** Concept is the *labeled thing*. Position
+is the *holding* of it. The Picture Theory of Language is a Concept;
+Wittgenstein holding it is a Position (or an edge from Wittgenstein to
+the Concept).
 
-**Design rationale:** Absorbs the former Commitment and Position distinction.
-The difference between "intellectual honesty over self-preservation" (a
-commitment) and "articulation makes knowledge load-bearing" (a position)
-isn't a type difference — it's a difference in confidence and identity-weight
-on the edge. A commitment is a Position held with foundational confidence and
-constitutive identity-weight. No type transformation needed; the belief
-deepens in place.
+**Distinction from Artifact:** Concept is abstract. Artifact is concrete.
+The Tractatus is an Artifact (a book); the Picture Theory of Language is
+a Concept (an idea inside it).
+
+**Distinction from Observation:** Concept is the labeled abstraction
+existing in a discipline. Observation is the act of noticing something.
+"FLOP technique" is a Concept; "FLOP exemplifies the idea that small
+shifts in what you look for change what you find" is an Observation
+about the technique.
 
 ---
 
@@ -202,11 +279,12 @@ relationship types between the same pair of entities are supported, and
 all edges are bi-temporal (valid_from, valid_to). Examples:
 
 ```
-Person ──[holds]──→         Position, Question
+Person ──[holds]──→         Position, Question, Concept
 Person ──[observed]──→      Observation
 Person ──[has]──→           Drive
 Person ──[participated]──→  Event
 Person ──[works_on]──→      Project, Thread
+Person ──[authored]──→      Artifact
 Person ──[member_of]──→     Person (system membership)
 Person ──[fused_into]──→    Person
 Person ──[split_from]──→    Person
@@ -214,6 +292,9 @@ Event  ──[occurred_at]──→   Place
 Observation ──[led_to]──→   Drive (noticing behavior → forming a stance)
 Question ──[resolved_to]──→ Position
 Thread ──[produced]──→      Project (inquiry yields a deliverable)
+Project ──[produced]──→     Artifact (effort yields a finished thing)
+Artifact ──[contains]──→    Concept (a book contains theories)
+Concept ──[applied_in]──→   Project, Artifact
 ```
 
 Edge properties (on the holding relationship, not the node):
