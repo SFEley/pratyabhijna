@@ -231,9 +231,13 @@ class TestRunTool:
         ):
             rc = run_tool(config, "status", [])
 
+        from importlib.metadata import version as pkg_version
+
         assert rc == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["version"] == "0.2.1"
+        # Version comes from package metadata; assert against the same source
+        # so the test never drifts from pyproject.toml.
+        assert payload["version"] == pkg_version("pratyabhijna")
         assert payload["db_connected"] is True
         assert payload["subject_name"] == "Vesper"
         assert payload["queue"]["depth"] == 0

@@ -32,6 +32,22 @@ def isolated_root_logger():
     root.level = original_level
 
 
+@pytest.fixture(autouse=True)
+def isolated_env(monkeypatch):
+    """Clear PRATYABHIJNA_* env vars so explicit ``env=`` init kwargs win.
+
+    PratyabhijnaConfig is a pydantic-settings BaseSettings whose
+    ``settings_customise_sources`` puts env vars *before* init kwargs.
+    The CI/test runner sets ``PRATYABHIJNA_ENV=test``, which silently
+    overrides ``PratyabhijnaConfig(env="dev")`` and breaks every
+    dev/prod-specific logging test. Stripping the prefixed env vars for
+    each test in this module makes the explicit init kwarg take effect.
+    """
+    for key in list(os.environ):
+        if key.startswith("PRATYABHIJNA_"):
+            monkeypatch.delenv(key, raising=False)
+
+
 def _new_handler() -> logging.Handler:
     """Return the most recently added handler on the root logger."""
     return logging.getLogger().handlers[-1]

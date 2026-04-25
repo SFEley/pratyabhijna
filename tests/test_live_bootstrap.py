@@ -22,6 +22,7 @@ from graphiti_core.nodes import EntityNode
 from pratyabhijna.config import PratyabhijnaConfig
 from pratyabhijna.service import PratyabhijnaService
 from pratyabhijna.synthesis import (
+    IDENTITY_LABELS,
     get_identity_atoms,
     get_identity_delta,
     get_subject_node,
@@ -67,12 +68,20 @@ async def subject_node(service):
 
     Tier text lives in repo files, not on the node. The node anchors
     identity-atom edges and carries ``context_rebuilt_at``.
+
+    The node's ``group_id`` matches ``service.config.subject_name`` so
+    that episodes ingested with the same group_id (the production
+    convention since PR #15) connect to it. Earlier versions of this
+    fixture used ``group_id="default"``, which silently put the subject
+    and the seeded episode in different groups so no edges connected
+    them — and thus the identity-atom and delta tests reported zero
+    atoms regardless of what the extractor produced.
     """
     now = datetime.now(timezone.utc)
     node = EntityNode(
         uuid=str(uuid_mod.uuid4()),
         name=service.config.subject_name,
-        group_id="default",
+        group_id=service.config.subject_name,
         labels=["Person"],
         created_at=now,
         name_embedding=None,
@@ -93,6 +102,10 @@ async def seeded_subject(service, subject_node):
 
     Adds an episode mentioning the subject and an observation, which
     should produce identity-typed edges for delta detection.
+
+    The episode is ingested with the subject's ``group_id`` so the
+    extracted entities resolve to the existing subject Person node and
+    the resulting edges show up in ``get_identity_atoms()``.
     """
     await service._graphiti.add_episode(
         name="test:identity:1",
@@ -105,6 +118,7 @@ async def seeded_subject(service, subject_node):
         source_description="test_bootstrap",
         reference_time=datetime.now(timezone.utc),
         entity_types=service.entity_types,
+        group_id=service.config.subject_name,
     )
     return subject_node
 
@@ -141,8 +155,8 @@ class TestLiveSynthesis:
 
         assert len(atoms) > 0
         types = {a["node_type"] for a in atoms}
-        assert types & {"Observation", "Drive", "Position", "Question"}, (
-            f"Expected identity-typed atoms, got types: {types}"
+        assert types & IDENTITY_LABELS, (
+            f"Expected identity-typed atoms (any of {IDENTITY_LABELS}), got: {types}"
         )
 
     async def test_identity_delta_detects_new_atoms(self, service, seeded_subject):
@@ -179,4 +193,4 @@ class TestLiveBootstrap:
         atom = result["delta"][0]
         assert "fact" in atom
         assert "node_type" in atom
-        assert atom["node_type"] in {"Observation", "Drive", "Position", "Question"}
+        assert atom["node_type"] in IDENTITY_LABELS

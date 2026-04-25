@@ -50,9 +50,13 @@ class TestStatusTopLevel:
 
     @pytest.mark.asyncio
     async def test_includes_version(self, tmp_path):
+        from importlib.metadata import version as pkg_version
+
         from pratyabhijna.tools.status import status
         result = await status(service=_make_service(), queue_db_path=str(tmp_path / "q.db"))
-        assert result["version"] == "0.2.1"
+        # Version comes from package metadata; assert against the same source
+        # so the test never drifts from pyproject.toml.
+        assert result["version"] == pkg_version("pratyabhijna")
 
     @pytest.mark.asyncio
     async def test_reflects_db_connected(self, tmp_path):

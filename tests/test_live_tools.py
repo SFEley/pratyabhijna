@@ -433,6 +433,8 @@ class TestLiveStatusTool:
     """End-to-end status() call against a live service."""
 
     async def test_status_returns_full_nested_shape(self, seeded_service, tmp_path):
+        from importlib.metadata import version as pkg_version
+
         from pratyabhijna.tools.status import status
 
         result = await status(
@@ -440,7 +442,9 @@ class TestLiveStatusTool:
             queue_db_path=str(tmp_path / "live_status_queue.sqlite"),
         )
 
-        assert result["version"] == "0.1.0"
+        # Version comes from package metadata; assert against the same source
+        # so the test never drifts from pyproject.toml.
+        assert result["version"] == pkg_version("pratyabhijna")
         assert result["db_connected"] is True
         assert result["subject_name"] == seeded_service.config.subject_name
 
