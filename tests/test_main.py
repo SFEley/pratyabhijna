@@ -149,8 +149,9 @@ class TestParseRecallArgs:
     def test_query_only(self):
         from pratyabhijna.__main__ import _parse_recall_args
 
+        # Default limit is 5; appended as the fourth tuple element.
         assert _parse_recall_args(["what did I say about trust"]) == (
-            "what did I say about trust", None, None,
+            "what did I say about trust", None, None, 5,
         )
 
     def test_with_type_and_time_range(self):
@@ -158,14 +159,26 @@ class TestParseRecallArgs:
 
         assert _parse_recall_args(
             ["question", "--type", "Person", "--time-range", "7d"]
-        ) == ("question", "Person", "7d")
+        ) == ("question", "Person", "7d", 5)
 
     def test_flags_before_query(self):
         from pratyabhijna.__main__ import _parse_recall_args
 
         assert _parse_recall_args(
             ["--type", "Observation", "question"]
-        ) == ("question", "Observation", None)
+        ) == ("question", "Observation", None, 5)
+
+    def test_with_limit_flag(self):
+        from pratyabhijna.__main__ import _parse_recall_args
+
+        assert _parse_recall_args(
+            ["question", "--limit", "20"]
+        ) == ("question", None, None, 20)
+
+    def test_limit_must_be_integer(self):
+        from pratyabhijna.__main__ import _parse_recall_args
+
+        assert _parse_recall_args(["question", "--limit", "many"]) is None
 
     def test_missing_query_returns_none(self):
         from pratyabhijna.__main__ import _parse_recall_args
@@ -218,9 +231,13 @@ class TestRunTool:
         ):
             rc = run_tool(config, "status", [])
 
+        from importlib.metadata import version as pkg_version
+
         assert rc == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["version"] == "0.2.1"
+        # Version comes from package metadata; assert against the same source
+        # so the test never drifts from pyproject.toml.
+        assert payload["version"] == pkg_version("pratyabhijna")
         assert payload["db_connected"] is True
         assert payload["subject_name"] == "Vesper"
         assert payload["queue"]["depth"] == 0

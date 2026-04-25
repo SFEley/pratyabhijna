@@ -67,11 +67,15 @@ def _parse_time_range(time_range: str) -> list[list[DateFilter]]:
     raise ValueError(f"Unrecognized time_range format: {time_range!r}")
 
 
+DEFAULT_RECALL_LIMIT = 5
+
+
 async def recall(
     service: PratyabhijnaService,
     query: str,
     memory_type: str | None = None,
     time_range: str | None = None,
+    limit: int = DEFAULT_RECALL_LIMIT,
 ) -> dict:
     """Search the knowledge graph and return ranked results.
 
@@ -81,9 +85,16 @@ async def recall(
         memory_type: Optional entity type filter (e.g. "Person", "Observation").
         time_range: Optional time filter — relative ("7d") or absolute
             ("2025-01-01..2025-03-01").
+        limit: Maximum number of results to return after rerank-sort.
+            Default is 5; pass a larger value to scan a topic broadly.
+            The reranker still sees the full result pool — limit slices
+            the top N from the sorted output.
 
     Returns:
         Dict with query echo, count, and results list sorted by score.
+        ``count`` reflects the post-limit size; the unlimited pool size
+        is in ``total_before_limit`` when limiting actually trimmed
+        results.
     """
     # Build search filter from optional parameters
     search_filter = None
@@ -134,8 +145,19 @@ async def recall(
             "score": score,
         })
 
-    # Sort by score descending
+    # Sort by score descending, then slice to the user-requested limit.
+    # The reranker has already seen the full pool; limit is a presentation
+    # cap that keeps context costs in check without affecting ranking.
     formatted.sort(key=lambda r: r["score"], reverse=True)
+    total = len(formatted)
+    if limit > 0 and total > limit:
+        formatted = formatted[:limit]
+        return {
+            "query": query,
+            "count": len(formatted),
+            "total_before_limit": total,
+            "results": formatted,
+        }
 
     return {
         "query": query,

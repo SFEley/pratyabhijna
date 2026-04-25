@@ -11,7 +11,7 @@ Usage:
     python -m pratyabhijna bootstrap             Subject identity tiers
     python -m pratyabhijna inspect UUID          Node or edge detail
     python -m pratyabhijna history ENTITY        Entity relationship timeline
-    python -m pratyabhijna recall QUERY [--type T] [--time-range R]
+    python -m pratyabhijna recall QUERY [--type T] [--time-range R] [--limit N]
 
     python -m pratyabhijna deadletters list      Show dead-lettered tasks
     python -m pratyabhijna deadletters show ID   Show full detail for one
@@ -244,14 +244,18 @@ def run_deadletters(config: PratyabhijnaConfig, argv: list[str]) -> int:
 TOOL_COMMANDS = {"status", "bootstrap", "inspect", "history", "recall"}
 
 
-def _parse_recall_args(argv: list[str]) -> tuple[str, str | None, str | None] | None:
-    """Parse ``recall QUERY [--type T] [--time-range R]``.
+def _parse_recall_args(
+    argv: list[str],
+) -> tuple[str, str | None, str | None, int] | None:
+    """Parse ``recall QUERY [--type T] [--time-range R] [--limit N]``.
 
-    Returns (query, memory_type, time_range) or None on usage error.
+    Returns (query, memory_type, time_range, limit) or None on usage error.
+    Default limit is 5.
     """
     query: str | None = None
     memory_type: str | None = None
     time_range: str | None = None
+    limit: int = 5
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -261,6 +265,12 @@ def _parse_recall_args(argv: list[str]) -> tuple[str, str | None, str | None] | 
         elif a == "--time-range" and i + 1 < len(argv):
             time_range = argv[i + 1]
             i += 2
+        elif a == "--limit" and i + 1 < len(argv):
+            try:
+                limit = int(argv[i + 1])
+            except ValueError:
+                return None
+            i += 2
         elif not a.startswith("--") and query is None:
             query = a
             i += 1
@@ -268,7 +278,7 @@ def _parse_recall_args(argv: list[str]) -> tuple[str, str | None, str | None] | 
             return None
     if query is None:
         return None
-    return query, memory_type, time_range
+    return query, memory_type, time_range, limit
 
 
 _TOOL_USAGE = {
@@ -276,7 +286,7 @@ _TOOL_USAGE = {
     "bootstrap": "python -m pratyabhijna bootstrap",
     "inspect": "python -m pratyabhijna inspect UUID",
     "history": "python -m pratyabhijna history ENTITY_NAME",
-    "recall": "python -m pratyabhijna recall QUERY [--type T] [--time-range R]",
+    "recall": "python -m pratyabhijna recall QUERY [--type T] [--time-range R] [--limit N]",
 }
 
 
@@ -338,7 +348,7 @@ def run_tool(config: PratyabhijnaConfig, action: str, argv: list[str]) -> int:
         if parsed is None:
             print(f"Usage: {_TOOL_USAGE[action]}", file=sys.stderr)
             return 2
-        query, memory_type, time_range = parsed
+        query, memory_type, time_range, limit = parsed
         from pratyabhijna.tools.recall import recall
 
         async def call(service):
@@ -347,6 +357,7 @@ def run_tool(config: PratyabhijnaConfig, action: str, argv: list[str]) -> int:
                 query=query,
                 memory_type=memory_type,
                 time_range=time_range,
+                limit=limit,
             )
 
     else:
@@ -420,7 +431,7 @@ Commands:
   bootstrap                       Subject identity tiers
   inspect UUID                    Node or edge detail
   history ENTITY                  Entity relationship timeline
-  recall QUERY [--type T]         Graph search
+  recall QUERY [--type T] [--limit N]  Graph search (default limit: 5)
               [--time-range R]
 
   deadletters list                Show dead-lettered tasks

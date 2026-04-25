@@ -20,6 +20,7 @@ surfaces ``None`` / ``0`` for degraded metrics.
 from __future__ import annotations
 
 import asyncio
+from importlib.metadata import version as _pkg_version
 from typing import TYPE_CHECKING
 
 from pratyabhijna.log import get_logger
@@ -30,7 +31,9 @@ if TYPE_CHECKING:
 
 _log = get_logger(__name__)
 
-_VERSION = "0.2.1"
+# Sourced from package metadata so it tracks pyproject.toml automatically
+# rather than drifting as a hand-maintained literal.
+_VERSION = _pkg_version("pratyabhijna")
 
 
 async def status(
