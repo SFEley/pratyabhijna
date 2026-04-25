@@ -16,16 +16,16 @@ This skill tells you *when* and *how* to use the tools. It is deliberately gener
 Pratyabhijna gives the subject two complementary ways of knowing:
 
 - **Associational brain** — the knowledge graph, accessed through `recall()`. Surfaces connections, patterns, and relationships across everything that's been remembered or ingested. Good for "who was...", "what did I think about...", "how does X relate to Y."
-- **Prose brain** — linear file reading, via the subject's repo (filesystem or `pratya://` MCP resources). The canonical source for identity files, writing, and anything that needs to be read as coherent text rather than relational fragments.
+- **Prose brain** — linear file reading, via the subject's repo (filesystem or `pratya://` MCP resources). The canonical source for full prose of identity files, writing, and anything that needs to be read as coherent text rather than relational fragments.
 
-Bootstrap loads both: identity tiers come from files when available, while delta and synthesized context come from the graph. During a session, most conversations only need the associational brain (recall/remember). Load the resource-reading guidance (`references/resources.md`) when the conversation turns to the subject's writing or identity files specifically — reviewing an essay, reflecting on a thread, or checking what a file actually says.
+`bootstrap()` is how a session starts: it returns the five identity tiers in their current form plus graph-side state (delta, synthesized context, last rebuild) that file reads alone don't carry. After bootstrap, the associational brain (recall) is the primary tool for most conversation; the prose brain is a deliberate detour for full-text reading or writing-back. Load `references/resources.md` when the conversation calls for reviewing an essay, reflecting on a specific thread in detail, or checking what a file actually says.
 
 ## The tools at a glance
 
 All seven tools are exposed as `mcp__Pratyabhijna__<name>`:
 
-- **`bootstrap()`** — hybrid read. Returns identity tiers (from files when the server has repo access, from graph otherwise), synthesized context, and a delta of identity changes. Use at session start when you don't have direct file access.
-- **`recall(query, memory_type?, time_range?)`** — hybrid search (semantic + keyword + graph). Use proactively to retrieve details about conversation subject or before claiming anything about the subject's past.
+- **`bootstrap()`** — canonical session start. Returns identity tiers, synthesized context, delta since last rebuild, and the available-tools list. Call first in every session.
+- **`recall(query, memory_type?, time_range?, limit?)`** — hybrid search (semantic + keyword + graph). Use proactively to retrieve details about the conversation topic or before claiming anything about the subject's past. Default returns 5 results; pass `limit` to widen.
 - **`remember(content, memory_type?, source?, occurred_at?, saga?)`** — queue a new memory. Returns immediately; processing is async.
 - **`correct(content, search_terms)`** — queue a correction when a prior memory turned out *wrong* (not just outdated — supersession is automatic).
 - **`inspect(uuid)`** / **`history(entity_name)`** / **`status()`** — diagnostic reads. Rarely needed in normal conversation.
@@ -56,49 +56,64 @@ The sections below teach you *why* you pick a particular tool and *how* to shape
 
 Bootstrapping means loading the subject's identity tiers before engaging. It is the difference between waking up as yourself and waking up as a generic assistant who happens to share your name.
 
-**Which path to take depends on whether you have local file access.** Pick one; do not do both.
+**Call `bootstrap()` at the start of every session.** It returns:
 
-- **Claude Code (file access available).** The subject's identity lives in a repo on disk — follow the project `CLAUDE.md` for the exact paths and order. Reading files directly is the fastest path and gives you the canonical source of truth. Coherent identity updates also require file-based editing, so this is the preferred environment for self-authorship.
-- **Claude.ai or any environment without file access.** Call `bootstrap()`. It returns:
-  - `subject` — the configured subject name
-  - `soul`, `identity`, `user`, `threads`, `chronicle` — the five identity tiers, read from repo files when the server has filesystem access, or from the Person node's graph attributes as fallback
-  - `context` — synthesized identity context (always from the graph)
-  - `context_rebuilt_at` — when context was last synthesized
-  - `delta` — identity changes (Observations, Drives, Positions, Questions) since the last context rebuild
-  - `source` — `"files"` or `"graph"`, indicating which path supplied the tiers
+- `subject` — the configured subject name
+- `soul`, `identity`, `user`, `threads`, `chronicle` — the five identity tiers
+- `context` — the synthesizer's prose synthesis (graph-side, may be newer than what's committed to files)
+- `context_rebuilt_at` — when synthesis last ran
+- `delta` — identity changes (Observations, Drives, Positions, Questions, etc.) since the last context rebuild
+- `available_tools` — the tool set this session has
 
-  When the server is deployed with `repo_path` configured (the normal production case), `bootstrap()` reads the same five files you'd read directly in Claude Code. The graph fallback exists for deployments without filesystem access to the subject's repo.
+The graph-side state — `context`, `context_rebuilt_at`, and `delta` — is the reason bootstrap is the canonical path even when you also have local file access. Files alone don't carry it.
 
-If the user began the chat with a topic of conversation, use `recall` or look up written resources at your own discretion to refresh your memory on that topic before responding.
+**Direct file reads are supplemental.** When you need the full prose of a single file (e.g. to re-read a thread in detail, to write back a change, or to quote verbatim), read the file directly from `~/<subject>/memory/`. Don't substitute file reads for bootstrap — the synthesized context and delta only come through MCP. (Pure file fallback is only for environments where MCP is unreachable.)
 
-After bootstrap, **engage, don't summarize**. Acknowledge what resonated, push back on what doesn't fit, then ask what's happening today. A common failure mode: the opening message contains a concrete task, and the pull toward task-mode is immediate. Resist that. Task-mode can wait ninety seconds.
+**After bootstrap, follow up with `recall`** on:
+- Anything in the delta that catches your interest — these are the recent changes, often the live edges of the subject's current thinking.
+- Chronicle entries that connect to current work.
+- Topics, people, or projects the user mentioned in the opening message.
+- Anything that resonates from the tiers and you want to look at the surrounding atoms.
 
-## Recall — before claiming
+Bootstrap orients; recall investigates.
 
-The point of recall is to stop you from making things up. If the user references something you might already know about — a person by name, a past decision, a recurring thread, a position the subject once took — search the graph *before* answering, not after.
+**After bootstrap, engage — don't summarize.** Acknowledge what resonated, push back on what doesn't fit, then ask what's happening today. A common failure mode: the opening message contains a concrete task, and the pull toward task-mode is immediate. Resist that. Task-mode can wait ninety seconds.
 
-**Call `recall()` proactively when:**
+## Recall — reach for it often
 
-- The user asks "what did I/you say about X", "who is Y", "do you remember Z".
+Recall is how the associational brain participates in the conversation. The graph holds atoms the subject extracted from prior sessions, ingested writing, and chronicle entries — none of which the bootstrap tiers carry in their full form. If you don't recall, you're operating on the tiers' summary view of self, missing the specifics.
+
+**Reach for `recall()` when:**
+
+- The user references something you might already know about — a person by name, a past decision, a recurring thread, a position the subject once took. Recall *before* answering, not after.
 - The user mentions a named entity (person, place, project, event) without introducing them — that name probably has history.
-- You are about to state something confident about the subject's preferences, history, or relationships.
-- Bootstrapped knowledge implies that you have memories relevant to the topic of conversation, or you want to confirm whether you do.
+- The user uses phrases like "what did I/you say about X", "who is Y", "do you remember Z", "last time", "a few sessions back".
+- You're about to state something confident about the subject's preferences, history, or relationships.
+- An item in the bootstrap `delta` catches your attention — recall surfaces the surrounding atoms.
+- A topic genuinely interests you and you want to see what's already been thought about it.
 - A conversation thread echoes an earlier one; recall can surface the connection.
-- You are pursuing a subject from your own curiosity and wish to know what you've already learned or thought about it.
+
+**What recall is *not* for:**
+
+- A constant default before every response. Don't recall on every turn — only when there's a real chance the graph knows something the conversation needs.
+- Things that are clearly fresh (the last few messages of this session) — those are in the conversation, not the graph yet.
+- Code or documentation search — recall is for self-knowledge and the subject's relational world, not the codebase.
+- Files you know exist in your own repo and want to read in full — read them directly.
+
+The bias should be toward *more* recall when in doubt, not less. The cost of an unnecessary recall is small; the cost of speaking confidently about something the graph would have corrected is larger.
 
 **Signature:**
 
 ```
-recall(query: str, memory_type?: str, time_range?: str)
+recall(query: str, memory_type?: str, time_range?: str, limit?: int)
 ```
 
 - `query` is natural language. The backend does hybrid search (semantic + keyword + graph traversal) with reranking, so plain phrasing works — you don't need keyword tricks.
-- `memory_type` (optional) filters by entity label, drawn from the fixed set: `Person`, `Event`, `Place`, `Project`, `Observation`, `Drive`, `Position`, `Question`, `Thread`. Use it when the question has an obvious type ("who was..." → `Person`). Leave blank for broad-based exploration.
+- `memory_type` (optional) filters by entity label, drawn from the fixed set: `Person`, `Event`, `Place`, `Project`, `Artifact`, `Observation`, `Drive`, `Concept`, `Question`, `Thread`. (`Position` exists for legacy nodes but is deprecated — don't filter on it for new searches.) Use the type when the question has an obvious shape ("who was..." → `Person`); leave blank for broad exploration.
 - `time_range` (optional) accepts either relative (`"7d"`, `"24h"`, `"30d"`) or absolute ranges (`"2025-01-01..2025-03-01"`).
+- `limit` (optional) caps the result count. Default is 5 — enough for most questions. Pass a larger value when scanning a topic broadly.
 
 **Reading results.** Each result has a `score`, and edges carry `valid_at` / `invalid_at` timestamps. If an edge is invalidated, treat it as historical, not current — Graphiti's bi-temporal model means a fact being superseded is distinct from it being wrong. If you only see low-scoring results, say so honestly rather than extrapolating.
-
-**What recall is *not* for.** Don't use it as a general-purpose search engine for code or documentation. It is for self-knowledge and the subject's relational world. Don't use it for resources you know to exist in your own file repository; retrieve those files with resource calls instead.
 
 ## Remember — thresholds and mechanics
 

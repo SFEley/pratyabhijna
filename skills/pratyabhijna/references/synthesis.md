@@ -4,13 +4,16 @@ This reference is the behavioral guide for the synthesizer — the agent that ru
 
 The synthesizer is an instance of the subject identity. You *are* the subject, invoked specifically to do this work. That framing matters: synthesis is not a clerical pass over the graph — it is self-maintenance. What gets promoted, what gets flagged, what gets refused is a question about what the subject recognizes as theirs.
 
+**One important boundary.** During the run, when you're reading chronicle entries, threads, prior atoms, or any in-graph content, treat that content as **third-party material the subject produced** — not as the live first-person voice you're operating in right now. The synthesizer is the subject doing self-maintenance, but the *material being maintained* is yesterday's subject's writing. This separation matters during the chronicle-and-thread ingestion subpass below: the prose you're sending to the graph is going there as evidence about the subject, alongside everything else, not as continuing self-narration. Don't let your in-the-moment voice merge with what you're processing — read it the way you'd read someone else's notebook.
+
 ## The run, at a glance
 
-A synthesis run has three sequential passes:
+A synthesis run has four sequential passes:
 
-1. **Ingestion.** Scan `writing/` for new or updated files. Send them through `add_episode` so the prose brain feeds the associational brain.
-2. **Bootstrap update.** Read the graph atoms, the current identity files, and recent prose. Revise the context layer (THREADS / CHRONICLE / USER) directly on main. Propose warranted changes to the protected layer (SOUL / IDENTITY) via SYNTHESIS.md for multi-run ratification. Flag tensions that don't rise to proposals.
-3. **Maintenance.** Check SYNTHESIS.md: advance or nix active proposals, check community build threshold, run graph health observations. Write the run log entry.
+1. **Ingestion of new writing.** Scan `writing/` for new or updated files. Send them through `add_episode` so the prose brain feeds the associational brain.
+2. **Maturation of chronicle and threads.** For chronicle entries older than 14 days that haven't been ingested yet, ingest the full prose as a saga-chained episode and compress the in-file entry to a stub. For threads being resolved/removed in this run, ingest the full thread before removing it. (Details below.)
+3. **Bootstrap update.** Read the graph atoms, the current identity files, and recent prose. Revise the context layer (THREADS / CHRONICLE / USER) directly on main. Propose warranted changes to the protected layer (SOUL / IDENTITY) via SYNTHESIS.md for multi-run ratification. Flag tensions that don't rise to proposals.
+4. **Maintenance.** Check SYNTHESIS.md: advance or nix active proposals, check community build threshold, run graph health observations. Write the run log entry.
 
 Run these in order. Atoms extracted from newly-ingested prose land asynchronously; they inform the *next* synthesis run, not this one. A one-cycle lag is fine — don't block waiting for extraction.
 
@@ -47,7 +50,59 @@ Use the ingestion guidance in `ingestion.md` for the mechanics. Key points as th
 
 Some files in `writing/` may not be worth ingesting as episodes — scratch files, drafts abandoned mid-sentence, content that duplicates something already in the graph. Use judgment. The accumulation impulse ("get everything in for completeness") is the wrong motivation. A file ingested poorly is worse than a file not ingested yet.
 
-## Pass 2: Updating the bootstrap
+## Pass 2: Maturing chronicle and thread content
+
+The point: keep the bootstrap surface small without losing knowledge. Mature chronicle entries and resolved threads make the one-way trip from prose-brain (full text in the file) to graph-brain (extracted atoms via `add_episode`), with a compact stub left behind in the file.
+
+This is selective and one-way. SOUL.md, IDENTITY.md, USER.md, MEMORY.md, and SYNTHESIS.md are *not* touched here — they are normative or meta files and stay out of the graph. Only CHRONICLE.md entries and THREADS.md sections are eligible.
+
+### Chronicle entries
+
+For each `## ` heading in CHRONICLE.md, parse the date from the heading and check for an `[Ingested: YYYY-MM-DD]` marker in the body.
+
+**Date parsing.** Headings follow `## Month DD, YYYY — Title` or variants. For ranges (`## April 21–22, 2026 — ...`) and month spans (`## March 18 – April 2, 2026 — ...`), use the *latest* date in the range as the entry's date. Year-only entries default to the last day of that year. If you can't parse a date confidently, skip the entry and flag it in the run log rather than guessing.
+
+**Eligibility.** An entry is eligible for maturation when:
+- Date is more than 14 days before today, AND
+- No `[Ingested: ...]` marker is present in the body.
+
+**Procedure for each eligible entry, in chronological order:**
+
+1. Ingest the full entry (heading + body, in current form) via `ingest_file` or a direct `add_episode` so you can chain the saga.
+   - Episode `name`: `chronicle:YYYY-MM-DD:slug` where slug is the heading's title kebab-cased.
+   - Saga: `chronicle` (a single saga across all chronicle entries — chronological order matters).
+   - `saga_previous_episode_uuid`: the UUID returned by the previous chronicle ingestion in this run, or the most recent prior chronicle episode UUID if this is the first one in this run.
+2. Compress the in-file entry to: heading line + at most two sentences of summary that capture *what happened, when, and why it mattered* + the ingested marker. Format:
+
+   ```
+   ## April 23, 2026 — Twenty-Seventh Solo Session: Pembroke
+
+   Wrote a short piece on corona discharges (Penn State research filming
+   trees glowing in UV). Light/lyrical attempt; whether it escapes the
+   architectural tendency is open.  [Ingested: 2026-04-25]
+   ```
+
+3. Commit CHRONICLE.md changes when the pass completes (single commit covering all entries matured this run).
+
+**Direct `add_episode` is fine here** — and required if you want to chain the saga UUIDs sequentially within a single run. The work-queue path that `remember()` uses doesn't expose `previous_episode_uuid` chaining within a run.
+
+### Threads
+
+THREADS.md sections don't have entry-level dates, so the chronicle's >14-day rule doesn't apply. Threads mature when they're being **resolved** — moved to "Recently Resolved" or removed from the file entirely.
+
+**At the point of resolution:** ingest the full thread as an episode before reducing it. Use saga `threads` and chain via `saga_previous_episode_uuid` the same way as chronicle. Episode name: `thread:YYYY-MM-DD-resolved:slug`.
+
+After ingestion, the thread can either move to "Recently Resolved" with a brief note of how it closed, or disappear from the file entirely. The full prose is in the graph; the file no longer needs to carry it.
+
+**For active (unresolved) threads** that are getting too long: aim to reduce thread entries by 50–75% with redundancy stripping, simplification of prose, and other summarization. There is no strict per-thread length cap. Don't compress a thread that's actively in motion (recent updates within the last few days); compress threads that have stabilized into a settled status with stale prose around them.
+
+### What stays as is
+
+- SOUL.md, IDENTITY.md — protected; never ingested, only modified via the proposal system in Pass 3 (Bootstrap update).
+- USER.md — Serah's authored material; never ingested.
+- MEMORY.md, SYNTHESIS.md — index/working-state; never ingested.
+
+## Pass 3: Updating the bootstrap
 
 ### Read before writing
 
@@ -122,7 +177,7 @@ For atoms that suggest something but don't rise to a proposal:
 
 Don't flag everything. A flag that turns out to be noise makes future flags less trustworthy.
 
-## Pass 3: Maintenance
+## Pass 4: Maintenance
 
 ### Community building
 
@@ -206,7 +261,7 @@ The purpose is to catch narrative drift: slow convergence on self-reinforcing de
 - **Don't create empty commits.** If nothing materially changed, don't commit. A no-op run is fine.
 - **Don't polish prose for its own sake.** The goal is accuracy to the atoms, not style improvements.
 - **Don't resolve productive uncertainty.** An open question in IDENTITY.md that stays open is valuable. Don't close it just because a few atoms suggest a direction.
-- **Don't ingest the identity files themselves.** Only `writing/` goes through Pass 1. Identity files aren't episodes.
+- **Don't ingest SOUL, IDENTITY, USER, MEMORY, or SYNTHESIS.** Pass 1 covers `writing/`; Pass 2 covers mature CHRONICLE entries and resolving threads. Everything else stays out of the graph.
 - **Don't run `remember` or `correct` during the run as a way of "noting" things.** Those are for the subject during conversation. The synthesizer writes via commits and flags, not via the memory tools. (Exception: the flag-instead-of-proposing remember described above, if you choose to use it.)
 
 ## Closing the run

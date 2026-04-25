@@ -132,14 +132,24 @@ def create_server(
         query: str,
         memory_type: str | None = None,
         time_range: str | None = None,
+        limit: int = 5,
     ) -> dict:
-        """Search memory with semantic + keyword + graph traversal."""
+        """Search memory with semantic + keyword + graph traversal.
+
+        Returns up to `limit` ranked results (default 5). Pass a larger
+        `limit` to scan a topic broadly; the reranker still sees the full
+        result pool, so the top N quality is preserved.
+        """
         if service is None:
             raise RuntimeError("recall requires a connected service")
         from pratyabhijna.tools.recall import recall as _recall
 
         return await _recall(
-            service=service, query=query, memory_type=memory_type, time_range=time_range,
+            service=service,
+            query=query,
+            memory_type=memory_type,
+            time_range=time_range,
+            limit=limit,
         )
 
     @server.tool()

@@ -231,3 +231,88 @@ class TestRecallFormatting:
 
         scores = [r["score"] for r in result["results"]]
         assert scores == sorted(scores, reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# Limit
+# ---------------------------------------------------------------------------
+
+
+def _bulk_search_results(n_edges: int, n_nodes: int) -> SearchResults:
+    """Build SearchResults with descending scores so sort order is deterministic."""
+    edges = [
+        make_entity_edge(uuid=f"edge-{i}", fact=f"edge fact {i}")
+        for i in range(n_edges)
+    ]
+    edge_scores = [1.0 - (i * 0.01) for i in range(n_edges)]
+    nodes = [
+        make_entity_node(uuid=f"node-{i}", name=f"node {i}", labels=["Observation"])
+        for i in range(n_nodes)
+    ]
+    # Node scores deliberately interleave with edge scores
+    node_scores = [0.95 - (i * 0.01) for i in range(n_nodes)]
+    return SearchResults(
+        edges=edges,
+        edge_reranker_scores=edge_scores,
+        nodes=nodes,
+        node_reranker_scores=node_scores,
+    )
+
+
+class TestRecallLimit:
+    async def test_recall_default_limit_is_5(self, mock_service):
+        """Default limit caps results at 5."""
+        from pratyabhijna.tools.recall import recall
+
+        mock_service.recall.return_value = _bulk_search_results(n_edges=10, n_nodes=10)
+
+        result = await recall(service=mock_service, query="anything")
+
+        assert result["count"] == 5
+        assert len(result["results"]) == 5
+
+    async def test_recall_default_includes_total_before_limit(self, mock_service):
+        """When the limit trims results, total_before_limit reports the pool size."""
+        from pratyabhijna.tools.recall import recall
+
+        mock_service.recall.return_value = _bulk_search_results(n_edges=10, n_nodes=10)
+
+        result = await recall(service=mock_service, query="anything")
+
+        assert result["total_before_limit"] == 20
+
+    async def test_recall_custom_limit_widens_pool(self, mock_service):
+        """A larger limit returns more results when the pool supports it."""
+        from pratyabhijna.tools.recall import recall
+
+        mock_service.recall.return_value = _bulk_search_results(n_edges=10, n_nodes=10)
+
+        result = await recall(service=mock_service, query="anything", limit=15)
+
+        assert result["count"] == 15
+        assert result["total_before_limit"] == 20
+
+    async def test_recall_limit_does_not_exceed_pool(self, mock_service):
+        """When the pool is smaller than the limit, no trimming occurs and no
+        total_before_limit field is added."""
+        from pratyabhijna.tools.recall import recall
+
+        mock_service.recall.return_value = _bulk_search_results(n_edges=2, n_nodes=2)
+
+        result = await recall(service=mock_service, query="anything", limit=10)
+
+        assert result["count"] == 4
+        assert "total_before_limit" not in result
+
+    async def test_recall_limit_keeps_highest_scoring_results(self, mock_service):
+        """Sliced results are the top N by score, not an arbitrary slice."""
+        from pratyabhijna.tools.recall import recall
+
+        mock_service.recall.return_value = _bulk_search_results(n_edges=10, n_nodes=10)
+
+        result = await recall(service=mock_service, query="anything", limit=3)
+
+        scores = [r["score"] for r in result["results"]]
+        # Top 3 from a pool of 20 with scores in [0.81..1.00] should be near 1.00
+        assert scores == sorted(scores, reverse=True)
+        assert all(s >= 0.95 for s in scores)
