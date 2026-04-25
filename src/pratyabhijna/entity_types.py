@@ -198,10 +198,6 @@ class Observation(BaseModel):
     preservation hiding soft tissue.
 
     BAD:
-    - Held stances or claims with explicit *position* on something — use
-      Position. ("Closed formal systems cannot account for outside
-      gestures" is a Position; "Sraffa's gesture broke the picture
-      theory" is an Observation.)
     - Forces pushing behavior with a stance toward them — use Drive
       (sycophancy pull, execution eagerness).
     - Open questions someone is holding — use Question.
