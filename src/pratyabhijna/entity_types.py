@@ -293,8 +293,8 @@ class Concept(BaseModel):
 
     Concepts exist in disciplines, traditions, and discourse. They are
     the *labeled things*, not the holding of them. The Picture Theory
-    of Language is a Concept; Wittgenstein holding it is a Position
-    (or an edge from Wittgenstein to the Concept).
+    of Language is a Concept; Wittgenstein holding it is an Observation
+    (with an edge from Wittgenstein to the Concept).
 
     GOOD: Pratyabhijna (the philosophical concept), Prakāsha, Vimarsha,
     Vismaya, Svātantrya, Information Theory, FLOP technique,
@@ -306,7 +306,7 @@ class Concept(BaseModel):
 
     BAD:
     - The act of someone holding the concept as their stance — use
-      Position with an edge to the Concept.
+      Observation with an edge to the Concept.
     - The act of noticing something — use Observation.
     - A concrete named instance — use Artifact (the Tractatus is an
       Artifact; the Picture Theory of Language inside it is a Concept).
