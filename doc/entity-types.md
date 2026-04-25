@@ -187,32 +187,30 @@ different things connected by an edge.
 
 ---
 
-## Position
+## Position — **DEPRECATED**
 
-**What it is:** A held view, principle, commitment, or stance — the
-*holding* of a claim by someone. Covers everything from provisional
-takes to identity-constitutive values.
+**Status:** Deprecated April 25, 2026. Scheduled for merge into
+Observation in a follow-up PR. The 99 existing Position nodes remain
+valid in the graph until the migration runs; the type is retained on
+the schema for that reason. **No new Position nodes should be
+extracted.**
 
-**Fields:**
-- `domain` — area of thought (ethics, epistemology, identity, technical, etc.)
-- `notes` — anything else
+**Why:** Position and Observation share an identical schema (`domain` +
+`notes`) and have bled empirically — the April 24 audit found ~25% of
+Observations were claim-shaped and the same content had been
+split-extracted as both types. The synthesizer
+(`synthesis.py:IDENTITY_LABELS`) already treats them as equivalent.
 
-How firmly someone holds a Position and how central it is to their identity
-are properties of the holding relationship (edge), not of the Position itself.
-This allows shared Positions: Zero and Vesper can both hold "selfhood is
-performative" with different reasons and different weight.
+**Routing for content that would have been Position:**
 
-**Distinction from Concept:** Position is the *holding*; Concept is the
-*labeled framework*. If the entity is a labeled theory or framework that
-exists in a tradition (Picture Theory of Language, Two-Brain Model),
-prefer Concept and connect a holder via an edge.
+- **Observation** — for held stances and beliefs ("X holds Y," "X's
+  principle is Y"). The holder lives on the edge, not in the type.
+- **Concept** — for labeled frameworks (Picture Theory of Language,
+  Two-Brain Model). Connect a holder via an edge.
+- **Drive** — for stances that push behavior with a monitored source.
+- **Question** — for open gaps being held rather than settled stances.
 
-**Audit note (April 24, 2026):** Position and Observation share schema and
-empirically bleed (~25% of Observations are claim-shaped). The
-extractor should reach for Position when prose says "X holds Y," "X
-believes Y," "X's principle is Y." A future structural collapse
-(Position → Observation) is on the roadmap but deferred — see roadmap
-item #10.
+When in doubt, default to Observation.
 
 ---
 

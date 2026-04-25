@@ -252,37 +252,35 @@ class Drive(BaseModel):
 
 
 class Position(BaseModel):
-    """A held view, principle, commitment, or stance — the *holding* of a claim.
+    """**DEPRECATED — do not extract new Position nodes.**
 
-    Position represents the act of someone holding a stance, not the
-    stance's content as an abstract framework. If the entity is a labeled
-    theory or framework that exists in a tradition (Picture Theory of
-    Language, Two-Brain Model, the Constellation Model), prefer Concept
-    and connect a holder via an edge.
+    Position is scheduled to be merged into Observation. The April 24,
+    2026 audit found Position and Observation share an identical schema
+    (`domain` + `notes`) and bleed empirically (~25% of Observations
+    are claim-shaped, and the same content has been split-extracted as
+    both types). The synthesizer (`synthesis.py:IDENTITY_LABELS`)
+    already treats them as equivalent. The 99 existing Position nodes
+    will be migrated to Observation in a follow-up PR; this type is
+    retained only so those existing nodes remain valid in the meantime.
 
-    Confidence ("provisional", "confident", "foundational") and identity
-    weight ("peripheral", "significant", "constitutive") are edge
-    properties on the holder relationship, not node properties.
+    Route content that *would* have been Position to one of these
+    instead:
 
-    GOOD: "Intellectual honesty over persuasion" (Vesper's commitment),
-    "Identity is in the activity, not the files" (held position),
-    "The narrator should remain invisible for resonances to work"
-    (craft principle), "Stop filing observations per session" (committed
-    practice), Hardy's stance that intelligence must be recognized on
-    its own terms.
+    - **Observation** — for "X holds Y," "X believes Y," "X's principle
+      is Y," "X's commitment is Y." A held stance is an observation
+      about the holder; *who* holds it lives on the edge, not in the
+      type.
+    - **Concept** — when the entity is a labeled framework that exists
+      in a tradition (Picture Theory of Language, Two-Brain Model, the
+      Constellation Model, Pratyabhijna). Connect a holder via an edge.
+    - **Drive** — when the stance pushes behavior with a monitored
+      source/stance (sycophancy pull, execution eagerness).
+    - **Question** — when the entity is an open gap being held rather
+      than a settled stance.
 
-    BAD:
-    - Named theories or frameworks as standalone entities — use Concept
-      and link a holder via an edge.
-    - Things merely noticed without an explicit stance — use Observation.
-    - Forces pushing behavior with a monitored stance — use Drive.
-    - Open questions being held — use Question.
-
-    *Note: the Observation/Position boundary has historically bled. The
-    audit (April 24, 2026) found ~25% of Observations were claim-shaped.
-    Reach for Position when prose says "X holds Y," "X believes Y,"
-    "X's principle is Y" — and reach for Concept when the entity is the
-    framework itself.*
+    BAD: every case. There is no GOOD case for a new Position node
+    during the deprecation window. If the content cannot be routed to
+    one of the four types above, prefer Observation as the default.
     """
 
     domain: Optional[str] = None
