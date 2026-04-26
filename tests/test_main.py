@@ -140,6 +140,56 @@ class TestCLIDispatch:
         assert exc.value.code == 0
         assert mock_run_tool.call_args.args[1] == action
 
+    def test_update_subcommand_dispatches_to_run_update(self):
+        """``update DESCRIPTION`` routes to run_update."""
+        from pratyabhijna.__main__ import main
+
+        with patch.object(sys, "argv", ["pratyabhijna", "update", "fix things"]), \
+             patch("pratyabhijna.__main__.run_update", return_value=0) as mock_update, \
+             patch("pratyabhijna.__main__.configure_logging"), \
+             patch("pratyabhijna.__main__.PratyabhijnaConfig") as mock_config_cls, \
+             pytest.raises(SystemExit) as exc:
+            mock_config_cls.from_env.return_value = MagicMock()
+            main()
+        assert exc.value.code == 0
+        mock_update.assert_called_once()
+        # The argv passed to run_update is everything after "update".
+        assert mock_update.call_args.args[1] == ["fix things"]
+
+
+class TestParseUpdateArgs:
+    def test_description_only(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args(["fix the orphan Saga"]) == ("fix the orphan Saga", False)
+
+    def test_with_cache_flag(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args(["fix things", "--cache"]) == ("fix things", True)
+
+    def test_cache_flag_before_description(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args(["--cache", "fix things"]) == ("fix things", True)
+
+    def test_missing_description_returns_none(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args(["--cache"]) is None
+        assert _parse_update_args([]) is None
+
+    def test_empty_description_returns_none(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args([""]) is None
+        assert _parse_update_args(["   "]) is None
+
+    def test_unknown_flag_returns_none(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args(["x", "--nope"]) is None
+
 
 # ---------------------------------------------------------------------------
 # _parse_recall_args
@@ -262,3 +312,42 @@ class TestRunTool:
         rc = run_tool(MagicMock(), "nope", [])
         assert rc == 2
         assert "Unknown tool" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# run_update — failure mode produces audit file
+# ---------------------------------------------------------------------------
+
+class TestRunUpdate:
+    def test_writes_output_file_when_inner_raises(self, tmp_path, capsys):
+        """If service startup (or anything inside _run) raises, the audit JSON
+        is still written with status="Error" — the "every update writes an
+        output file" property must hold even on infra failure (Neo4j down,
+        config error, API timeout)."""
+        import json
+
+        from pratyabhijna.__main__ import run_update
+
+        config = MagicMock()
+        config.log_dir = str(tmp_path)
+        config.subject_name = "Vesper"
+
+        fake_service = MagicMock()
+        fake_service.start = AsyncMock(side_effect=RuntimeError("Neo4j unreachable"))
+        fake_service.stop = AsyncMock()
+
+        with patch(
+            "pratyabhijna.__main__.PratyabhijnaService", return_value=fake_service,
+        ):
+            rc = run_update(config, ["fix the orphan Saga"])
+
+        assert rc == 1
+        out_dir = tmp_path / "outputs"
+        files = list(out_dir.glob("output-*.json"))
+        assert len(files) == 1, f"Expected one output file, found: {files}"
+        payload = json.loads(files[0].read_text(encoding="utf-8"))
+        assert payload["updates"][0]["status"] == "Error"
+        assert payload["updates"][0]["request"] == "fix the orphan Saga"
+        assert any("Neo4j unreachable" in e for e in payload["updates"][0]["errors"])
+        # Stderr summary lets shell pipelines branch on failure.
+        assert "Error:" in capsys.readouterr().err

@@ -66,7 +66,7 @@ async def bootstrap(
         "inspect": "Detailed view of a specific memory node by UUID.",
         "status": "System health — queue depth, graph connection, synthesis state.",
         "communities": "List all graph communities or display a single community with its members.",
-        "query": "Natural-language graph query and spot maintenance via adaptive-thinking sub-agent.",
+        "query": "Natural-language graph query via adaptive-thinking sub-agent.",
     }
 
     if node is None:
