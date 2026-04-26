@@ -458,7 +458,17 @@ async def test_process_update_result_records_with_request_field():
     assert results[0]["status"] == "Update"
     assert results[0]["request"] == "Change entity_type to Observation"
     assert results[0]["name"] == "thing"
-    queue.enqueue.assert_not_called()  # Update doesn't enqueue a Thread either
+    queue.enqueue.assert_not_called()  # Update doesn't enqueue a Thread
+
+    # Two writes: stamp audited_at + append notes
+    assert service.execute_write_query.call_count == 2
+    notes_cypher, notes_params = service.execute_write_query.call_args_list[1].args
+    assert "n.notes" in notes_cypher
+    assert len(notes_params["updates"]) == 1
+    assert notes_params["updates"][0]["uuid"] == "N2"
+    note = notes_params["updates"][0]["note"]
+    assert note.startswith("Audit ")
+    assert "Change entity_type to Observation" in note
 
 
 async def test_process_unfixable_result_warns_and_enqueues_thread():

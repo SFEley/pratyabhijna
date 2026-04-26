@@ -405,6 +405,10 @@ async def process_results(
     if audited_uuids:
         await _stamp_audited_at(service, audited_uuids)
 
+    update_outcomes = [o for o in outcomes if o.get("status") == "Update"]
+    if update_outcomes:
+        await _append_update_notes(service, update_outcomes)
+
     return outcomes
 
 
@@ -431,6 +435,30 @@ async def _handle_unfixable(parsed: dict, *, queue) -> None:
         memory_type="Thread",
         source="audit",
     )
+
+
+async def _append_update_notes(service, updates: list[dict]) -> None:
+    """Append an audit note to the notes field of each Update node.
+
+    Preserves any existing notes content by appending with a blank-line
+    separator. The note format is ``Audit {timestamp}: {request}`` so
+    the pending fix survives even if update --input is never run.
+    """
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    params = [
+        {"uuid": u["uuid"], "note": f"Audit {now}: {u['request']}"}
+        for u in updates
+    ]
+    cypher = """
+    UNWIND $updates AS u
+    MATCH (n:Entity {uuid: u.uuid})
+    SET n.notes = CASE
+        WHEN n.notes IS NULL OR n.notes = '' THEN u.note
+        ELSE n.notes + '\\n\\n' + u.note
+    END
+    """
+    await service.execute_write_query(cypher, {"updates": params})
+    _log.info("Appended audit notes to %d Update nodes", len(updates))
 
 
 async def _stamp_audited_at(service, uuids: list[str]) -> None:
