@@ -576,8 +576,7 @@ def _parse_audit_args(
 def run_audit(config: PratyabhijnaConfig, argv: list[str]) -> int:
     """Run a node audit batch via the audit sub-agent.
 
-    Outputs a JSON file at ``{log_dir}/audit/audit-{ISO}.json`` and appends
-    a one-section summary to ``{repo_path}/memory/AUDIT.md``.
+    Outputs a JSON file at ``{log_dir}/audit/audit-{ISO}.json``.
     """
     import anyio
 
@@ -594,7 +593,7 @@ def run_audit(config: PratyabhijnaConfig, argv: list[str]) -> int:
     import json as _json
 
     import anthropic
-    from pratyabhijna.audit_log import append_to_audit_md, write_audit_file
+    from pratyabhijna.audit_log import write_audit_file
     from pratyabhijna.tools.audit import run_audit_run
 
     async def _run() -> dict:
@@ -644,18 +643,11 @@ def run_audit(config: PratyabhijnaConfig, argv: list[str]) -> int:
             "guidance": guidance,
         }
 
-    # Compute count summary for AUDIT.md and stdout
+    # Compute count summary for stdout
     counts = {"Valid": 0, "Update": 0, "Unfixable": 0, "Error": 0}
-    unfixable_details: list[dict] = []
     for r in summary["results"]:
         s = r.get("status", "Error")
         counts[s] = counts.get(s, 0) + 1
-        if s == "Unfixable":
-            unfixable_details.append({
-                "uuid": r["uuid"],
-                "name": r.get("name", ""),
-                "analysis": r.get("analysis", ""),
-            })
 
     # Write the JSON file. --output overrides the default location.
     if output_path:
@@ -685,20 +677,6 @@ def run_audit(config: PratyabhijnaConfig, argv: list[str]) -> int:
                 "cohort_size": summary["cohort_size"],
             },
             results=summary["results"],
-        )
-
-    # Append AUDIT.md summary (only if repo_path is configured)
-    if config.resources.repo_path:
-        append_to_audit_md(
-            repo_path=config.resources.repo_path,
-            run_summary={
-                "started_at": summary["started_at"],
-                "valid": counts["Valid"],
-                "update": counts["Update"],
-                "unfixable": counts["Unfixable"],
-                "errored": counts["Error"],
-                "unfixable_details": unfixable_details,
-            },
         )
 
     summary_line = (
