@@ -4,9 +4,11 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from datetime import datetime, timezone
 
 from pratyabhijna.log import get_logger
 from pratyabhijna.tools.query import query as _call_query
+from pratyabhijna.tools.remember import remember
 
 _log = get_logger(__name__)
 
@@ -292,3 +294,106 @@ async def poll_batch(client, batch_id: str, *, interval: float = 60.0):
             batch.request_counts.errored,
         )
         await asyncio.sleep(interval)
+
+
+async def process_results(
+    client,
+    batch_id: str,
+    *,
+    service,
+    queue,
+    node_names: dict[str, str],
+) -> list[dict]:
+    """Iterate batch results, dispatch side effects, return list of structured outcomes.
+
+    Each outcome dict carries the model's verdict plus injected `name` (from
+    `node_names`). Side effects:
+    - Valid: INFO log only
+    - Update: INFO log; the result dict is consumed downstream by `update --input`
+    - Unfixable: WARNING log + Thread enqueue via `remember()`
+    - Errored: WARNING log; outcome dict has status "Error"
+    On completion: stamp audited_at + audit_revision on every node we processed
+    via a single batched Cypher MERGE.
+    """
+    outcomes: list[dict] = []
+    audited_uuids: list[str] = []
+
+    async for result in client.messages.batches.results(batch_id):
+        if result.result.type != "succeeded":
+            error_str = str(getattr(result.result, "error", "unknown"))
+            uuid = _uuid_from_custom_id(result.custom_id)
+            _log.warning("Audit request %s failed: %s", result.custom_id, error_str)
+            outcomes.append({
+                "custom_id": result.custom_id,
+                "uuid": uuid,
+                "name": node_names.get(uuid, ""),
+                "status": "Error",
+                "error": error_str,
+            })
+            continue
+
+        text = next(
+            b.text for b in result.result.message.content if b.type == "text"
+        )
+        parsed = json.loads(text)
+        # Inject name from input node (model no longer echoes it back)
+        parsed["name"] = node_names.get(parsed["uuid"], "")
+        outcomes.append(parsed)
+        audited_uuids.append(parsed["uuid"])
+
+        if parsed["status"] == "Valid":
+            _log.info("Audit Valid: %s (%s)", parsed["name"], parsed["uuid"])
+        elif parsed["status"] == "Update":
+            _log.info(
+                "Audit Update: %s (%s) — %s",
+                parsed["name"],
+                parsed["uuid"],
+                parsed.get("request", "<no request provided>"),
+            )
+        elif parsed["status"] == "Unfixable":
+            await _handle_unfixable(parsed, queue=queue)
+
+    if audited_uuids:
+        await _stamp_audited_at(service, audited_uuids)
+
+    return outcomes
+
+
+def _uuid_from_custom_id(custom_id: str) -> str:
+    """Strip the `audit-` prefix to recover the bare UUID."""
+    return custom_id.removeprefix("audit-")
+
+
+async def _handle_unfixable(parsed: dict, *, queue) -> None:
+    """WARNING log + enqueue a Thread alerting the subject."""
+    _log.warning(
+        "Audit Unfixable: %s (%s) — %s",
+        parsed.get("name", ""),
+        parsed["uuid"],
+        parsed["analysis"],
+    )
+    thread_content = (
+        f"Audit found an unfixable issue with node '{parsed.get('name', '')}' "
+        f"({parsed['uuid']}): {parsed['analysis']}. Needs human review."
+    )
+    await remember(
+        queue,
+        thread_content,
+        memory_type="Thread",
+        source="audit",
+    )
+
+
+async def _stamp_audited_at(service, uuids: list[str]) -> None:
+    """Single batched MERGE setting audited_at + audit_revision on each UUID."""
+    now = datetime.now(timezone.utc).isoformat()
+    cypher = """
+    UNWIND $uuids AS u
+    MATCH (n {uuid: u})
+    SET n.audited_at = $now, n.audit_revision = $rev
+    """
+    await service.execute_write_query(
+        cypher,
+        {"uuids": uuids, "now": now, "rev": AUDIT_REVISION},
+    )
+    _log.info("Stamped audited_at on %d nodes", len(uuids))

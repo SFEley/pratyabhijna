@@ -274,7 +274,7 @@ async def test_submit_audit_batch_strips_internal_keys_and_returns_id():
     assert submitted[1]["custom_id"] == "n1"
 
 
-from pratyabhijna.tools.audit import poll_batch
+from pratyabhijna.tools.audit import poll_batch, process_results, AUDIT_REVISION
 
 
 async def test_poll_batch_returns_when_status_ended(monkeypatch):
@@ -308,3 +308,197 @@ async def test_poll_batch_returns_when_status_ended(monkeypatch):
     # Slept twice (between the three retrieve calls), not after the final one
     assert len(sleeps) == 2
     assert sleeps == [0.001, 0.001]
+
+
+# ── Task 5: process_results ──────────────────────────────────────────────────
+
+
+async def _async_iter(items):
+    """Async generator helper for mocking AsyncAnthropic's batches.results()."""
+    for item in items:
+        yield item
+
+
+async def test_process_valid_result_records_and_does_not_enqueue_thread():
+    client = MagicMock()
+    client.messages.batches.results = MagicMock(return_value=_async_iter([
+        MagicMock(
+            custom_id="audit-N1",
+            result=MagicMock(
+                type="succeeded",
+                message=MagicMock(content=[
+                    MagicMock(
+                        type="text",
+                        text='{"uuid":"N1","status":"Valid","analysis":"ok"}',
+                    )
+                ]),
+            ),
+        ),
+    ]))
+    service = MagicMock()
+    service.execute_write_query = AsyncMock()
+    queue = MagicMock()
+    queue.enqueue = AsyncMock()
+
+    results = await process_results(
+        client, "batch_abc",
+        service=service, queue=queue,
+        node_names={"N1": "node_one"},
+    )
+
+    assert results[0]["status"] == "Valid"
+    assert results[0]["uuid"] == "N1"
+    assert results[0]["name"] == "node_one"  # injected from node_names
+    assert results[0]["analysis"] == "ok"
+    queue.enqueue.assert_not_called()  # no Thread for Valid
+    # audited_at write happens once at end, regardless of verdict
+    service.execute_write_query.assert_called_once()
+
+
+async def test_process_update_result_records_with_request_field():
+    client = MagicMock()
+    client.messages.batches.results = MagicMock(return_value=_async_iter([
+        MagicMock(
+            custom_id="audit-N2",
+            result=MagicMock(
+                type="succeeded",
+                message=MagicMock(content=[
+                    MagicMock(
+                        type="text",
+                        text=(
+                            '{"uuid":"N2","status":"Update",'
+                            '"analysis":"wrong type",'
+                            '"request":"Change entity_type to Observation"}'
+                        ),
+                    )
+                ]),
+            ),
+        ),
+    ]))
+    service = MagicMock()
+    service.execute_write_query = AsyncMock()
+    queue = MagicMock()
+    queue.enqueue = AsyncMock()
+
+    results = await process_results(
+        client, "b",
+        service=service, queue=queue,
+        node_names={"N2": "thing"},
+    )
+
+    assert results[0]["status"] == "Update"
+    assert results[0]["request"] == "Change entity_type to Observation"
+    assert results[0]["name"] == "thing"
+    queue.enqueue.assert_not_called()  # Update doesn't enqueue a Thread either
+
+
+async def test_process_unfixable_result_warns_and_enqueues_thread():
+    client = MagicMock()
+    client.messages.batches.results = MagicMock(return_value=_async_iter([
+        MagicMock(
+            custom_id="audit-N3",
+            result=MagicMock(
+                type="succeeded",
+                message=MagicMock(content=[
+                    MagicMock(
+                        type="text",
+                        text=(
+                            '{"uuid":"N3","status":"Unfixable",'
+                            '"analysis":"weird and unrecoverable"}'
+                        ),
+                    )
+                ]),
+            ),
+        ),
+    ]))
+    service = MagicMock()
+    service.execute_write_query = AsyncMock()
+    queue = MagicMock()
+    queue.enqueue = AsyncMock()
+
+    results = await process_results(
+        client, "b",
+        service=service, queue=queue,
+        node_names={"N3": "weirdthing"},
+    )
+
+    assert results[0]["status"] == "Unfixable"
+    # Thread enqueued exactly once via remember (which calls queue.enqueue)
+    queue.enqueue.assert_called_once()
+    call_args = queue.enqueue.call_args
+    assert call_args.args[0] == "add_episode"
+    payload = call_args.args[1]
+    assert payload["memory_type"] == "Thread"
+    assert payload["source"] == "audit"
+    assert "N3" in payload["content"]
+    assert "weirdthing" in payload["content"]
+    assert "weird and unrecoverable" in payload["content"]
+
+
+async def test_process_errored_result_records_status_error():
+    client = MagicMock()
+    client.messages.batches.results = MagicMock(return_value=_async_iter([
+        MagicMock(
+            custom_id="audit-N4",
+            result=MagicMock(
+                type="errored",
+                error="rate limited",
+            ),
+        ),
+    ]))
+    service = MagicMock()
+    service.execute_write_query = AsyncMock()
+    queue = MagicMock()
+    queue.enqueue = AsyncMock()
+
+    results = await process_results(
+        client, "b",
+        service=service, queue=queue,
+        node_names={"N4": "name4"},
+    )
+
+    assert results[0]["status"] == "Error"
+    assert results[0]["uuid"] == "N4"
+    assert results[0]["name"] == "name4"
+    assert "rate limited" in results[0]["error"]
+    # Errored requests do NOT count toward audited_at stamping
+    service.execute_write_query.assert_not_called()
+    queue.enqueue.assert_not_called()
+
+
+async def test_audited_at_stamped_for_all_succeeded_results_in_one_call():
+    client = MagicMock()
+    client.messages.batches.results = MagicMock(return_value=_async_iter([
+        MagicMock(custom_id="audit-N1", result=MagicMock(
+            type="succeeded",
+            message=MagicMock(content=[MagicMock(
+                type="text",
+                text='{"uuid":"N1","status":"Valid","analysis":"ok"}',
+            )]),
+        )),
+        MagicMock(custom_id="audit-N2", result=MagicMock(
+            type="succeeded",
+            message=MagicMock(content=[MagicMock(
+                type="text",
+                text='{"uuid":"N2","status":"Valid","analysis":"ok"}',
+            )]),
+        )),
+    ]))
+    service = MagicMock()
+    service.execute_write_query = AsyncMock()
+    queue = MagicMock()
+
+    await process_results(
+        client, "b",
+        service=service, queue=queue,
+        node_names={"N1": "a", "N2": "b"},
+    )
+
+    # Single batched write covering both UUIDs
+    service.execute_write_query.assert_called_once()
+    cypher_arg, params_arg = service.execute_write_query.call_args.args
+    assert "UNWIND $uuids" in cypher_arg
+    assert sorted(params_arg["uuids"]) == ["N1", "N2"]
+    assert params_arg["rev"] == AUDIT_REVISION
+    # `now` is an ISO timestamp string
+    assert "T" in params_arg["now"]
