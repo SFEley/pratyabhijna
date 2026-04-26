@@ -319,7 +319,10 @@ async def process_results(
     outcomes: list[dict] = []
     audited_uuids: list[str] = []
 
-    async for result in client.messages.batches.results(batch_id):
+    # AsyncBatches.results() returns a coroutine that resolves to an async
+    # iterator — must await before iterating.
+    results_iter = await client.messages.batches.results(batch_id)
+    async for result in results_iter:
         if result.result.type != "succeeded":
             error_str = str(getattr(result.result, "error", "unknown"))
             uuid = _uuid_from_custom_id(result.custom_id)

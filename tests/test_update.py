@@ -765,7 +765,7 @@ async def test_process_update_results_failed_batch_entry_returns_error_outcome()
     via _failed_outcome rather than crashing or skipping."""
     from pratyabhijna.tools.update import process_update_results
     client = MagicMock()
-    client.messages.batches.results = MagicMock(return_value=_async_iter([
+    client.messages.batches.results = AsyncMock(return_value=_async_iter([
         MagicMock(
             custom_id="update-N1",
             result=MagicMock(type="errored", error="rate limited"),

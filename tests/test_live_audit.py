@@ -57,9 +57,9 @@ async def live_service(tmp_path_factory):
                           summary: 'Third test entity.',
                           group_id: $group, created_at: datetime($now)})
         """,
-        uuid_a="audit-live-aaaaaaaaaaaaaaaaaaaaaaaa-1111",
-        uuid_b="audit-live-bbbbbbbbbbbbbbbbbbbbbbbb-2222",
-        uuid_c="audit-live-cccccccccccccccccccccccc-3333",
+        uuid_a="aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+        uuid_b="bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb",
+        uuid_c="cccccccc-cccc-4ccc-cccc-cccccccccccc",
         group=config.subject_name,
         now=now,
     )
@@ -86,9 +86,9 @@ async def test_audit_three_node_cohort_against_real_batches_api(
     import anthropic
 
     cohort = [
-        "audit-live-aaaaaaaaaaaaaaaaaaaaaaaa-1111",
-        "audit-live-bbbbbbbbbbbbbbbbbbbbbbbb-2222",
-        "audit-live-cccccccccccccccccccccccc-3333",
+        "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+        "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb",
+        "cccccccc-cccc-4ccc-cccc-cccccccccccc",
     ]
     api_key = live_service.config.llm.api_key or None
     client = anthropic.AsyncAnthropic(api_key=api_key, timeout=300.0)

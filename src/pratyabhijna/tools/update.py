@@ -266,7 +266,10 @@ async def process_update_results(
     """Iterate batched turn-1 results. Single-turn cases handled inline; reads /
     multi-tool cases drop into `_sync_continue`."""
     outcomes: list[dict] = []
-    async for result in client.messages.batches.results(batch_id):
+    # AsyncBatches.results() returns a coroutine that resolves to an async
+    # iterator — must await before iterating.
+    results_iter = await client.messages.batches.results(batch_id)
+    async for result in results_iter:
         custom_id = result.custom_id
         meta = request_lookup.get(custom_id, {})
         request_text = meta.get("request_text", "")

@@ -321,7 +321,7 @@ async def _async_iter(items):
 
 async def test_process_valid_result_records_and_does_not_enqueue_thread():
     client = MagicMock()
-    client.messages.batches.results = MagicMock(return_value=_async_iter([
+    client.messages.batches.results = AsyncMock(return_value=_async_iter([
         MagicMock(
             custom_id="audit-N1",
             result=MagicMock(
@@ -357,7 +357,7 @@ async def test_process_valid_result_records_and_does_not_enqueue_thread():
 
 async def test_process_update_result_records_with_request_field():
     client = MagicMock()
-    client.messages.batches.results = MagicMock(return_value=_async_iter([
+    client.messages.batches.results = AsyncMock(return_value=_async_iter([
         MagicMock(
             custom_id="audit-N2",
             result=MagicMock(
@@ -394,7 +394,7 @@ async def test_process_update_result_records_with_request_field():
 
 async def test_process_unfixable_result_warns_and_enqueues_thread():
     client = MagicMock()
-    client.messages.batches.results = MagicMock(return_value=_async_iter([
+    client.messages.batches.results = AsyncMock(return_value=_async_iter([
         MagicMock(
             custom_id="audit-N3",
             result=MagicMock(
@@ -437,7 +437,7 @@ async def test_process_unfixable_result_warns_and_enqueues_thread():
 
 async def test_process_errored_result_records_status_error():
     client = MagicMock()
-    client.messages.batches.results = MagicMock(return_value=_async_iter([
+    client.messages.batches.results = AsyncMock(return_value=_async_iter([
         MagicMock(
             custom_id="audit-N4",
             result=MagicMock(
@@ -468,7 +468,7 @@ async def test_process_errored_result_records_status_error():
 
 async def test_audited_at_stamped_for_all_succeeded_results_in_one_call():
     client = MagicMock()
-    client.messages.batches.results = MagicMock(return_value=_async_iter([
+    client.messages.batches.results = AsyncMock(return_value=_async_iter([
         MagicMock(custom_id="audit-N1", result=MagicMock(
             type="succeeded",
             message=MagicMock(content=[MagicMock(
