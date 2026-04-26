@@ -1,10 +1,14 @@
 """Audit sub-agent: batch-evaluate graph nodes for hygiene issues."""
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 
+from pratyabhijna.log import get_logger
 from pratyabhijna.tools.query import query as _call_query
+
+_log = get_logger(__name__)
 
 AUDIT_REVISION = 1
 """Bumped by hand when audit evaluation logic changes; nodes audited at lower
@@ -250,3 +254,41 @@ def sort_requests_by_episodes(requests: list[dict]) -> list[dict]:
 def strip_internal_keys(requests: list[dict]) -> list[dict]:
     """Remove `_episode_uuids` (used only for client-side sorting) before submit."""
     return [{k: v for k, v in r.items() if not k.startswith("_")} for r in requests]
+
+
+async def submit_audit_batch(client, requests: list[dict]) -> str:
+    """Sort by episode, strip internal keys, submit. Returns batch ID.
+
+    Sorting clusters same-episode requests adjacently to maximize cache-hit
+    probability under the Batches API (no ordering SLA, but adjacency helps).
+    """
+    sorted_reqs = sort_requests_by_episodes(requests)
+    cleaned = strip_internal_keys(sorted_reqs)
+    _log.info("Submitting audit batch with %d requests", len(cleaned))
+    batch = await client.messages.batches.create(requests=cleaned)
+    _log.info("Batch submitted: id=%s", batch.id)
+    return batch.id
+
+
+async def poll_batch(client, batch_id: str, *, interval: float = 60.0):
+    """Poll until processing_status='ended'. INFO-log progress on each poll
+    that's still in progress; INFO-log a summary on completion."""
+    while True:
+        batch = await client.messages.batches.retrieve(batch_id)
+        if batch.processing_status == "ended":
+            _log.info(
+                "Batch %s ended: succeeded=%d errored=%d",
+                batch_id,
+                batch.request_counts.succeeded,
+                batch.request_counts.errored,
+            )
+            return batch
+        _log.info(
+            "Batch %s status=%s processing=%d succeeded=%d errored=%d",
+            batch_id,
+            batch.processing_status,
+            batch.request_counts.processing,
+            batch.request_counts.succeeded,
+            batch.request_counts.errored,
+        )
+        await asyncio.sleep(interval)

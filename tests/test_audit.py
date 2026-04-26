@@ -250,3 +250,61 @@ async def test_resolve_returns_empty_on_refusal(monkeypatch):
     monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
     uuids = await resolve_node_list("find anything", service=MagicMock())
     assert uuids == []
+
+
+from unittest.mock import AsyncMock
+from pratyabhijna.tools.audit import submit_audit_batch
+
+
+async def test_submit_audit_batch_strips_internal_keys_and_returns_id():
+    client = MagicMock()
+    client.messages.batches.create = AsyncMock(return_value=MagicMock(id="batch_abc"))
+    requests = [
+        {"custom_id": "n1", "_episode_uuids": ["E2"], "params": {"model": "x"}},
+        {"custom_id": "n2", "_episode_uuids": ["E1"], "params": {"model": "x"}},
+    ]
+    batch_id = await submit_audit_batch(client, requests)
+    assert batch_id == "batch_abc"
+
+    submitted = client.messages.batches.create.call_args.kwargs["requests"]
+    # Internal sort-key fields must be stripped
+    assert all("_episode_uuids" not in r for r in submitted)
+    # Sort-by-episode runs before strip — n2 (E1) should come before n1 (E2)
+    assert submitted[0]["custom_id"] == "n2"
+    assert submitted[1]["custom_id"] == "n1"
+
+
+from pratyabhijna.tools.audit import poll_batch
+
+
+async def test_poll_batch_returns_when_status_ended(monkeypatch):
+    """poll_batch returns the final batch object once processing_status == 'ended'."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr("asyncio.sleep", fake_sleep)
+
+    client = MagicMock()
+    states = [
+        MagicMock(
+            processing_status="in_progress",
+            request_counts=MagicMock(processing=5, succeeded=0, errored=0),
+        ),
+        MagicMock(
+            processing_status="in_progress",
+            request_counts=MagicMock(processing=2, succeeded=3, errored=0),
+        ),
+        MagicMock(
+            processing_status="ended",
+            request_counts=MagicMock(processing=0, succeeded=5, errored=0),
+        ),
+    ]
+    client.messages.batches.retrieve = AsyncMock(side_effect=states)
+
+    final = await poll_batch(client, "batch_abc", interval=0.001)
+    assert final.processing_status == "ended"
+    # Slept twice (between the three retrieve calls), not after the final one
+    assert len(sleeps) == 2
+    assert sleeps == [0.001, 0.001]
