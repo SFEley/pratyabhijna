@@ -17,6 +17,10 @@ Usage:
     python -m pratyabhijna deadletters show ID   Show full detail for one
     python -m pratyabhijna deadletters retry ID  Reset to pending (or --all)
     python -m pratyabhijna deadletters purge ID  Delete permanently (or --all)
+
+    python -m pratyabhijna update DESCRIPTION [--cache]
+                                                 Run a maintenance update
+                                                 (operator-only, off-MCP).
 """
 
 from __future__ import annotations
@@ -379,6 +383,83 @@ def run_tool(config: PratyabhijnaConfig, action: str, argv: list[str]) -> int:
     return 0
 
 
+def _parse_update_args(argv: list[str]) -> tuple[str, bool] | None:
+    """Parse ``update DESCRIPTION [--cache]``.
+
+    Returns (description, cache) or None on usage error.
+    """
+    description: str | None = None
+    cache = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--cache":
+            cache = True
+            i += 1
+        elif not a.startswith("--") and description is None:
+            description = a
+            i += 1
+        else:
+            return None
+    if description is None or not description.strip():
+        return None
+    return description, cache
+
+
+def run_update(config: PratyabhijnaConfig, argv: list[str]) -> int:
+    """Run a single maintenance update via the sub-agent.
+
+    Outputs a JSON file at ``{log_dir}/outputs/output-{ISO}.json`` with
+    the full record of the run. Prints a one-line summary to stdout.
+    """
+    import anyio
+
+    parsed = _parse_update_args(argv)
+    if parsed is None:
+        print(
+            'Usage: python -m pratyabhijna update "DESCRIPTION" [--cache]',
+            file=sys.stderr,
+        )
+        return 2
+    description, cache = parsed
+
+    from pathlib import Path
+
+    from pratyabhijna.output_log import write_output_file
+    from pratyabhijna.tools.update import update as _update
+
+    started_at = datetime.now(timezone.utc)
+
+    async def _run() -> dict:
+        service = PratyabhijnaService(config)
+        await service.start()
+        try:
+            return await _update(service, description, cache=cache)
+        finally:
+            await service.stop()
+
+    result = anyio.run(_run)
+    completed_at = datetime.now(timezone.utc)
+
+    output_path = write_output_file(
+        log_dir=Path(config.log_dir),
+        group_id=config.subject_name,
+        started_at=started_at,
+        completed_at=completed_at,
+        cache_requested=cache,
+        updates=[result],
+    )
+
+    # One-line summary on stdout. Errors (non-zero exit) on Error/Rejected
+    # so shell pipelines can branch on it.
+    summary = f"{result['status']}: {result['response']} [output: {output_path}]"
+    if result["status"] in ("Error", "Rejected"):
+        print(summary, file=sys.stderr)
+        return 1
+    print(summary)
+    return 0
+
+
 def run_synthesis_cmd(config: PratyabhijnaConfig, argv: list[str]) -> int:
     """Enqueue a synthesis task, optionally delayed by N minutes."""
     import anyio
@@ -434,6 +515,9 @@ Commands:
   recall QUERY [--type T] [--limit N]  Graph search (default limit: 5)
               [--time-range R]
 
+  update DESCRIPTION [--cache]    Run a maintenance update
+                                  (operator-only, off-MCP)
+
   deadletters list                Show dead-lettered tasks
   deadletters show ID             Full detail for one task
   deadletters retry (ID|--all)    Reset to pending
@@ -460,6 +544,9 @@ def main():
 
     if len(sys.argv) > 1 and sys.argv[1] == "deadletters":
         sys.exit(run_deadletters(config, sys.argv[2:]))
+
+    if len(sys.argv) > 1 and sys.argv[1] == "update":
+        sys.exit(run_update(config, sys.argv[2:]))
 
     if not config.subject_name:
         print(

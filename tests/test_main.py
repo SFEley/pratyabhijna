@@ -140,6 +140,56 @@ class TestCLIDispatch:
         assert exc.value.code == 0
         assert mock_run_tool.call_args.args[1] == action
 
+    def test_update_subcommand_dispatches_to_run_update(self):
+        """``update DESCRIPTION`` routes to run_update."""
+        from pratyabhijna.__main__ import main
+
+        with patch.object(sys, "argv", ["pratyabhijna", "update", "fix things"]), \
+             patch("pratyabhijna.__main__.run_update", return_value=0) as mock_update, \
+             patch("pratyabhijna.__main__.configure_logging"), \
+             patch("pratyabhijna.__main__.PratyabhijnaConfig") as mock_config_cls, \
+             pytest.raises(SystemExit) as exc:
+            mock_config_cls.from_env.return_value = MagicMock()
+            main()
+        assert exc.value.code == 0
+        mock_update.assert_called_once()
+        # The argv passed to run_update is everything after "update".
+        assert mock_update.call_args.args[1] == ["fix things"]
+
+
+class TestParseUpdateArgs:
+    def test_description_only(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args(["fix the orphan Saga"]) == ("fix the orphan Saga", False)
+
+    def test_with_cache_flag(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args(["fix things", "--cache"]) == ("fix things", True)
+
+    def test_cache_flag_before_description(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args(["--cache", "fix things"]) == ("fix things", True)
+
+    def test_missing_description_returns_none(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args(["--cache"]) is None
+        assert _parse_update_args([]) is None
+
+    def test_empty_description_returns_none(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args([""]) is None
+        assert _parse_update_args(["   "]) is None
+
+    def test_unknown_flag_returns_none(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args(["x", "--nope"]) is None
+
 
 # ---------------------------------------------------------------------------
 # _parse_recall_args
