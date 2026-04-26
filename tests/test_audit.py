@@ -188,10 +188,52 @@ async def test_resolve_uuid_list_skips_query():
     assert uuids == ["550e8400-e29b-41d4-a716-446655440000"]
 
 
-async def test_resolve_natural_language_extracts_uuids_from_query_response(monkeypatch):
+async def test_resolve_augmented_prompt_asks_for_uuid_prefix(monkeypatch):
+    """The prompt sent to the query agent must instruct it to lead with UUIDs,
+    one per line, before any prose."""
+    seen: dict[str, str] = {}
+
     async def fake_query(service, request, **kwargs):
-        # The augmented prompt should be passed through
-        assert "find all Position nodes" in request
+        seen["request"] = request
+        return {"response": "", "cypher_log": [], "refused": False, "iterations": 1}
+
+    monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
+    await resolve_node_list("find all Position nodes", service=MagicMock())
+    assert "find all Position nodes" in seen["request"]
+    # Contract pinned: leading UUIDs, one per line, nothing before
+    lower = seen["request"].lower()
+    assert "one" in lower and "per line" in lower
+    assert "uuid" in lower
+
+
+async def test_resolve_extracts_leading_uuid_block_only(monkeypatch):
+    """Only the prefix of UUID-only lines is the cohort. Once a non-UUID line
+    appears, parsing stops and any later UUIDs are ignored."""
+    async def fake_query(service, request, **kwargs):
+        return {
+            "response": (
+                "550e8400-e29b-41d4-a716-446655440000\n"
+                "660e8400-e29b-41d4-a716-446655440001\n"
+                "\n"
+                "I considered 770e8400-e29b-41d4-a716-446655440002 "
+                "but rejected it as out of scope."
+            ),
+            "cypher_log": [],
+            "refused": False,
+            "iterations": 1,
+        }
+    monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
+    uuids = await resolve_node_list("find Position nodes", service=MagicMock())
+    assert uuids == [
+        "550e8400-e29b-41d4-a716-446655440000",
+        "660e8400-e29b-41d4-a716-446655440001",
+    ]
+
+
+async def test_resolve_returns_empty_when_uuids_only_appear_in_prose(monkeypatch):
+    """The old permissive regex would have returned the UUID. The strict parser
+    requires a leading UUID line and refuses to fish UUIDs out of prose."""
+    async def fake_query(service, request, **kwargs):
         return {
             "response": (
                 "Found 2 Position nodes: "
@@ -203,21 +245,48 @@ async def test_resolve_natural_language_extracts_uuids_from_query_response(monke
             "iterations": 1,
         }
     monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
-    service = MagicMock()
-    uuids = await resolve_node_list("find all Position nodes", service=service)
-    assert uuids == [
-        "550e8400-e29b-41d4-a716-446655440000",
-        "660e8400-e29b-41d4-a716-446655440001",
-    ]
+    uuids = await resolve_node_list("any", service=MagicMock())
+    assert uuids == []
 
 
-async def test_resolve_deduplicates_uuids(monkeypatch):
-    """If the query response mentions a UUID twice, return it once."""
+async def test_resolve_logs_warning_when_response_has_trailing_prose(
+    monkeypatch, caplog,
+):
+    """When the agent appends prose after the UUID list, log it at WARNING so
+    the operator can see what the agent had to say."""
+    import logging
+
     async def fake_query(service, request, **kwargs):
         return {
             "response": (
-                "Node 550e8400-e29b-41d4-a716-446655440000 exists. "
-                "(550e8400-e29b-41d4-a716-446655440000 again, for emphasis.)"
+                "550e8400-e29b-41d4-a716-446655440000\n"
+                "Note: I excluded one node because it was already audited."
+            ),
+            "cypher_log": [],
+            "refused": False,
+            "iterations": 1,
+        }
+    monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
+
+    with caplog.at_level(logging.WARNING, logger="pratyabhijna.tools.audit"):
+        uuids = await resolve_node_list("any", service=MagicMock())
+    assert uuids == ["550e8400-e29b-41d4-a716-446655440000"]
+    # The trailing prose lands in a WARNING record
+    warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "audit" in r.name
+    ]
+    assert warnings, "expected a WARNING for trailing prose"
+    assert any("excluded one node" in r.getMessage() for r in warnings)
+
+
+async def test_resolve_deduplicates_uuids(monkeypatch):
+    """If the agent lists the same UUID twice in the leading block, return it once."""
+    async def fake_query(service, request, **kwargs):
+        return {
+            "response": (
+                "550e8400-e29b-41d4-a716-446655440000\n"
+                "550e8400-e29b-41d4-a716-446655440000\n"
             ),
             "cypher_log": [],
             "refused": False,
@@ -433,6 +502,81 @@ async def test_process_unfixable_result_warns_and_enqueues_thread():
     assert "N3" in payload["content"]
     assert "weirdthing" in payload["content"]
     assert "weird and unrecoverable" in payload["content"]
+
+
+async def test_audit_instructions_pin_uuid_to_input_node():
+    """The audit instructions must explicitly tell the model to echo the same
+    UUID it received — otherwise it might pick a UUID from recall results or
+    edges, which silently breaks audited_at stamping and downstream update."""
+    from pratyabhijna.tools.audit import AUDIT_INSTRUCTIONS
+
+    text = AUDIT_INSTRUCTIONS.lower()
+    assert "uuid" in text
+    # Some phrasing that pins the response uuid to the provided node uuid
+    assert (
+        ("must" in text and "match" in text)
+        or "exactly" in text
+        or "echo" in text
+    ), f"AUDIT_INSTRUCTIONS does not pin the response uuid: {AUDIT_INSTRUCTIONS!r}"
+
+
+async def test_process_uuid_mismatch_records_error_and_skips_stamp(caplog):
+    """If the model returns a UUID that doesn't match the one we sent, treat
+    the response as a failure: log an ERROR with both UUIDs, record an Error
+    outcome carrying the trustworthy custom_id-derived UUID, and skip the
+    audited_at stamp for that node."""
+    import logging
+
+    client = MagicMock()
+    client.messages.batches.results = AsyncMock(return_value=_async_iter([
+        MagicMock(
+            custom_id="audit-N1",  # we sent UUID N1
+            result=MagicMock(
+                type="succeeded",
+                message=MagicMock(content=[
+                    MagicMock(
+                        type="text",
+                        # ...but the model echoed a different UUID (e.g. one
+                        # it picked up from a recall result or an edge target)
+                        text='{"uuid":"WRONG","status":"Valid","analysis":"ok"}',
+                    )
+                ]),
+            ),
+        ),
+    ]))
+    service = MagicMock()
+    service.execute_write_query = AsyncMock()
+    queue = MagicMock()
+    queue.enqueue = AsyncMock()
+
+    with caplog.at_level(logging.ERROR, logger="pratyabhijna.tools.audit"):
+        results = await process_results(
+            client, "b",
+            service=service, queue=queue,
+            node_names={"N1": "node_one"},
+        )
+
+    # Outcome records the failure with the trustworthy UUID (from custom_id)
+    assert len(results) == 1
+    assert results[0]["status"] == "Error"
+    assert results[0]["uuid"] == "N1"
+    assert results[0]["name"] == "node_one"
+    # Error message should mention both UUIDs to aid triage
+    err = results[0].get("error", "")
+    assert "N1" in err and "WRONG" in err
+
+    # The bogus UUID does NOT get stamped — we couldn't confidently audit it
+    service.execute_write_query.assert_not_called()
+    queue.enqueue.assert_not_called()
+
+    # An ERROR-level log was emitted
+    errors = [
+        r for r in caplog.records
+        if r.levelno == logging.ERROR and "audit" in r.name
+    ]
+    assert errors, "expected an ERROR log record on uuid mismatch"
+    msg = " ".join(r.getMessage() for r in errors)
+    assert "N1" in msg and "WRONG" in msg
 
 
 async def test_process_errored_result_records_status_error():

@@ -44,26 +44,43 @@ async def resolve_node_list(input_str: str, *, service) -> list[str]:
     """Resolve an audit input string into a list of node UUIDs.
 
     If the input is whitespace-separated UUIDs, return them directly.
-    Otherwise, dispatch to the natural-language `query` sub-agent and extract
-    UUIDs from its response text. Order preserved, duplicates removed.
+    Otherwise, dispatch to the natural-language `query` sub-agent and parse
+    its response strictly: only the leading block of UUID-only lines counts
+    as the cohort. Once a non-UUID line appears, parsing stops and the
+    remainder is logged at WARNING. Order preserved, duplicates removed.
     """
     if is_uuid_list(input_str):
         return parse_uuid_list(input_str)
     augmented = (
         f"{input_str}\n\n"
-        "List the matching node UUIDs in your response."
+        "Begin your response with the matching node UUIDs, one UUID per line, "
+        "and nothing else before them. After the UUID list you may add prose "
+        "explanation if useful, but only the leading block is read; anything "
+        "after the first non-UUID line is ignored."
     )
     result = await _call_query(service, augmented)
+    response = result.get("response", "") or ""
     seen: set[str] = set()
     uuids: list[str] = []
-    # Extraction is text-only — any UUID-shaped string in the agent's prose is
-    # accepted, including ones the agent mentioned in refusal or error contexts.
-    # Tasks 4-5 should treat the returned list as candidates, not confirmed matches.
-    for match in UUID_RE.findall(result.get("response", "")):
-        normalized = match.lower()
+    lines = response.splitlines()
+    cutoff = 0
+    for cutoff, line in enumerate(lines):
+        token = line.strip()
+        if not token:
+            # Blank line ends the leading block too — anything after is prose.
+            break
+        if not UUID_RE.fullmatch(token):
+            break
+        normalized = token.lower()
         if normalized not in seen:
             seen.add(normalized)
             uuids.append(normalized)
+    else:
+        # Loop completed without break — every line was a UUID, no tail.
+        cutoff = len(lines)
+    tail = "\n".join(lines[cutoff:]).strip()
+    if tail:
+        _log.warning("Trailing prose from query agent ignored: %s", tail)
     return uuids
 
 
@@ -100,6 +117,11 @@ For the node you receive, decide one of three verdicts:
 
 Always provide an `analysis` field (1-3 sentences). Always respond as JSON
 matching the schema — no prose outside the JSON.
+
+The `uuid` field in your response must exactly match the UUID of the node
+you received in the user message. Do not substitute a UUID from the recall
+results, an edge target, or anywhere else — only the audit-target node's
+own UUID. Mismatches are treated as errors.
 
 You will receive: (1) the node's source episode(s), (2) recall results on
 the node's name (up to 5), (3) the node itself with properties and edges.
@@ -340,6 +362,29 @@ async def process_results(
             b.text for b in result.result.message.content if b.type == "text"
         )
         parsed = json.loads(text)
+        expected_uuid = _uuid_from_custom_id(result.custom_id)
+        # Belt-and-braces against model echoing a wrong UUID (e.g. one from
+        # recall results or an edge target). The instructions pin this, but
+        # if the model misbehaves we want to see it, not silently miss the
+        # audited_at stamp on the original node.
+        if parsed.get("uuid") != expected_uuid:
+            _log.error(
+                "Audit response UUID mismatch: expected=%s got=%s — "
+                "treating as error, original node will not be stamped",
+                expected_uuid,
+                parsed.get("uuid"),
+            )
+            outcomes.append({
+                "custom_id": result.custom_id,
+                "uuid": expected_uuid,
+                "name": node_names.get(expected_uuid, ""),
+                "status": "Error",
+                "error": (
+                    f"Audit response UUID mismatch: expected={expected_uuid} "
+                    f"got={parsed.get('uuid')}"
+                ),
+            })
+            continue
         # Inject name from input node (model no longer echoes it back)
         parsed["name"] = node_names.get(parsed["uuid"], "")
         outcomes.append(parsed)
