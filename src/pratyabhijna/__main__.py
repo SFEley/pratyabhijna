@@ -19,7 +19,9 @@ Usage:
     python -m pratyabhijna deadletters purge ID  Delete permanently (or --all)
 
     python -m pratyabhijna update DESCRIPTION [--cache]
-                                                 Run a maintenance update
+                                                 Run a maintenance update (single)
+                                                 (operator-only, off-MCP).
+    python -m pratyabhijna update --input PATH   Run batched updates from audit JSON
                                                  (operator-only, off-MCP).
 """
 
@@ -383,54 +385,112 @@ def run_tool(config: PratyabhijnaConfig, action: str, argv: list[str]) -> int:
     return 0
 
 
-def _parse_update_args(argv: list[str]) -> tuple[str, bool] | None:
-    """Parse ``update DESCRIPTION [--cache]``.
+def _parse_update_args(argv: list[str]) -> tuple[str | None, bool, str | None] | None:
+    """Parse ``update DESCRIPTION [--cache]`` or ``update --input PATH``.
 
-    Returns (description, cache) or None on usage error.
+    Returns (description, cache, input_path) or None on usage error.
+    Exactly one of description or input_path must be provided.
     """
     description: str | None = None
     cache = False
+    input_path: str | None = None
     i = 0
     while i < len(argv):
         a = argv[i]
         if a == "--cache":
             cache = True
             i += 1
+        elif a == "--input" and i + 1 < len(argv):
+            input_path = argv[i + 1]
+            i += 2
         elif not a.startswith("--") and description is None:
             description = a
             i += 1
         else:
             return None
-    if description is None or not description.strip():
+    # Exactly one of description / input_path
+    if (description is None) == (input_path is None):
         return None
-    return description, cache
+    if description is not None and not description.strip():
+        return None
+    return description, cache, input_path
 
 
 def run_update(config: PratyabhijnaConfig, argv: list[str]) -> int:
-    """Run a single maintenance update via the sub-agent.
-
-    Outputs a JSON file at ``{log_dir}/outputs/output-{ISO}.json`` with
-    the full record of the run. Prints a one-line summary to stdout.
-    """
+    """Run a maintenance update — single description or batched from audit JSON."""
     import anyio
 
     parsed = _parse_update_args(argv)
     if parsed is None:
         print(
-            'Usage: python -m pratyabhijna update "DESCRIPTION" [--cache]',
+            'Usage: python -m pratyabhijna update "DESCRIPTION" [--cache]\n'
+            '   or: python -m pratyabhijna update --input PATH',
             file=sys.stderr,
         )
         return 2
-    description, cache = parsed
+    description, cache, input_path = parsed
 
     from pathlib import Path
 
     from pratyabhijna.output_log import write_output_file
-    from pratyabhijna.tools.update import update as _update
 
     started_at = datetime.now(timezone.utc)
 
-    async def _run() -> dict:
+    if input_path is not None:
+        # Batched-from-audit path
+        from pratyabhijna.tools.update import update_from_audit_file
+
+        async def _run() -> list[dict]:
+            service = PratyabhijnaService(config)
+            await service.start()
+            try:
+                return await update_from_audit_file(input_path, service=service)
+            finally:
+                await service.stop()
+
+        try:
+            results = anyio.run(_run)
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            log.exception("update --input failed before any results")
+            results = [{
+                "status": "Error",
+                "request": f"--input {input_path}",
+                "response": err,
+                "guids": None, "count": 0, "queries": [],
+                "warnings": [], "errors": [err],
+            }]
+        completed_at = datetime.now(timezone.utc)
+
+        output_path = write_output_file(
+            log_dir=Path(config.log_dir),
+            group_id=config.subject_name,
+            started_at=started_at,
+            completed_at=completed_at,
+            cache_requested=False,
+            updates=results,
+        )
+
+        # Tally
+        counts: dict[str, int] = {"Updated": 0, "Deleted": 0, "Rejected": 0, "Error": 0}
+        for r in results:
+            s = r.get("status", "Error")
+            counts[s] = counts.get(s, 0) + 1
+        summary = (
+            f"Update batch complete: {counts['Updated']} Updated, "
+            f"{counts['Deleted']} Deleted, {counts['Rejected']} Rejected, "
+            f"{counts['Error']} Errored [output: {output_path}]"
+        )
+        if counts["Error"] > 0:
+            print(summary, file=sys.stderr)
+            return 1
+        print(summary)
+        return 0
+
+    # Existing single-description path (unchanged behavior)
+    from pratyabhijna.tools.update import update as _update
+
+    async def _run_single() -> dict:
         service = PratyabhijnaService(config)
         await service.start()
         try:
@@ -439,7 +499,7 @@ def run_update(config: PratyabhijnaConfig, argv: list[str]) -> int:
             await service.stop()
 
     try:
-        result = anyio.run(_run)
+        result = anyio.run(_run_single)
     except Exception as exc:
         # Infra failure (service start, Neo4j down, API timeout) bubbles
         # past the inner update() try/finally. Convert to an Error record
@@ -673,7 +733,8 @@ Commands:
   recall QUERY [--type T] [--limit N]  Graph search (default limit: 5)
               [--time-range R]
 
-  update DESCRIPTION [--cache]    Run a maintenance update
+  update DESCRIPTION [--cache]    Run a maintenance update (single)
+  update --input PATH             Run batched updates from an audit JSON file
                                   (operator-only, off-MCP)
 
   audit INPUT [--guidance G]      Run a node audit batch via the audit sub-agent

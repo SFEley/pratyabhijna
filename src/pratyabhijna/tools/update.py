@@ -24,12 +24,19 @@ makes the agent more confident without making it more informed.
 
 from __future__ import annotations
 
+import json as _json
 import re
+from pathlib import Path
 from string import Template
 from typing import TYPE_CHECKING, Any
 
 from pratyabhijna.log import get_logger
 from pratyabhijna.synthesis import read_identity_files
+from pratyabhijna.tools.audit import (
+    poll_batch,
+    submit_audit_batch as _submit_batch,
+)
+from pratyabhijna.tools.recall import recall
 
 if TYPE_CHECKING:
     from pratyabhijna.service import PratyabhijnaService
@@ -103,6 +110,470 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
 ]
+
+
+# --- Batch update instructions and request builder ---
+
+UPDATE_INSTRUCTIONS = """\
+You will receive a single node from your knowledge graph along with a request
+to fix a hygiene issue identified by the audit pass. You have two tools:
+
+- execute_cypher_read: query the graph for additional context if needed
+- execute_cypher_write: apply the change
+
+Most updates can be expressed as a single execute_cypher_write call given the
+node context already provided in this prompt. Use execute_cypher_read only if
+you genuinely need information beyond what's already here.
+
+When done, respond briefly summarizing what changed (or why no change was made).
+"""
+
+
+def build_update_request(
+    *,
+    custom_id: str,
+    node: dict,
+    episodes: list[dict],
+    recall_results: dict,
+    request_text: str,
+    soul: str,
+    identity: str,
+    model: str,
+    max_tokens: int = 8192,
+) -> dict:
+    """Build a single Anthropic Messages.batches request for one update.
+
+    Mirrors the audit batch request structure (same SOUL+IDENTITY + episode
+    cache breakpoints) so the prompt cache hits across audit and update runs.
+    Adds the audit's `request` text as a final content block in the user
+    message, and exposes the Cypher tools.
+
+    Note: uses `audit_model` (same as the audit pass) to preserve cache
+    continuity across the audit→update pipeline. Using a different model
+    here would defeat the cache.
+    """
+    from pratyabhijna.tools.audit import build_system_prompt, build_user_message
+
+    user_msg = build_user_message(
+        node=node,
+        episodes=episodes,
+        recall_results=recall_results,
+    )
+    user_msg["content"].append({
+        "type": "text",
+        "text": f"# Update request\n\n{request_text}",
+    })
+    return {
+        "custom_id": custom_id,
+        "params": {
+            "model": model,
+            "max_tokens": max_tokens,
+            "system": build_system_prompt(
+                soul=soul, identity=identity,
+                instructions=UPDATE_INSTRUCTIONS,
+            ),
+            "messages": [user_msg],
+            "tools": TOOL_SCHEMAS,
+        },
+        "_episode_uuids": [ep["uuid"] for ep in episodes],
+    }
+
+
+# --- Batch update orchestration ---
+
+
+async def update_from_audit_file(
+    audit_path: str | Path,
+    *,
+    service,
+    client=None,
+) -> list[dict]:
+    """Process Update-status entries from an audit JSON file via batched turn 1.
+
+    Filters audit results to status="Update", builds batch requests with the
+    same partial-bootstrap system prompt + tools as a fresh update agent,
+    submits the batch, and post-processes responses (executing single-turn
+    writes client-side or dropping into sync continuation for multi-turn).
+
+    Returns a list of per-update dicts in the same shape as `update()`.
+    """
+    from pratyabhijna.tools.audit import _entity_to_dict, _episode_to_dict
+
+    audit_data = _json.loads(Path(audit_path).read_text())
+    update_entries = [
+        r for r in audit_data["results"] if r.get("status") == "Update"
+    ]
+    if not update_entries:
+        _log.info("No Update-status entries in %s — nothing to do", audit_path)
+        return []
+
+    close_client = client is None
+    if client is None:
+        import anthropic
+        api_key = service.config.llm.api_key or None
+        client = anthropic.AsyncAnthropic(api_key=api_key, timeout=300.0)
+
+    try:
+        tiers = read_identity_files(service.config.resources.repo_path)
+        soul = tiers.get("soul") or ""
+        identity = tiers.get("identity") or ""
+        # Use the same audit_model as the audit run — cache continuity.
+        # (Audit and update share the partial-bootstrap prefix.)
+        model = service.config.llm.audit_model
+
+        requests: list[dict] = []
+        request_lookup: dict[str, dict] = {}
+        for entry in update_entries:
+            uuid = entry["uuid"]
+            node = await service.get_entity_by_uuid(uuid)
+            episodes = await service.get_episodes_for_node(uuid)
+            recall_result = await recall(service, query=node.name, limit=5)
+            req_text = entry.get("request", "") or ""
+            req = build_update_request(
+                custom_id=f"update-{uuid}",
+                node=_entity_to_dict(node),
+                episodes=[_episode_to_dict(e) for e in episodes],
+                recall_results=recall_result,
+                request_text=req_text,
+                soul=soul, identity=identity,
+                model=model,
+            )
+            requests.append(req)
+            request_lookup[req["custom_id"]] = {
+                "params": req["params"],  # for sync continuation
+                "request_text": req_text,
+            }
+
+        batch_id = await _submit_batch(client, requests)
+        await poll_batch(client, batch_id, interval=60.0)
+        return await process_update_results(
+            client, batch_id,
+            service=service,
+            request_lookup=request_lookup,
+        )
+    finally:
+        if close_client:
+            await client.close()
+
+
+async def process_update_results(
+    client,
+    batch_id: str,
+    *,
+    service,
+    request_lookup: dict[str, dict],
+) -> list[dict]:
+    """Iterate batched turn-1 results. Single-turn cases handled inline; reads /
+    multi-tool cases drop into `_sync_continue`."""
+    outcomes: list[dict] = []
+    async for result in client.messages.batches.results(batch_id):
+        custom_id = result.custom_id
+        meta = request_lookup.get(custom_id, {})
+        request_text = meta.get("request_text", "")
+        request_params = meta.get("params", {})
+
+        if result.result.type != "succeeded":
+            error_str = str(getattr(result.result, "error", "unknown"))
+            outcomes.append(_failed_outcome(request_text, error_str))
+            continue
+
+        message = result.result.message
+        outcome = await _handle_batched_message(
+            message=message,
+            request_text=request_text,
+            request_params=request_params,
+            service=service,
+            client=client,
+        )
+        outcomes.append(outcome)
+    return outcomes
+
+
+def _failed_outcome(request_text: str, error_str: str) -> dict:
+    return {
+        "status": "Error",
+        "request": request_text,
+        "response": "",
+        "guids": None,
+        "count": 0,
+        "queries": [],
+        "warnings": [],
+        "errors": [error_str],
+    }
+
+
+async def _handle_batched_message(
+    *,
+    message,
+    request_text: str,
+    request_params: dict,
+    service,
+    client,
+) -> dict:
+    """Dispatch a single batched turn-1 response to the right path."""
+    tool_uses = [
+        b for b in message.content if getattr(b, "type", None) == "tool_use"
+    ]
+
+    if not tool_uses:
+        # end_turn with no action — Rejected (model declined)
+        text_blocks = [
+            b.text for b in message.content if getattr(b, "type", None) == "text"
+        ]
+        final_text = "\n".join(text_blocks).strip()
+        return {
+            "status": "Rejected",
+            "request": request_text,
+            "response": final_text,
+            "guids": None,
+            "count": 0,
+            "queries": [],
+            "warnings": [],
+            "errors": [],
+        }
+
+    # Single-tool fast paths
+    if len(tool_uses) == 1 and tool_uses[0].name == "execute_cypher_write":
+        return await _execute_single_write_outcome(
+            tool_use=tool_uses[0],
+            message=message,
+            request_text=request_text,
+            service=service,
+        )
+
+    # Anything else (read, mixed, multiple) — sync continuation
+    return await _sync_continue(
+        client=client,
+        message=message,
+        request_params=request_params,
+        request_text=request_text,
+        service=service,
+    )
+
+
+async def _execute_single_write_outcome(
+    *,
+    tool_use,
+    message,
+    request_text: str,
+    service,
+) -> dict:
+    """Single-turn write: execute client-side and synthesize a result dict."""
+    inputs = tool_use.input or {}
+    cypher = inputs.get("query", "")
+    params = inputs.get("params") or {}
+    queries: list[dict] = []
+    errors: list[str] = []
+    text_blocks = [
+        b.text for b in message.content if getattr(b, "type", None) == "text"
+    ]
+    final_text = "\n".join(text_blocks).strip()
+    thinking = _capture_thinking(message.content)
+
+    try:
+        payload, record = await _run_write(service, query=cypher, params=params)
+        record = {"turn": 1, "thinking": thinking, **record}
+        queries.append(record)
+        count = _count_from_record(record)
+        status = "Deleted" if _DELETE_KEYWORDS.search(record["cypher"]) else "Updated"
+    except Exception as e:  # noqa: BLE001
+        err = f"{type(e).__name__}: {e}"
+        errors.append(err)
+        status = "Error"
+        count = 0
+        queries.append({
+            "turn": 1, "thinking": thinking,
+            "mode": "write", "cypher": cypher, "params": params,
+            "cypher_output": [], "error": err,
+        })
+
+    return {
+        "status": status,
+        "request": request_text,
+        "response": final_text,
+        "guids": None,
+        "count": count,
+        "queries": queries,
+        "warnings": [],
+        "errors": errors,
+    }
+
+
+def _count_from_record(record: dict) -> int:
+    """Extract count from a write record's cypher_output (matching update's logic)."""
+    summary = (record.get("cypher_output") or [{}])[0] or {}
+    if not isinstance(summary, dict):
+        return 0
+    return (
+        int(summary.get("nodes_created", 0))
+        + int(summary.get("nodes_deleted", 0))
+        + int(summary.get("properties_set", 0))
+    )
+
+
+async def _sync_continue(
+    *,
+    client,
+    message,
+    request_params: dict,
+    request_text: str,
+    service,
+) -> dict:
+    """Continue a multi-turn update through the regular Messages API.
+
+    Replays from the batched turn-1 response: appends the assistant's content,
+    executes the tool calls in that turn, and loops via Messages API until
+    end_turn. Uses the SAME system prompt + tools as the batched request so
+    the prompt cache stays warm.
+    """
+    messages = list(request_params.get("messages", []))
+    messages.append({"role": "assistant", "content": message.content})
+
+    queries: list[dict] = []
+    warnings: list[str] = []
+    errors: list[str] = []
+    write_executed = False
+    delete_executed = False
+    iteration = 1
+
+    # Process turn 1's tool calls
+    tool_results = await _run_tool_calls(
+        message.content, service=service,
+        queries=queries, errors=errors, turn=iteration,
+    )
+    for q in queries:
+        if q.get("mode") == "write" and "rejected" not in q:
+            write_executed = True
+            if _DELETE_KEYWORDS.search(q.get("cypher") or ""):
+                delete_executed = True
+    messages.append({"role": "user", "content": tool_results})
+
+    final_text = ""
+
+    # Continue with sync Messages API turns
+    while iteration < _MAX_ITERATIONS:
+        iteration += 1
+        async with client.messages.stream(
+            model=request_params["model"],
+            max_tokens=request_params["max_tokens"],
+            system=request_params["system"],  # same cache directives — cache stays warm
+            messages=messages,
+            tools=request_params["tools"],
+            thinking={"type": "adaptive", "display": "summarized"},
+            output_config={"effort": "high"},
+        ) as stream:
+            response = await stream.get_final_message()
+
+        messages.append({"role": "assistant", "content": response.content})
+
+        text_blocks = [
+            b.text for b in response.content if getattr(b, "type", None) == "text"
+        ]
+        if text_blocks:
+            final_text = "\n".join(text_blocks).strip()
+
+        tool_uses = [
+            b for b in response.content if getattr(b, "type", None) == "tool_use"
+        ]
+
+        if not tool_uses:
+            break  # end_turn
+
+        new_results = await _run_tool_calls(
+            response.content, service=service,
+            queries=queries, errors=errors, turn=iteration,
+        )
+        prev_query_count = len(queries) - len(new_results)
+        for q in queries[prev_query_count:]:
+            if q.get("mode") == "write" and "rejected" not in q:
+                write_executed = True
+                if _DELETE_KEYWORDS.search(q.get("cypher") or ""):
+                    delete_executed = True
+        messages.append({"role": "user", "content": new_results})
+
+        if response.stop_reason == "end_turn":
+            break
+
+    if errors:
+        status = "Error"
+    elif delete_executed:
+        status = "Deleted"
+    elif write_executed:
+        status = "Updated"
+    else:
+        status = "Rejected"
+
+    count = sum(_count_from_record(q) for q in queries if q.get("mode") == "write")
+
+    return {
+        "status": status,
+        "request": request_text,
+        "response": final_text,
+        "guids": None,
+        "count": count,
+        "queries": queries,
+        "warnings": warnings,
+        "errors": errors,
+    }
+
+
+async def _run_tool_calls(
+    content: list,
+    *,
+    service,
+    queries: list[dict],
+    errors: list[str],
+    turn: int,
+) -> list[dict]:
+    """Execute tool_use blocks in the given content, append records to queries
+    and errors. Returns the list of tool_result blocks for the next user message.
+    """
+    thinking = _capture_thinking(content)
+    tool_uses = [
+        b for b in content if getattr(b, "type", None) == "tool_use"
+    ]
+    tool_results = []
+    for tu in tool_uses:
+        name = tu.name
+        inputs = tu.input or {}
+        try:
+            if name == "execute_cypher_read":
+                payload, record = await _run_read(service, **inputs)
+            elif name == "execute_cypher_write":
+                payload, record = await _run_write(service, **inputs)
+            else:
+                payload = {"error": f"unknown tool: {name}"}
+                record = {
+                    "mode": "unknown",
+                    "cypher": None,
+                    "params": inputs,
+                    "cypher_output": [],
+                }
+        except Exception as e:  # noqa: BLE001
+            err = f"{type(e).__name__}: {e}"
+            errors.append(err)
+            payload = {"error": err}
+            record = {
+                "mode": "write" if name == "execute_cypher_write" else "read",
+                "cypher": (inputs or {}).get("query"),
+                "params": (inputs or {}).get("params") or {},
+                "cypher_output": [],
+                "error": err,
+            }
+        # Attach turn + thinking. Thinking on first tool of the turn only.
+        is_first_of_turn = not queries or queries[-1]["turn"] != turn
+        record = {
+            "turn": turn,
+            "thinking": thinking if is_first_of_turn else [],
+            **record,
+        }
+        queries.append(record)
+        tool_results.append({
+            "type": "tool_result",
+            "tool_use_id": tu.id,
+            "content": _json.dumps(payload, default=str),
+        })
+    return tool_results
 
 
 # --- System prompt ---
