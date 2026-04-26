@@ -502,3 +502,136 @@ async def test_audited_at_stamped_for_all_succeeded_results_in_one_call():
     assert params_arg["rev"] == AUDIT_REVISION
     # `now` is an ISO timestamp string
     assert "T" in params_arg["now"]
+
+
+async def test_run_audit_run_orchestrates_resolve_build_submit_process(monkeypatch, tmp_path):
+    """End-to-end orchestration with all I/O mocked.
+
+    Verifies: resolve produces UUIDs -> for each UUID, fetch + recall + build
+    request -> submit batch -> poll -> process -> return summary. The mocked
+    `process_results` returns a synthesized list and `submit_audit_batch`
+    is observed to receive the right number of requests.
+    """
+    from pratyabhijna.tools.audit import run_audit_run
+
+    # Mock the service
+    service = MagicMock()
+    service.config = MagicMock()
+    service.config.resources = MagicMock()
+    service.config.resources.repo_path = str(tmp_path)
+    service.config.llm = MagicMock(audit_model="claude-sonnet-4-6")
+
+    # Set up SOUL + IDENTITY files in repo_path
+    (tmp_path / "memory").mkdir()
+    (tmp_path / "memory" / "SOUL.md").write_text("SOUL TEXT")
+    (tmp_path / "memory" / "IDENTITY.md").write_text("IDENTITY TEXT")
+
+    # Resolve returns two UUIDs
+    async def fake_resolve(input_str, *, service):
+        return ["uuid-A", "uuid-B"]
+    monkeypatch.setattr("pratyabhijna.tools.audit.resolve_node_list", fake_resolve)
+
+    # Mock service node + episode + recall fetchers
+    # Note: `name` is a special MagicMock constructor arg (sets repr name), so
+    # we set the `.name` attribute separately after construction.
+    node_a = MagicMock(uuid="uuid-A", labels=["Entity"], summary="...",
+                      attributes={}, created_at=None, group_id="")
+    node_a.name = "A"
+    node_b = MagicMock(uuid="uuid-B", labels=["Entity"], summary="...",
+                      attributes={}, created_at=None, group_id="")
+    node_b.name = "B"
+    service.get_entity_by_uuid = AsyncMock(side_effect=[node_a, node_b])
+    ep = MagicMock(uuid="ep-1", name="ep", content="body", source="self",
+                   source_description="", valid_at=None)
+    service.get_episodes_for_node = AsyncMock(return_value=[ep])
+
+    async def fake_recall(svc, *, query, limit):
+        return {"nodes": [], "edges": []}
+    monkeypatch.setattr("pratyabhijna.tools.audit.recall", fake_recall)
+
+    # Mock anthropic client + the three batch operations
+    client = MagicMock()
+    submit_mock = AsyncMock(return_value="batch-xyz")
+    poll_mock = AsyncMock()
+    process_mock = AsyncMock(return_value=[
+        {"uuid": "uuid-A", "name": "A", "status": "Valid", "analysis": "ok"},
+        {"uuid": "uuid-B", "name": "B", "status": "Update",
+         "analysis": "wrong", "request": "fix it"},
+    ])
+    monkeypatch.setattr("pratyabhijna.tools.audit.submit_audit_batch", submit_mock)
+    monkeypatch.setattr("pratyabhijna.tools.audit.poll_batch", poll_mock)
+    monkeypatch.setattr("pratyabhijna.tools.audit.process_results", process_mock)
+
+    queue = MagicMock()
+
+    summary = await run_audit_run(
+        service, queue, "find stuff",
+        guidance=None, anthropic_client=client,
+    )
+
+    # Submit was called with both requests
+    requests_arg = submit_mock.call_args.args[1]
+    assert len(requests_arg) == 2
+    assert {r["custom_id"] for r in requests_arg} == {"audit-uuid-A", "audit-uuid-B"}
+
+    # Process was called with node_names mapping for both nodes
+    process_kwargs = process_mock.call_args.kwargs
+    assert process_kwargs["node_names"] == {"uuid-A": "A", "uuid-B": "B"}
+
+    # Summary structure
+    assert summary["cohort_size"] == 2
+    assert summary["model"] == "claude-sonnet-4-6"
+    assert len(summary["results"]) == 2
+    assert "started_at" in summary and "completed_at" in summary
+
+
+async def test_run_audit_run_empty_cohort_skips_batch(monkeypatch, tmp_path):
+    """If resolve returns no UUIDs, skip submit/poll/process entirely."""
+    from pratyabhijna.tools.audit import run_audit_run
+
+    service = MagicMock()
+    service.config = MagicMock()
+    service.config.resources = MagicMock(repo_path=str(tmp_path))
+    service.config.llm = MagicMock(audit_model="claude-sonnet-4-6")
+    (tmp_path / "memory").mkdir()
+    (tmp_path / "memory" / "SOUL.md").write_text("S")
+    (tmp_path / "memory" / "IDENTITY.md").write_text("I")
+
+    async def fake_resolve(input_str, *, service):
+        return []
+    monkeypatch.setattr("pratyabhijna.tools.audit.resolve_node_list", fake_resolve)
+
+    submit_mock = AsyncMock()
+    monkeypatch.setattr("pratyabhijna.tools.audit.submit_audit_batch", submit_mock)
+
+    summary = await run_audit_run(
+        service, MagicMock(), "find unicorns",
+        guidance=None, anthropic_client=MagicMock(),
+    )
+
+    assert summary["cohort_size"] == 0
+    assert summary["results"] == []
+    submit_mock.assert_not_called()
+
+
+def test_parse_audit_args_minimal():
+    from pratyabhijna.__main__ import _parse_audit_args
+    parsed = _parse_audit_args(["find Position nodes"])
+    assert parsed == ("find Position nodes", None, None)
+
+
+def test_parse_audit_args_with_guidance_and_output():
+    from pratyabhijna.__main__ import _parse_audit_args
+    parsed = _parse_audit_args([
+        "find Position nodes",
+        "--guidance", "migrate to Observation",
+        "--output", "/tmp/audit.json",
+    ])
+    assert parsed == ("find Position nodes", "migrate to Observation", "/tmp/audit.json")
+
+
+def test_parse_audit_args_rejects_empty():
+    from pratyabhijna.__main__ import _parse_audit_args
+    assert _parse_audit_args([]) is None
+    assert _parse_audit_args(["--guidance", "x"]) is None
+    assert _parse_audit_args([""]) is None

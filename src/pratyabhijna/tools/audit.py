@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from pratyabhijna.log import get_logger
 from pratyabhijna.tools.query import query as _call_query
+from pratyabhijna.tools.recall import recall
 from pratyabhijna.tools.remember import remember
 
 _log = get_logger(__name__)
@@ -397,3 +398,104 @@ async def _stamp_audited_at(service, uuids: list[str]) -> None:
         {"uuids": uuids, "now": now, "rev": AUDIT_REVISION},
     )
     _log.info("Stamped audited_at on %d nodes", len(uuids))
+
+
+def _entity_to_dict(node) -> dict:
+    """Project an EntityNode to a dict for the audit request body."""
+    return {
+        "uuid": node.uuid,
+        "name": node.name,
+        "labels": list(getattr(node, "labels", []) or []),
+        "summary": getattr(node, "summary", "") or "",
+        "attributes": dict(getattr(node, "attributes", {}) or {}),
+        "created_at": getattr(node, "created_at", None),
+        "group_id": getattr(node, "group_id", ""),
+    }
+
+
+def _episode_to_dict(ep) -> dict:
+    """Project an EpisodicNode to a dict for the audit request body."""
+    return {
+        "uuid": ep.uuid,
+        "name": getattr(ep, "name", ""),
+        "content": getattr(ep, "content", ""),
+        "source": getattr(ep, "source", ""),
+        "source_description": getattr(ep, "source_description", ""),
+        "valid_at": getattr(ep, "valid_at", None),
+    }
+
+
+async def run_audit_run(
+    service,
+    queue,
+    input_str: str,
+    *,
+    guidance: str | None,
+    anthropic_client,
+) -> dict:
+    """Resolve UUIDs, build batch requests, submit, poll, process. Returns
+    a dict with `results` (list of outcome dicts), `started_at`, `completed_at`,
+    `cohort_size`, `audit_revision`, `model`, `guidance`."""
+    from pratyabhijna.synthesis import read_identity_files
+
+    started_at = datetime.now(timezone.utc).isoformat()
+
+    # Partial bootstrap — only SOUL + IDENTITY (Decision: partial bootstrap shape)
+    tiers = read_identity_files(service.config.resources.repo_path)
+    soul = tiers.get("soul") or ""
+    identity = tiers.get("identity") or ""
+
+    uuids = await resolve_node_list(input_str, service=service)
+    _log.info("Audit cohort: %d nodes", len(uuids))
+
+    model = service.config.llm.audit_model
+    requests: list[dict] = []
+    node_names: dict[str, str] = {}
+
+    for uuid in uuids:
+        node = await service.get_entity_by_uuid(uuid)
+        node_names[uuid] = node.name
+        node_dict = _entity_to_dict(node)
+        episodes = await service.get_episodes_for_node(uuid)
+        episode_dicts = [_episode_to_dict(e) for e in episodes]
+        recall_result = await recall(service, query=node.name, limit=5)
+        requests.append(build_audit_request(
+            custom_id=f"audit-{uuid}",
+            node=node_dict,
+            episodes=episode_dicts,
+            recall_results=recall_result,
+            soul=soul, identity=identity,
+            guidance=guidance,
+            model=model,
+        ))
+
+    if not requests:
+        completed_at = datetime.now(timezone.utc).isoformat()
+        return {
+            "results": [],
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "cohort_size": 0,
+            "audit_revision": AUDIT_REVISION,
+            "model": model,
+            "guidance": guidance,
+        }
+
+    batch_id = await submit_audit_batch(anthropic_client, requests)
+    await poll_batch(anthropic_client, batch_id, interval=60.0)
+    results = await process_results(
+        anthropic_client, batch_id,
+        service=service, queue=queue,
+        node_names=node_names,
+    )
+
+    completed_at = datetime.now(timezone.utc).isoformat()
+    return {
+        "results": results,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "cohort_size": len(uuids),
+        "audit_revision": AUDIT_REVISION,
+        "model": model,
+        "guidance": guidance,
+    }

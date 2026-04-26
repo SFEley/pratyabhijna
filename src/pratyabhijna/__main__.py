@@ -477,6 +477,147 @@ def run_update(config: PratyabhijnaConfig, argv: list[str]) -> int:
     return 0
 
 
+def _parse_audit_args(
+    argv: list[str],
+) -> tuple[str, str | None, str | None] | None:
+    """Parse ``audit INPUT [--guidance G] [--output PATH]``.
+
+    Returns (input_str, guidance, output_path) or None on usage error.
+    """
+    input_str: str | None = None
+    guidance: str | None = None
+    output_path: str | None = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--guidance" and i + 1 < len(argv):
+            guidance = argv[i + 1]
+            i += 2
+        elif a == "--output" and i + 1 < len(argv):
+            output_path = argv[i + 1]
+            i += 2
+        elif not a.startswith("--") and input_str is None:
+            input_str = a
+            i += 1
+        else:
+            return None
+    if input_str is None or not input_str.strip():
+        return None
+    return input_str, guidance, output_path
+
+
+def run_audit(config: PratyabhijnaConfig, argv: list[str]) -> int:
+    """Run a node audit batch via the audit sub-agent.
+
+    Outputs a JSON file at ``{log_dir}/audit/audit-{ISO}.json`` and appends
+    a one-section summary to ``{repo_path}/memory/AUDIT.md``.
+    """
+    import anyio
+
+    parsed = _parse_audit_args(argv)
+    if parsed is None:
+        print(
+            'Usage: python -m pratyabhijna audit "INPUT" [--guidance G] [--output PATH]',
+            file=sys.stderr,
+        )
+        return 2
+    input_str, guidance, output_path = parsed
+
+    from pathlib import Path
+    import json as _json
+
+    import anthropic
+    from pratyabhijna.audit_log import append_to_audit_md, write_audit_file
+    from pratyabhijna.tools.audit import run_audit_run
+
+    async def _run() -> dict:
+        service = PratyabhijnaService(config)
+        await service.start()
+        queue = WorkQueue(db_path=config.queue.db_path)
+        # Register a no-op for add_episode so queue.enqueue() succeeds; the
+        # actual processing happens when the main MCP server runs.
+        queue.register("add_episode", lambda _: None)
+        await queue.start(run_worker=False)
+
+        api_key = config.llm.api_key or None
+        client = anthropic.AsyncAnthropic(api_key=api_key, timeout=300.0)
+        try:
+            return await run_audit_run(
+                service, queue, input_str,
+                guidance=guidance, anthropic_client=client,
+            )
+        finally:
+            await client.close()
+            await queue.stop()
+            await service.stop()
+
+    summary = anyio.run(_run)
+
+    # Compute count summary for AUDIT.md and stdout
+    counts = {"Valid": 0, "Update": 0, "Unfixable": 0, "Error": 0}
+    unfixable_details: list[dict] = []
+    for r in summary["results"]:
+        s = r.get("status", "Error")
+        counts[s] = counts.get(s, 0) + 1
+        if s == "Unfixable":
+            unfixable_details.append({
+                "uuid": r["uuid"],
+                "name": r.get("name", ""),
+                "analysis": r.get("analysis", ""),
+            })
+
+    # Write the JSON file. --output overrides the default location.
+    if output_path:
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(_json.dumps(
+            {"run_metadata": {
+                "started_at": summary["started_at"],
+                "completed_at": summary["completed_at"],
+                "audit_revision": summary["audit_revision"],
+                "guidance": summary["guidance"],
+                "model": summary["model"],
+                "cohort_size": summary["cohort_size"],
+            }, "results": summary["results"]},
+            indent=2, default=str,
+        ))
+        json_path = out
+    else:
+        json_path = write_audit_file(
+            log_dir=Path(config.log_dir),
+            run_metadata={
+                "started_at": summary["started_at"],
+                "completed_at": summary["completed_at"],
+                "audit_revision": summary["audit_revision"],
+                "guidance": summary["guidance"],
+                "model": summary["model"],
+                "cohort_size": summary["cohort_size"],
+            },
+            results=summary["results"],
+        )
+
+    # Append AUDIT.md summary (only if repo_path is configured)
+    if config.resources.repo_path:
+        append_to_audit_md(
+            repo_path=config.resources.repo_path,
+            run_summary={
+                "started_at": summary["started_at"],
+                "valid": counts["Valid"],
+                "update": counts["Update"],
+                "unfixable": counts["Unfixable"],
+                "errored": counts["Error"],
+                "unfixable_details": unfixable_details,
+            },
+        )
+
+    print(
+        f"Audit complete: {counts['Valid']} Valid, {counts['Update']} Update, "
+        f"{counts['Unfixable']} Unfixable, {counts['Error']} Errored "
+        f"[output: {json_path}]"
+    )
+    return 0
+
+
 def run_synthesis_cmd(config: PratyabhijnaConfig, argv: list[str]) -> int:
     """Enqueue a synthesis task, optionally delayed by N minutes."""
     import anyio
@@ -535,6 +676,9 @@ Commands:
   update DESCRIPTION [--cache]    Run a maintenance update
                                   (operator-only, off-MCP)
 
+  audit INPUT [--guidance G]      Run a node audit batch via the audit sub-agent
+        [--output PATH]           (operator-only, off-MCP)
+
   deadletters list                Show dead-lettered tasks
   deadletters show ID             Full detail for one task
   deadletters retry (ID|--all)    Reset to pending
@@ -564,6 +708,9 @@ def main():
 
     if len(sys.argv) > 1 and sys.argv[1] == "update":
         sys.exit(run_update(config, sys.argv[2:]))
+
+    if len(sys.argv) > 1 and sys.argv[1] == "audit":
+        sys.exit(run_audit(config, sys.argv[2:]))
 
     if not config.subject_name:
         print(
