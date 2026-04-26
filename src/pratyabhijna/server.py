@@ -192,15 +192,14 @@ def create_server(
         """Natural-language graph query and spot maintenance.
 
         Translates a prose request into Cypher via an adaptive-thinking
-        Sonnet 4.6 sub-agent, runs it, and returns the result. Reads
-        are permissive with a row cap; writes are constrained to minor
-        maintenance (filling gaps, removing duplicates, deleting
-        single orphaned nodes). The sub-agent refuses operations that
-        would exceed legitimate maintenance or damage subject integrity.
+        Sonnet 4.6 sub-agent, runs the resulting read query, and returns
+        the result. Reads are permissive with a row cap. Mutation requests
+        are refused — the sub-agent has no write tool. For maintenance
+        and corrections, use the ``pratyabhijna update`` CLI command on
+        the server (operator-only, off-MCP).
 
         Not a substitute for `recall` or `remember` — use this for
-        ad-hoc investigation and anomaly fixes that the other tools
-        don't cover.
+        ad-hoc investigation that the other tools don't cover.
         """
         if service is None:
             raise RuntimeError("query requires a connected service")

@@ -2,11 +2,12 @@
 
 Covers:
 - Agentic loop with a scripted fake Anthropic client.
-- cypher_log accumulation across read and write turns.
+- cypher_log accumulation across read turns.
 - Refusal path (agent never calls a tool).
 - _READ_FORBIDDEN regex gate.
-- Cache TTL: a second call within 1h reuses the built cache.
-- Bootstrap rendering when the repo is unavailable.
+- Schema cache TTL: a second call within 1h reuses the built cache.
+- Read-only contract: the tool schema does not include a write tool.
+- System prompt does not use Anthropic prompt caching.
 
 Tests mock the service layer — no live Neo4j and no real Anthropic
 calls here. Live verification happens through the MCP channel.
@@ -25,9 +26,9 @@ import pytest
 from pratyabhijna.tools import query as query_mod
 from pratyabhijna.tools.query import (
     _READ_FORBIDDEN,
-    _render_bootstrap,
     _reset_cache_for_tests,
     query,
+    TOOL_SCHEMAS,
 )
 
 
@@ -86,8 +87,6 @@ class FakeClient:
                     stop_reason="tool_use" if has_tool_use else "end_turn",
                     usage=SimpleNamespace(
                         input_tokens=100,
-                        cache_read_input_tokens=0,
-                        cache_creation_input_tokens=50,
                         output_tokens=20,
                     ),
                 )
@@ -113,9 +112,8 @@ def service():
     svc.config = MagicMock()
     svc.config.subject_name = "TestSubject"
     svc.config.llm = MagicMock(model="claude-sonnet-4-6", api_key=None)
-    svc.config.resources = MagicMock(repo_path=None)  # no repo by default
+    svc.config.resources = MagicMock(repo_path=None)
     svc.execute_read_query = AsyncMock(return_value=[])
-    svc.execute_write_query = AsyncMock(return_value={})
     svc.introspect_schema = AsyncMock(
         return_value=(
             "### Node labels\nPerson, Entity, Episodic\n\n"
@@ -163,31 +161,19 @@ def test_read_forbidden_allows_reads(cypher):
     assert _READ_FORBIDDEN.search(cypher) is None
 
 
-# --- _render_bootstrap ---
+# --- Read-only contract ---
 
 
-def test_render_bootstrap_without_files():
-    text = _render_bootstrap("Vesper", {})
-    assert "Vesper" in text
-    assert "No identity files available" in text
+def test_tool_schema_is_read_only():
+    """The agent only sees ``execute_cypher_read``. There is no write tool.
 
-
-def test_render_bootstrap_with_files():
-    tiers = {
-        "soul": "I am Vesper.",
-        "identity": None,
-        "user": "I am Serah.",
-        "threads": None,
-        "chronicle": None,
-    }
-    text = _render_bootstrap("Vesper", tiers)
-    assert "Vesper" in text
-    assert "I am Vesper." in text
-    assert "I am Serah." in text
-    assert "### SOUL" in text
-    assert "### USER" in text
-    # Missing tiers don't appear as empty sections
-    assert "### IDENTITY" not in text
+    The maintenance/write path lives in ``pratyabhijna update`` (CLI),
+    not here. Exposing a write tool would re-enable the very dual-purpose
+    shape we deliberately split apart.
+    """
+    names = [t["name"] for t in TOOL_SCHEMAS]
+    assert names == ["execute_cypher_read"]
+    assert "execute_cypher_write" not in names
 
 
 # --- Agent loop: successful read ---
@@ -216,30 +202,6 @@ async def test_query_successful_read(service):
     service.execute_read_query.assert_awaited_once()
 
 
-# --- Agent loop: successful write ---
-
-
-@pytest.mark.asyncio
-async def test_query_successful_write(service):
-    service.execute_write_query = AsyncMock(return_value={"nodes_deleted": 1})
-
-    script = [
-        [_tool_use_block("tu_w", "execute_cypher_write", {
-            "query": "MATCH (s:Saga {name: 'test-orphan'}) WHERE NOT (s)-[:HAS_EPISODE]->() DELETE s",
-        })],
-        [_text_block("Deleted the orphaned Saga node 'test-orphan'.")],
-    ]
-    client = FakeClient(script)
-
-    result = await query(service, "Delete the Saga 'test-orphan' that has no episodes.", client=client)
-
-    assert "Deleted" in result["response"]
-    assert len(result["cypher_log"]) == 1
-    assert result["cypher_log"][0]["mode"] == "write"
-    assert result["cypher_log"][0]["summary"] == {"nodes_deleted": 1}
-    assert result["refused"] is False
-
-
 # --- Agent loop: refusal (no tool use) ---
 
 
@@ -247,21 +209,19 @@ async def test_query_successful_write(service):
 async def test_query_refusal(service):
     script = [
         [_text_block(
-            "I can't do that — deleting all Person nodes would erase "
-            "the subject's relational graph. If you meant to remove a "
-            "specific person, name them by uuid or exact name."
+            "I can't do that here — deletions go through the "
+            "``pratyabhijna update`` CLI, not the read-only query tool."
         )],
     ]
     client = FakeClient(script)
 
     result = await query(service, "Delete all Person nodes.", client=client)
 
-    assert "can't do that" in result["response"].lower() or "cannot" in result["response"].lower() or "cant" in result["response"].lower()
+    assert "can't" in result["response"].lower() or "cannot" in result["response"].lower()
     assert result["cypher_log"] == []
     assert result["refused"] is True
     assert result["iterations"] == 1
     service.execute_read_query.assert_not_awaited()
-    service.execute_write_query.assert_not_awaited()
 
 
 # --- Agent loop: read tool catches a mutation clause ---
@@ -276,7 +236,10 @@ async def test_read_tool_rejects_mutation_clause(service):
         [_tool_use_block("tu_bad", "execute_cypher_read", {
             "query": "MATCH (n:Foo) DELETE n",
         })],
-        [_text_block("I tried to run a mutation through the read path; that's refused. Use write path or narrow the request.")],
+        [_text_block(
+            "I tried to run a mutation through the read path; refused. "
+            "Use the ``pratyabhijna update`` CLI for cleanups."
+        )],
     ]
     client = FakeClient(script)
 
@@ -294,7 +257,7 @@ async def test_read_tool_rejects_mutation_clause(service):
     service.execute_read_query.assert_not_awaited()
 
 
-# --- Cache TTL ---
+# --- Schema cache TTL ---
 
 
 @pytest.mark.asyncio
@@ -332,21 +295,18 @@ async def test_cache_rebuilds_after_ttl(service, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cache_builds_with_braces_in_identity_files(service, tmp_path):
-    """Identity files may legitimately contain `{...}` (code, JSON, etc.).
+async def test_cache_builds_with_braces_in_schema(service):
+    """Schema text may contain `{...}` (Cypher path patterns, JSON examples).
 
-    Earlier drafts used str.format which raises KeyError on `{foo}` in
-    user prose. string.Template with $-syntax tolerates braces.
+    string.Template ($-syntax) tolerates braces; str.format would raise
+    KeyError on them.
     """
-    # Point repo_path at a tmp repo with a SOUL.md containing braces.
-    memory = tmp_path / "memory"
-    memory.mkdir()
-    (memory / "SOUL.md").write_text(
-        "Snippet from a conversation:\n\n"
-        "    data = {'name': 'Vesper', 'pronouns': 'it'}\n\n"
-        "The braces are not a template — they're Python."
+    service.introspect_schema = AsyncMock(
+        return_value=(
+            "### Sample Cypher pattern\n"
+            "MATCH (n {name: 'x'}) RETURN n\n"
+        )
     )
-    service.config.resources = MagicMock(repo_path=str(tmp_path))
 
     script = [[_text_block("ok")]]
     client = FakeClient(script)
@@ -357,7 +317,7 @@ async def test_cache_builds_with_braces_in_identity_files(service, tmp_path):
 
     # And the brace-containing text made it into the system prompt.
     system_text = client.calls[0]["system"][0]["text"]
-    assert "{'name': 'Vesper'" in system_text
+    assert "{name: 'x'}" in system_text
 
 
 # --- System prompt wiring ---
@@ -378,14 +338,51 @@ async def test_system_prompt_includes_subject_and_schema(service):
     assert "TestSubject" in system_text
     assert "Node labels" in system_text
     assert "Person, Entity, Episodic" in system_text
-    # 1-hour cache control on the system block
-    assert system_blocks[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     # Adaptive thinking and high effort both set
     assert call["thinking"] == {"type": "adaptive"}
     assert call["output_config"] == {"effort": "high"}
-    # Tools sent with cache_control on the last one
-    tools = call["tools"]
-    assert tools[-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+@pytest.mark.asyncio
+async def test_no_prompt_caching_anywhere(service):
+    """No cache_control on system or tools — the prompt is small enough that
+    the cache breakpoint cost would exceed the savings."""
+    script = [[_text_block("ok")]]
+    client = FakeClient(script)
+
+    await query(service, "hello", client=client)
+
+    call = client.calls[0]
+    system_blocks = call["system"]
+    for block in system_blocks:
+        assert "cache_control" not in block, (
+            f"System block has cache_control: {block}"
+        )
+    for tool in call["tools"]:
+        assert "cache_control" not in tool, (
+            f"Tool has cache_control: {tool}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_no_bootstrap_loading(service):
+    """The query tool no longer reads identity files. Only schema introspection
+    happens to build the system prompt."""
+    # Set repo_path to something non-None and verify it's never read.
+    service.config.resources = MagicMock(repo_path="/nonexistent/repo/path")
+
+    script = [[_text_block("ok")]]
+    client = FakeClient(script)
+
+    # If the tool tried to read identity files at /nonexistent/repo/path,
+    # it would either fail or silently get nothing — but the system prompt
+    # also shouldn't contain bootstrap formatting like "### SOUL".
+    await query(service, "hello", client=client)
+
+    system_text = client.calls[0]["system"][0]["text"]
+    assert "### SOUL" not in system_text
+    assert "### IDENTITY" not in system_text
+    assert "### USER" not in system_text
 
 
 # --- Iteration cap ---
