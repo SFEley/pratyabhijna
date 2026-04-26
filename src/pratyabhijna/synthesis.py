@@ -91,7 +91,7 @@ async def is_stale(node: EntityNode, service: PratyabhijnaService) -> bool:
     if rebuilt_at_str is None:
         return True
 
-    rebuilt_at = datetime.fromisoformat(rebuilt_at_str)
+    rebuilt_at = _ensure_utc(datetime.fromisoformat(rebuilt_at_str))
     age_hours = (datetime.now(timezone.utc) - rebuilt_at).total_seconds() / 3600
     if age_hours >= service.config.synthesis.max_age_hours:
         return True
@@ -134,8 +134,8 @@ async def get_identity_delta(
     all_atoms = await get_identity_atoms(service, node)
     if rebuilt_at_str is None:
         return all_atoms
-    rebuilt_at = datetime.fromisoformat(rebuilt_at_str)
-    return [a for a in all_atoms if a["created_at"] > rebuilt_at]
+    rebuilt_at = _ensure_utc(datetime.fromisoformat(rebuilt_at_str))
+    return [a for a in all_atoms if _ensure_utc(a["created_at"]) > rebuilt_at]
 
 
 def _is_identity_node(node: EntityNode) -> bool:
