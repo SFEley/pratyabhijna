@@ -33,6 +33,10 @@ from typing import TYPE_CHECKING, Any
 from pratyabhijna.log import get_logger
 from pratyabhijna.synthesis import read_identity_files
 from pratyabhijna.tools.audit import (
+    _entity_to_dict,
+    _episode_to_dict,
+    build_system_prompt,
+    build_user_message,
     poll_batch,
     submit_audit_batch as _submit_batch,
 )
@@ -152,8 +156,6 @@ def build_update_request(
     continuity across the audit→update pipeline. Using a different model
     here would defeat the cache.
     """
-    from pratyabhijna.tools.audit import build_system_prompt, build_user_message
-
     user_msg = build_user_message(
         node=node,
         episodes=episodes,
@@ -197,8 +199,6 @@ async def update_from_audit_file(
 
     Returns a list of per-update dicts in the same shape as `update()`.
     """
-    from pratyabhijna.tools.audit import _entity_to_dict, _episode_to_dict
-
     audit_data = _json.loads(Path(audit_path).read_text())
     update_entries = [
         r for r in audit_data["results"] if r.get("status") == "Update"
@@ -928,7 +928,6 @@ async def update(
                 }
                 queries.append(record)
 
-                import json as _json
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tu.id,

@@ -390,7 +390,7 @@ async def _stamp_audited_at(service, uuids: list[str]) -> None:
     now = datetime.now(timezone.utc).isoformat()
     cypher = """
     UNWIND $uuids AS u
-    MATCH (n {uuid: u})
+    MATCH (n:Entity {uuid: u})
     SET n.audited_at = $now, n.audit_revision = $rev
     """
     await service.execute_write_query(

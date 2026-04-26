@@ -753,3 +753,30 @@ class TestParseUpdateArgsInputFlag:
         from pratyabhijna.__main__ import _parse_update_args
 
         assert _parse_update_args(["fix N1", "--cache"]) == ("fix N1", True, None)
+
+
+# ---------------------------------------------------------------------------
+# process_update_results — errored batch entry
+# ---------------------------------------------------------------------------
+
+
+async def test_process_update_results_failed_batch_entry_returns_error_outcome():
+    """When a batched response has type != 'succeeded', record an Error outcome
+    via _failed_outcome rather than crashing or skipping."""
+    from pratyabhijna.tools.update import process_update_results
+    client = MagicMock()
+    client.messages.batches.results = MagicMock(return_value=_async_iter([
+        MagicMock(
+            custom_id="update-N1",
+            result=MagicMock(type="errored", error="rate limited"),
+        ),
+    ]))
+    results = await process_update_results(
+        client, "batch-xyz",
+        service=MagicMock(),
+        request_lookup={"update-N1": {"params": {}, "request_text": "fix N1"}},
+    )
+    assert len(results) == 1
+    assert results[0]["status"] == "Error"
+    assert results[0]["request"] == "fix N1"
+    assert "rate limited" in results[0]["errors"][0]

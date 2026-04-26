@@ -611,7 +611,31 @@ def run_audit(config: PratyabhijnaConfig, argv: list[str]) -> int:
             await queue.stop()
             await service.stop()
 
-    summary = anyio.run(_run)
+    try:
+        summary = anyio.run(_run)
+    except Exception as exc:
+        # Infra failure (Neo4j down, API timeout, batch submission failure)
+        # bubbles past run_audit_run's internal handling. Convert to a minimal
+        # summary so the JSON file is still written and the operator gets a
+        # diagnostic record.
+        err = f"{type(exc).__name__}: {exc}"
+        log.exception("audit run failed before result was returned")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        summary = {
+            "results": [{
+                "uuid": "",
+                "name": "",
+                "status": "Error",
+                "analysis": err,
+                "error": err,
+            }],
+            "started_at": now_iso,
+            "completed_at": now_iso,
+            "cohort_size": 0,
+            "audit_revision": 0,
+            "model": config.llm.audit_model,
+            "guidance": guidance,
+        }
 
     # Compute count summary for AUDIT.md and stdout
     counts = {"Valid": 0, "Update": 0, "Unfixable": 0, "Error": 0}
@@ -670,11 +694,15 @@ def run_audit(config: PratyabhijnaConfig, argv: list[str]) -> int:
             },
         )
 
-    print(
+    summary_line = (
         f"Audit complete: {counts['Valid']} Valid, {counts['Update']} Update, "
         f"{counts['Unfixable']} Unfixable, {counts['Error']} Errored "
         f"[output: {json_path}]"
     )
+    if any(r.get("status") == "Error" for r in summary["results"]):
+        print(summary_line, file=sys.stderr)
+        return 1
+    print(summary_line)
     return 0
 
 
