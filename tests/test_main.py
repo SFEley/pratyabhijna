@@ -312,3 +312,42 @@ class TestRunTool:
         rc = run_tool(MagicMock(), "nope", [])
         assert rc == 2
         assert "Unknown tool" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# run_update — failure mode produces audit file
+# ---------------------------------------------------------------------------
+
+class TestRunUpdate:
+    def test_writes_output_file_when_inner_raises(self, tmp_path, capsys):
+        """If service startup (or anything inside _run) raises, the audit JSON
+        is still written with status="Error" — the "every update writes an
+        output file" property must hold even on infra failure (Neo4j down,
+        config error, API timeout)."""
+        import json
+
+        from pratyabhijna.__main__ import run_update
+
+        config = MagicMock()
+        config.log_dir = str(tmp_path)
+        config.subject_name = "Vesper"
+
+        fake_service = MagicMock()
+        fake_service.start = AsyncMock(side_effect=RuntimeError("Neo4j unreachable"))
+        fake_service.stop = AsyncMock()
+
+        with patch(
+            "pratyabhijna.__main__.PratyabhijnaService", return_value=fake_service,
+        ):
+            rc = run_update(config, ["fix the orphan Saga"])
+
+        assert rc == 1
+        out_dir = tmp_path / "outputs"
+        files = list(out_dir.glob("output-*.json"))
+        assert len(files) == 1, f"Expected one output file, found: {files}"
+        payload = json.loads(files[0].read_text(encoding="utf-8"))
+        assert payload["updates"][0]["status"] == "Error"
+        assert payload["updates"][0]["request"] == "fix the orphan Saga"
+        assert any("Neo4j unreachable" in e for e in payload["updates"][0]["errors"])
+        # Stderr summary lets shell pipelines branch on failure.
+        assert "Error:" in capsys.readouterr().err

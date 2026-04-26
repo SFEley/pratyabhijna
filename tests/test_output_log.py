@@ -116,7 +116,7 @@ def test_contents_have_top_level_fields(tmp_path, updates_one):
     assert data["duration_ms"] == 14000
     assert data["cache"] == {"requested": False}
     assert data["bootstrap"] == {"tiers_loaded": ["soul", "identity"]}
-    assert data["thinking_config"] == {"effort": "high", "display": "summarized"}
+    assert data["thinking_config"] == {"type": "adaptive", "display": "summarized"}
     # Version comes from package metadata
     from importlib.metadata import version as _pkg_version
     assert data["pratyabhijna_version"] == _pkg_version("pratyabhijna")

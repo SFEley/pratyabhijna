@@ -24,7 +24,7 @@ from typing import Iterable
 # file. If these change, bump the constants here so existing files
 # remain interpretable as a snapshot of the prior shape.
 _TIERS_LOADED = ["soul", "identity"]
-_THINKING_CONFIG = {"effort": "high", "display": "summarized"}
+_THINKING_CONFIG = {"type": "adaptive", "display": "summarized"}
 
 
 def _ensure_utc(name: str, dt: datetime) -> None:

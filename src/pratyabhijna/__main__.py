@@ -438,7 +438,24 @@ def run_update(config: PratyabhijnaConfig, argv: list[str]) -> int:
         finally:
             await service.stop()
 
-    result = anyio.run(_run)
+    try:
+        result = anyio.run(_run)
+    except Exception as exc:
+        # Infra failure (service start, Neo4j down, API timeout) bubbles
+        # past the inner update() try/finally. Convert to an Error record
+        # so the audit JSON is always written.
+        err = f"{type(exc).__name__}: {exc}"
+        log.exception("update run failed before result was returned")
+        result = {
+            "status": "Error",
+            "request": description,
+            "response": err,
+            "guids": None,
+            "count": 0,
+            "queries": [],
+            "warnings": [],
+            "errors": [err],
+        }
     completed_at = datetime.now(timezone.utc)
 
     output_path = write_output_file(

@@ -189,7 +189,7 @@ def create_server(
     async def query(
         request: str,
     ) -> dict:
-        """Natural-language graph query and spot maintenance.
+        """Natural-language graph query.
 
         Translates a prose request into Cypher via an adaptive-thinking
         Sonnet 4.6 sub-agent, runs the resulting read query, and returns
