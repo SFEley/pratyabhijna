@@ -421,3 +421,362 @@ class TestErrors:
         result = await update(service, "create", client=FakeClient(script))
         assert result["status"] == "Error"
         assert any("constraint violation" in e for e in result["errors"])
+
+
+# ---------------------------------------------------------------------------
+# build_update_request
+# ---------------------------------------------------------------------------
+
+
+class TestBuildUpdateRequest:
+    def test_includes_node_context_and_cypher_tools(self):
+        from pratyabhijna.tools.update import build_update_request
+
+        req = build_update_request(
+            custom_id="update-N1",
+            node={"uuid": "N1", "name": "x"},
+            episodes=[{"uuid": "E1", "content": "c"}],
+            recall_results={"nodes": [], "edges": []},
+            request_text="Change entity_type to Observation",
+            soul="S", identity="I",
+            model="claude-sonnet-4-6",
+        )
+        assert req["custom_id"] == "update-N1"
+        params = req["params"]
+        assert any(t["name"] == "execute_cypher_write" for t in params["tools"])
+        assert any(t["name"] == "execute_cypher_read" for t in params["tools"])
+        # Cache markers preserved from audit's build_system_prompt
+        assert params["system"][0]["cache_control"]["ttl"] == "1h"
+        assert params["system"][1]["cache_control"] == {"type": "ephemeral"}
+        # Episode cache breakpoint preserved on the first user content block
+        assert params["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        # Request text appears as the final content block
+        assert "Change entity_type to Observation" in params["messages"][0]["content"][-1]["text"]
+        # Internal sort key at top level, not in params
+        assert req["_episode_uuids"] == ["E1"]
+
+    def test_empty_episodes_produces_empty_episode_uuids(self):
+        from pratyabhijna.tools.update import build_update_request
+
+        req = build_update_request(
+            custom_id="update-N2",
+            node={"uuid": "N2", "name": "y"},
+            episodes=[],
+            recall_results={"nodes": [], "edges": []},
+            request_text="Fix it",
+            soul="S", identity="I",
+            model="claude-sonnet-4-6",
+        )
+        assert req["_episode_uuids"] == []
+
+
+# ---------------------------------------------------------------------------
+# update_from_audit_file
+# ---------------------------------------------------------------------------
+
+
+async def _async_iter(items):
+    for item in items:
+        yield item
+
+
+class TestUpdateFromAuditFile:
+    async def test_filters_to_update_entries(self, tmp_path, monkeypatch):
+        """Only status='Update' entries should be processed."""
+        import json
+        from unittest.mock import AsyncMock, MagicMock
+        from pratyabhijna.tools.update import update_from_audit_file
+
+        audit_json = tmp_path / "audit.json"
+        audit_json.write_text(json.dumps({
+            "run_metadata": {"audit_revision": 1, "model": "claude-sonnet-4-6"},
+            "results": [
+                {"uuid": "N1", "name": "a", "status": "Valid", "analysis": "ok"},
+                {"uuid": "N2", "name": "b", "status": "Update",
+                 "analysis": "wrong", "request": "Fix it"},
+                {"uuid": "N3", "name": "c", "status": "Unfixable",
+                 "analysis": "nope"},
+            ],
+        }))
+        svc = MagicMock()
+        svc.config = MagicMock()
+        svc.config.resources = MagicMock(repo_path=str(tmp_path))
+        svc.config.llm = MagicMock(audit_model="claude-sonnet-4-6", api_key=None)
+        (tmp_path / "memory").mkdir()
+        (tmp_path / "memory" / "SOUL.md").write_text("S")
+        (tmp_path / "memory" / "IDENTITY.md").write_text("I")
+
+        node_b = MagicMock()
+        node_b.uuid = "N2"
+        node_b.name = "b"  # Assign .name directly — MagicMock(name=...) doesn't work
+        node_b.labels = []
+        node_b.summary = ""
+        node_b.attributes = {}
+        node_b.created_at = None
+        node_b.group_id = ""
+        svc.get_entity_by_uuid = AsyncMock(return_value=node_b)
+        svc.get_episodes_for_node = AsyncMock(return_value=[])
+
+        async def fake_recall(svc_arg, *, query, limit):
+            return {"nodes": [], "edges": []}
+
+        monkeypatch.setattr("pratyabhijna.tools.update.recall", fake_recall)
+
+        submit_mock = AsyncMock(return_value="batch-1")
+        poll_mock = AsyncMock()
+        process_mock = AsyncMock(return_value=[
+            {"status": "Updated", "request": "Fix it", "response": "done",
+             "guids": None, "count": 1, "queries": [], "warnings": [], "errors": []},
+        ])
+        monkeypatch.setattr("pratyabhijna.tools.update._submit_batch", submit_mock)
+        monkeypatch.setattr("pratyabhijna.tools.update.poll_batch", poll_mock)
+        monkeypatch.setattr("pratyabhijna.tools.update.process_update_results", process_mock)
+
+        client = MagicMock()
+        client.close = AsyncMock()
+        results = await update_from_audit_file(audit_json, service=svc, client=client)
+
+        # Only N2 was fetched
+        svc.get_entity_by_uuid.assert_called_once_with("N2")
+        # process called once with batch and request_lookup keyed by custom_id
+        process_kwargs = process_mock.call_args.kwargs
+        assert "update-N2" in process_kwargs["request_lookup"]
+        assert len(results) == 1
+        assert results[0]["status"] == "Updated"
+
+    async def test_returns_empty_when_no_updates(self, tmp_path):
+        """If audit JSON has no Update entries, return [] without calling submit."""
+        import json
+        from unittest.mock import MagicMock
+        from pratyabhijna.tools.update import update_from_audit_file
+
+        audit_json = tmp_path / "audit.json"
+        audit_json.write_text(json.dumps({
+            "run_metadata": {},
+            "results": [
+                {"uuid": "N1", "name": "a", "status": "Valid", "analysis": "ok"},
+            ],
+        }))
+        svc = MagicMock()
+        results = await update_from_audit_file(audit_json, service=svc, client=MagicMock())
+        assert results == []
+
+
+# ---------------------------------------------------------------------------
+# _handle_batched_message dispatch paths
+# ---------------------------------------------------------------------------
+
+
+class TestHandleBatchedMessage:
+    async def test_end_turn_no_tools_is_rejected(self):
+        """end_turn with no tool_use → Rejected, with the model's text in response."""
+        from pratyabhijna.tools.update import _handle_batched_message
+
+        msg = MagicMock()
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "I decline."
+        msg.content = [text_block]
+        outcome = await _handle_batched_message(
+            message=msg, request_text="Fix N1",
+            request_params={}, service=MagicMock(), client=MagicMock(),
+        )
+        assert outcome["status"] == "Rejected"
+        assert outcome["response"] == "I decline."
+        assert outcome["request"] == "Fix N1"
+
+    async def test_single_write_executes_inline(self, monkeypatch):
+        """Single execute_cypher_write tool_use → execute via _run_write client-side."""
+        from pratyabhijna.tools.update import _handle_batched_message
+
+        msg = MagicMock()
+        tool_use = MagicMock()
+        tool_use.type = "tool_use"
+        tool_use.name = "execute_cypher_write"
+        tool_use.input = {"query": "MATCH (n) SET n.x = 1", "params": {}}
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "Updated."
+        msg.content = [text_block, tool_use]
+
+        import pratyabhijna.tools.update as _u
+        run_write_mock = AsyncMock(return_value=(
+            {"summary": "ok"},
+            {"mode": "write", "cypher": "MATCH (n) SET n.x = 1",
+             "params": {}, "cypher_output": [{"properties_set": 1}]},
+        ))
+        monkeypatch.setattr(_u, "_run_write", run_write_mock)
+
+        outcome = await _handle_batched_message(
+            message=msg, request_text="Set x to 1",
+            request_params={}, service=MagicMock(), client=MagicMock(),
+        )
+        assert outcome["status"] == "Updated"
+        assert outcome["count"] == 1
+        assert outcome["response"] == "Updated."
+        assert len(outcome["queries"]) == 1
+        assert outcome["queries"][0]["turn"] == 1
+
+    async def test_read_tool_use_dispatches_to_sync_continue(self, monkeypatch):
+        """Read tool_use → dispatch to _sync_continue, return its outcome."""
+        from pratyabhijna.tools.update import _handle_batched_message
+
+        msg = MagicMock()
+        tool_use = MagicMock()
+        tool_use.type = "tool_use"
+        tool_use.name = "execute_cypher_read"
+        tool_use.input = {"query": "MATCH (n) RETURN n LIMIT 1"}
+        msg.content = [tool_use]
+
+        import pratyabhijna.tools.update as _u
+        sync_continue_mock = AsyncMock(return_value={
+            "status": "Updated", "request": "x", "response": "done",
+            "guids": None, "count": 1, "queries": [], "warnings": [], "errors": [],
+        })
+        monkeypatch.setattr(_u, "_sync_continue", sync_continue_mock)
+
+        outcome = await _handle_batched_message(
+            message=msg, request_text="x",
+            request_params={"messages": [], "model": "m", "max_tokens": 100,
+                            "system": [], "tools": []},
+            service=MagicMock(), client=MagicMock(),
+        )
+        sync_continue_mock.assert_called_once()
+        assert outcome["status"] == "Updated"
+
+
+# ---------------------------------------------------------------------------
+# _sync_continue end-to-end
+# ---------------------------------------------------------------------------
+
+
+class TestSyncContinue:
+    async def test_read_then_write_end_turn(self, monkeypatch):
+        """End-to-end sync continuation: turn 1 had a read, continue, model writes, end."""
+        import pratyabhijna.tools.update as _u
+        from pratyabhijna.tools.update import _sync_continue
+
+        # Batched turn-1 message: model called execute_cypher_read
+        batch_message = MagicMock()
+        batch_read = MagicMock()
+        batch_read.type = "tool_use"
+        batch_read.id = "tu-1"
+        batch_read.name = "execute_cypher_read"
+        batch_read.input = {"query": "MATCH (n) WHERE n.uuid = 'N1' RETURN n"}
+        batch_message.content = [batch_read]
+
+        run_read_mock = AsyncMock(return_value=(
+            {"rows": [{"name": "N1"}]},
+            {"mode": "read", "cypher": "MATCH ...", "params": {}, "cypher_output": [{"name": "N1"}]},
+        ))
+        run_write_mock = AsyncMock(return_value=(
+            {"summary": "ok"},
+            {"mode": "write", "cypher": "MATCH (n) SET n.fixed = true",
+             "params": {}, "cypher_output": [{"properties_set": 1}]},
+        ))
+        monkeypatch.setattr(_u, "_run_read", run_read_mock)
+        monkeypatch.setattr(_u, "_run_write", run_write_mock)
+
+        # Mock client: turn 2 returns a write tool_use; turn 3 returns end_turn with text
+        client = MagicMock()
+        write_tool_use = MagicMock()
+        write_tool_use.type = "tool_use"
+        write_tool_use.id = "tu-2"
+        write_tool_use.name = "execute_cypher_write"
+        write_tool_use.input = {"query": "MATCH (n) SET n.fixed = true", "params": {}}
+        turn2_response = MagicMock(content=[write_tool_use], stop_reason="tool_use")
+        final_text_block = MagicMock(type="text", text="All fixed.")
+        turn3_response = MagicMock(content=[final_text_block], stop_reason="end_turn")
+
+        class FakeStream:
+            def __init__(self, response):
+                self.response = response
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def get_final_message(self):
+                return self.response
+
+        client.messages.stream = MagicMock(side_effect=[
+            FakeStream(turn2_response),
+            FakeStream(turn3_response),
+        ])
+
+        request_params = {
+            "model": "m", "max_tokens": 100,
+            "system": [], "messages": [{"role": "user", "content": "x"}],
+            "tools": [],
+        }
+
+        outcome = await _sync_continue(
+            client=client, message=batch_message,
+            request_params=request_params, request_text="fix N1",
+            service=MagicMock(),
+        )
+
+        assert outcome["status"] == "Updated"
+        assert outcome["count"] >= 1
+        assert outcome["response"] == "All fixed."
+        # Two queries recorded: turn1 read, turn2 write
+        assert len(outcome["queries"]) == 2
+        assert outcome["queries"][0]["mode"] == "read"
+        assert outcome["queries"][1]["mode"] == "write"
+
+
+# ---------------------------------------------------------------------------
+# _parse_update_args — new --input flag coverage
+# (additional tests beyond what test_main.py now covers)
+# ---------------------------------------------------------------------------
+
+
+class TestParseUpdateArgsInputFlag:
+    def test_accepts_input_flag(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args(["--input", "audit.json"]) == (None, False, "audit.json")
+
+    def test_rejects_both_description_and_input(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args(["desc", "--input", "audit.json"]) is None
+
+    def test_rejects_neither(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args([]) is None
+
+    def test_accepts_description_with_cache(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args(["fix N1", "--cache"]) == ("fix N1", True, None)
+
+
+# ---------------------------------------------------------------------------
+# process_update_results — errored batch entry
+# ---------------------------------------------------------------------------
+
+
+async def test_process_update_results_failed_batch_entry_returns_error_outcome():
+    """When a batched response has type != 'succeeded', record an Error outcome
+    via _failed_outcome rather than crashing or skipping."""
+    from pratyabhijna.tools.update import process_update_results
+    client = MagicMock()
+    client.messages.batches.results = AsyncMock(return_value=_async_iter([
+        MagicMock(
+            custom_id="update-N1",
+            result=MagicMock(type="errored", error="rate limited"),
+        ),
+    ]))
+    results = await process_update_results(
+        client, "batch-xyz",
+        service=MagicMock(),
+        request_lookup={"update-N1": {"params": {}, "request_text": "fix N1"}},
+    )
+    assert len(results) == 1
+    assert results[0]["status"] == "Error"
+    assert results[0]["request"] == "fix N1"
+    assert "rate limited" in results[0]["errors"][0]

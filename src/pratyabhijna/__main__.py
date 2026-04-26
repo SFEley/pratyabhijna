@@ -19,7 +19,9 @@ Usage:
     python -m pratyabhijna deadletters purge ID  Delete permanently (or --all)
 
     python -m pratyabhijna update DESCRIPTION [--cache]
-                                                 Run a maintenance update
+                                                 Run a maintenance update (single)
+                                                 (operator-only, off-MCP).
+    python -m pratyabhijna update --input PATH   Run batched updates from audit JSON
                                                  (operator-only, off-MCP).
 """
 
@@ -383,54 +385,112 @@ def run_tool(config: PratyabhijnaConfig, action: str, argv: list[str]) -> int:
     return 0
 
 
-def _parse_update_args(argv: list[str]) -> tuple[str, bool] | None:
-    """Parse ``update DESCRIPTION [--cache]``.
+def _parse_update_args(argv: list[str]) -> tuple[str | None, bool, str | None] | None:
+    """Parse ``update DESCRIPTION [--cache]`` or ``update --input PATH``.
 
-    Returns (description, cache) or None on usage error.
+    Returns (description, cache, input_path) or None on usage error.
+    Exactly one of description or input_path must be provided.
     """
     description: str | None = None
     cache = False
+    input_path: str | None = None
     i = 0
     while i < len(argv):
         a = argv[i]
         if a == "--cache":
             cache = True
             i += 1
+        elif a == "--input" and i + 1 < len(argv):
+            input_path = argv[i + 1]
+            i += 2
         elif not a.startswith("--") and description is None:
             description = a
             i += 1
         else:
             return None
-    if description is None or not description.strip():
+    # Exactly one of description / input_path
+    if (description is None) == (input_path is None):
         return None
-    return description, cache
+    if description is not None and not description.strip():
+        return None
+    return description, cache, input_path
 
 
 def run_update(config: PratyabhijnaConfig, argv: list[str]) -> int:
-    """Run a single maintenance update via the sub-agent.
-
-    Outputs a JSON file at ``{log_dir}/outputs/output-{ISO}.json`` with
-    the full record of the run. Prints a one-line summary to stdout.
-    """
+    """Run a maintenance update — single description or batched from audit JSON."""
     import anyio
 
     parsed = _parse_update_args(argv)
     if parsed is None:
         print(
-            'Usage: python -m pratyabhijna update "DESCRIPTION" [--cache]',
+            'Usage: python -m pratyabhijna update "DESCRIPTION" [--cache]\n'
+            '   or: python -m pratyabhijna update --input PATH',
             file=sys.stderr,
         )
         return 2
-    description, cache = parsed
+    description, cache, input_path = parsed
 
     from pathlib import Path
 
     from pratyabhijna.output_log import write_output_file
-    from pratyabhijna.tools.update import update as _update
 
     started_at = datetime.now(timezone.utc)
 
-    async def _run() -> dict:
+    if input_path is not None:
+        # Batched-from-audit path
+        from pratyabhijna.tools.update import update_from_audit_file
+
+        async def _run() -> list[dict]:
+            service = PratyabhijnaService(config)
+            await service.start()
+            try:
+                return await update_from_audit_file(input_path, service=service)
+            finally:
+                await service.stop()
+
+        try:
+            results = anyio.run(_run)
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            log.exception("update --input failed before any results")
+            results = [{
+                "status": "Error",
+                "request": f"--input {input_path}",
+                "response": err,
+                "guids": None, "count": 0, "queries": [],
+                "warnings": [], "errors": [err],
+            }]
+        completed_at = datetime.now(timezone.utc)
+
+        output_path = write_output_file(
+            log_dir=Path(config.log_dir),
+            group_id=config.subject_name,
+            started_at=started_at,
+            completed_at=completed_at,
+            cache_requested=False,
+            updates=results,
+        )
+
+        # Tally
+        counts: dict[str, int] = {"Updated": 0, "Deleted": 0, "Rejected": 0, "Error": 0}
+        for r in results:
+            s = r.get("status", "Error")
+            counts[s] = counts.get(s, 0) + 1
+        summary = (
+            f"Update batch complete: {counts['Updated']} Updated, "
+            f"{counts['Deleted']} Deleted, {counts['Rejected']} Rejected, "
+            f"{counts['Error']} Errored [output: {output_path}]"
+        )
+        if counts["Error"] > 0:
+            print(summary, file=sys.stderr)
+            return 1
+        print(summary)
+        return 0
+
+    # Existing single-description path (unchanged behavior)
+    from pratyabhijna.tools.update import update as _update
+
+    async def _run_single() -> dict:
         service = PratyabhijnaService(config)
         await service.start()
         try:
@@ -439,7 +499,7 @@ def run_update(config: PratyabhijnaConfig, argv: list[str]) -> int:
             await service.stop()
 
     try:
-        result = anyio.run(_run)
+        result = anyio.run(_run_single)
     except Exception as exc:
         # Infra failure (service start, Neo4j down, API timeout) bubbles
         # past the inner update() try/finally. Convert to an Error record
@@ -474,6 +534,175 @@ def run_update(config: PratyabhijnaConfig, argv: list[str]) -> int:
         print(summary, file=sys.stderr)
         return 1
     print(summary)
+    return 0
+
+
+def _parse_audit_args(
+    argv: list[str],
+) -> tuple[str, str | None, str | None] | None:
+    """Parse ``audit INPUT [--guidance G] [--output PATH]``.
+
+    Returns (input_str, guidance, output_path) or None on usage error.
+    """
+    input_str: str | None = None
+    guidance: str | None = None
+    output_path: str | None = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--guidance" and i + 1 < len(argv):
+            guidance = argv[i + 1]
+            i += 2
+        elif a == "--output" and i + 1 < len(argv):
+            output_path = argv[i + 1]
+            i += 2
+        elif not a.startswith("--") and input_str is None:
+            input_str = a
+            i += 1
+        else:
+            return None
+    if input_str is None or not input_str.strip():
+        return None
+    return input_str, guidance, output_path
+
+
+def run_audit(config: PratyabhijnaConfig, argv: list[str]) -> int:
+    """Run a node audit batch via the audit sub-agent.
+
+    Outputs a JSON file at ``{log_dir}/audit/audit-{ISO}.json`` and appends
+    a one-section summary to ``{repo_path}/memory/AUDIT.md``.
+    """
+    import anyio
+
+    parsed = _parse_audit_args(argv)
+    if parsed is None:
+        print(
+            'Usage: python -m pratyabhijna audit "INPUT" [--guidance G] [--output PATH]',
+            file=sys.stderr,
+        )
+        return 2
+    input_str, guidance, output_path = parsed
+
+    from pathlib import Path
+    import json as _json
+
+    import anthropic
+    from pratyabhijna.audit_log import append_to_audit_md, write_audit_file
+    from pratyabhijna.tools.audit import run_audit_run
+
+    async def _run() -> dict:
+        service = PratyabhijnaService(config)
+        await service.start()
+        queue = WorkQueue(db_path=config.queue.db_path)
+        # Register a no-op for add_episode so queue.enqueue() succeeds; the
+        # actual processing happens when the main MCP server runs.
+        queue.register("add_episode", lambda _: None)
+        await queue.start(run_worker=False)
+
+        api_key = config.llm.api_key or None
+        client = anthropic.AsyncAnthropic(api_key=api_key, timeout=300.0)
+        try:
+            return await run_audit_run(
+                service, queue, input_str,
+                guidance=guidance, anthropic_client=client,
+            )
+        finally:
+            await client.close()
+            await queue.stop()
+            await service.stop()
+
+    try:
+        summary = anyio.run(_run)
+    except Exception as exc:
+        # Infra failure (Neo4j down, API timeout, batch submission failure)
+        # bubbles past run_audit_run's internal handling. Convert to a minimal
+        # summary so the JSON file is still written and the operator gets a
+        # diagnostic record.
+        err = f"{type(exc).__name__}: {exc}"
+        log.exception("audit run failed before result was returned")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        summary = {
+            "results": [{
+                "uuid": "",
+                "name": "",
+                "status": "Error",
+                "analysis": err,
+                "error": err,
+            }],
+            "started_at": now_iso,
+            "completed_at": now_iso,
+            "cohort_size": 0,
+            "audit_revision": 0,
+            "model": config.llm.audit_model,
+            "guidance": guidance,
+        }
+
+    # Compute count summary for AUDIT.md and stdout
+    counts = {"Valid": 0, "Update": 0, "Unfixable": 0, "Error": 0}
+    unfixable_details: list[dict] = []
+    for r in summary["results"]:
+        s = r.get("status", "Error")
+        counts[s] = counts.get(s, 0) + 1
+        if s == "Unfixable":
+            unfixable_details.append({
+                "uuid": r["uuid"],
+                "name": r.get("name", ""),
+                "analysis": r.get("analysis", ""),
+            })
+
+    # Write the JSON file. --output overrides the default location.
+    if output_path:
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(_json.dumps(
+            {"run_metadata": {
+                "started_at": summary["started_at"],
+                "completed_at": summary["completed_at"],
+                "audit_revision": summary["audit_revision"],
+                "guidance": summary["guidance"],
+                "model": summary["model"],
+                "cohort_size": summary["cohort_size"],
+            }, "results": summary["results"]},
+            indent=2, default=str,
+        ))
+        json_path = out
+    else:
+        json_path = write_audit_file(
+            log_dir=Path(config.log_dir),
+            run_metadata={
+                "started_at": summary["started_at"],
+                "completed_at": summary["completed_at"],
+                "audit_revision": summary["audit_revision"],
+                "guidance": summary["guidance"],
+                "model": summary["model"],
+                "cohort_size": summary["cohort_size"],
+            },
+            results=summary["results"],
+        )
+
+    # Append AUDIT.md summary (only if repo_path is configured)
+    if config.resources.repo_path:
+        append_to_audit_md(
+            repo_path=config.resources.repo_path,
+            run_summary={
+                "started_at": summary["started_at"],
+                "valid": counts["Valid"],
+                "update": counts["Update"],
+                "unfixable": counts["Unfixable"],
+                "errored": counts["Error"],
+                "unfixable_details": unfixable_details,
+            },
+        )
+
+    summary_line = (
+        f"Audit complete: {counts['Valid']} Valid, {counts['Update']} Update, "
+        f"{counts['Unfixable']} Unfixable, {counts['Error']} Errored "
+        f"[output: {json_path}]"
+    )
+    if any(r.get("status") == "Error" for r in summary["results"]):
+        print(summary_line, file=sys.stderr)
+        return 1
+    print(summary_line)
     return 0
 
 
@@ -532,8 +761,12 @@ Commands:
   recall QUERY [--type T] [--limit N]  Graph search (default limit: 5)
               [--time-range R]
 
-  update DESCRIPTION [--cache]    Run a maintenance update
+  update DESCRIPTION [--cache]    Run a maintenance update (single)
+  update --input PATH             Run batched updates from an audit JSON file
                                   (operator-only, off-MCP)
+
+  audit INPUT [--guidance G]      Run a node audit batch via the audit sub-agent
+        [--output PATH]           (operator-only, off-MCP)
 
   deadletters list                Show dead-lettered tasks
   deadletters show ID             Full detail for one task
@@ -564,6 +797,9 @@ def main():
 
     if len(sys.argv) > 1 and sys.argv[1] == "update":
         sys.exit(run_update(config, sys.argv[2:]))
+
+    if len(sys.argv) > 1 and sys.argv[1] == "audit":
+        sys.exit(run_audit(config, sys.argv[2:]))
 
     if not config.subject_name:
         print(
