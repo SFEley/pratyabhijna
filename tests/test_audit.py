@@ -170,6 +170,12 @@ def test_parse_uuid_list_handles_whitespace_variants():
     ]
 
 
+def test_parse_uuid_list_lowercases():
+    """Both resolution paths must produce lowercase UUIDs (Neo4j stores them lowercase)."""
+    s = "550E8400-E29B-41D4-A716-446655440000"
+    assert parse_uuid_list(s) == ["550e8400-e29b-41d4-a716-446655440000"]
+
+
 from unittest.mock import MagicMock
 from pratyabhijna.tools.audit import resolve_node_list
 
@@ -234,4 +240,13 @@ async def test_resolve_returns_empty_when_query_returns_no_uuids(monkeypatch):
     monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
     service = MagicMock()
     uuids = await resolve_node_list("find unicorns", service=service)
+    assert uuids == []
+
+
+async def test_resolve_returns_empty_on_refusal(monkeypatch):
+    """When the query agent refuses (no Cypher executed), resolve returns []."""
+    async def fake_query(service, request, **kwargs):
+        return {"response": "", "refused": True, "cypher_log": [], "iterations": 1}
+    monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
+    uuids = await resolve_node_list("find anything", service=MagicMock())
     assert uuids == []

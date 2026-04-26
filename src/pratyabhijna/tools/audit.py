@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import re
 
+from pratyabhijna.tools.query import query as _call_query
+
 AUDIT_REVISION = 1
 """Bumped by hand when audit evaluation logic changes; nodes audited at lower
 revisions get re-discovered by the audit-rediscovery query."""
@@ -26,11 +28,9 @@ def is_uuid_list(text: str) -> bool:
 
 
 def parse_uuid_list(text: str) -> list[str]:
-    """Split a UUID list on any whitespace. Order preserved."""
-    return text.split()
-
-
-from pratyabhijna.tools.query import query as _call_query
+    """Split a UUID list on any whitespace. Order preserved, case normalized
+    to lowercase to match the natural-language resolution path."""
+    return [tok.lower() for tok in text.split()]
 
 
 async def resolve_node_list(input_str: str, *, service) -> list[str]:
@@ -49,6 +49,9 @@ async def resolve_node_list(input_str: str, *, service) -> list[str]:
     result = await _call_query(service, augmented)
     seen: set[str] = set()
     uuids: list[str] = []
+    # Extraction is text-only — any UUID-shaped string in the agent's prose is
+    # accepted, including ones the agent mentioned in refusal or error contexts.
+    # Tasks 4-5 should treat the returned list as candidates, not confirmed matches.
     for match in UUID_RE.findall(result.get("response", "")):
         normalized = match.lower()
         if normalized not in seen:
