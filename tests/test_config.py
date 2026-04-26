@@ -269,3 +269,17 @@ class TestConfigDefaults:
 
         config = PratyabhijnaConfig()
         assert config.synthesis.rebuild_delay_hours == 2.0
+
+
+def test_audit_model_defaults_to_sonnet():
+    from pratyabhijna.config import LLMConfig
+
+    cfg = LLMConfig()
+    assert cfg.audit_model == "claude-sonnet-4-6"
+
+
+def test_audit_model_overridable():
+    from pratyabhijna.config import LLMConfig
+
+    cfg = LLMConfig(audit_model="claude-opus-4-7")
+    assert cfg.audit_model == "claude-opus-4-7"

@@ -42,6 +42,9 @@ class LLMConfig(BaseModel):
     # Identity synthesis agent (synthesis_agent.py): adaptive thinking, tool
     # use, deepest reasoning.
     synthesis_model: str = "claude-opus-4-7"
+    # Per-node audit evaluations sent through the Anthropic Batches API.
+    # Sonnet 4.6 chosen for adaptive thinking + cost.
+    audit_model: str = "claude-sonnet-4-6"
 
 
 class EmbeddingConfig(BaseModel):
