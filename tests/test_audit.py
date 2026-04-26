@@ -138,3 +138,100 @@ def test_strip_removes_underscore_prefixed_keys():
     assert "_episode_uuids" not in cleaned[0]
     assert cleaned[0]["custom_id"] == "n1"
     assert cleaned[0]["params"] == {"model": "x"}
+
+
+from pratyabhijna.tools.audit import is_uuid_list, parse_uuid_list
+
+
+def test_is_uuid_list_recognizes_canonical_uuids():
+    assert is_uuid_list("550e8400-e29b-41d4-a716-446655440000")
+    assert is_uuid_list(
+        "550e8400-e29b-41d4-a716-446655440000 660e8400-e29b-41d4-a716-446655440001"
+    )
+    assert is_uuid_list(
+        "550e8400-e29b-41d4-a716-446655440000\n660e8400-e29b-41d4-a716-446655440001"
+    )
+
+
+def test_is_uuid_list_rejects_prose_and_malformed():
+    assert not is_uuid_list("find all Position nodes")
+    assert not is_uuid_list("nodes created last week")
+    assert not is_uuid_list("abc123-def456-7890")  # not canonical UUID shape
+    assert not is_uuid_list("")
+    assert not is_uuid_list("   ")
+
+
+def test_parse_uuid_list_handles_whitespace_variants():
+    s = "550e8400-e29b-41d4-a716-446655440000\n660e8400-e29b-41d4-a716-446655440001"
+    uuids = parse_uuid_list(s)
+    assert uuids == [
+        "550e8400-e29b-41d4-a716-446655440000",
+        "660e8400-e29b-41d4-a716-446655440001",
+    ]
+
+
+from unittest.mock import MagicMock
+from pratyabhijna.tools.audit import resolve_node_list
+
+
+async def test_resolve_uuid_list_skips_query():
+    service = MagicMock()
+    uuids = await resolve_node_list(
+        "550e8400-e29b-41d4-a716-446655440000", service=service,
+    )
+    assert uuids == ["550e8400-e29b-41d4-a716-446655440000"]
+
+
+async def test_resolve_natural_language_extracts_uuids_from_query_response(monkeypatch):
+    async def fake_query(service, request, **kwargs):
+        # The augmented prompt should be passed through
+        assert "find all Position nodes" in request
+        return {
+            "response": (
+                "Found 2 Position nodes: "
+                "550e8400-e29b-41d4-a716-446655440000 and "
+                "660e8400-e29b-41d4-a716-446655440001."
+            ),
+            "cypher_log": [],
+            "refused": False,
+            "iterations": 1,
+        }
+    monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
+    service = MagicMock()
+    uuids = await resolve_node_list("find all Position nodes", service=service)
+    assert uuids == [
+        "550e8400-e29b-41d4-a716-446655440000",
+        "660e8400-e29b-41d4-a716-446655440001",
+    ]
+
+
+async def test_resolve_deduplicates_uuids(monkeypatch):
+    """If the query response mentions a UUID twice, return it once."""
+    async def fake_query(service, request, **kwargs):
+        return {
+            "response": (
+                "Node 550e8400-e29b-41d4-a716-446655440000 exists. "
+                "(550e8400-e29b-41d4-a716-446655440000 again, for emphasis.)"
+            ),
+            "cypher_log": [],
+            "refused": False,
+            "iterations": 1,
+        }
+    monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
+    service = MagicMock()
+    uuids = await resolve_node_list("any prompt", service=service)
+    assert uuids == ["550e8400-e29b-41d4-a716-446655440000"]
+
+
+async def test_resolve_returns_empty_when_query_returns_no_uuids(monkeypatch):
+    async def fake_query(service, request, **kwargs):
+        return {
+            "response": "No matching nodes found.",
+            "cypher_log": [],
+            "refused": False,
+            "iterations": 1,
+        }
+    monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
+    service = MagicMock()
+    uuids = await resolve_node_list("find unicorns", service=service)
+    assert uuids == []

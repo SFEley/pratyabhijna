@@ -2,10 +2,60 @@
 from __future__ import annotations
 
 import json
+import re
 
 AUDIT_REVISION = 1
 """Bumped by hand when audit evaluation logic changes; nodes audited at lower
 revisions get re-discovered by the audit-rediscovery query."""
+
+UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.I,
+)
+
+
+def is_uuid_list(text: str) -> bool:
+    """True if the input is whitespace-separated canonical UUIDs only.
+
+    Empty / whitespace-only input returns False.
+    """
+    tokens = text.split()
+    if not tokens:
+        return False
+    return all(UUID_RE.fullmatch(tok) for tok in tokens)
+
+
+def parse_uuid_list(text: str) -> list[str]:
+    """Split a UUID list on any whitespace. Order preserved."""
+    return text.split()
+
+
+from pratyabhijna.tools.query import query as _call_query
+
+
+async def resolve_node_list(input_str: str, *, service) -> list[str]:
+    """Resolve an audit input string into a list of node UUIDs.
+
+    If the input is whitespace-separated UUIDs, return them directly.
+    Otherwise, dispatch to the natural-language `query` sub-agent and extract
+    UUIDs from its response text. Order preserved, duplicates removed.
+    """
+    if is_uuid_list(input_str):
+        return parse_uuid_list(input_str)
+    augmented = (
+        f"{input_str}\n\n"
+        "List the matching node UUIDs in your response."
+    )
+    result = await _call_query(service, augmented)
+    seen: set[str] = set()
+    uuids: list[str] = []
+    for match in UUID_RE.findall(result.get("response", "")):
+        normalized = match.lower()
+        if normalized not in seen:
+            seen.add(normalized)
+            uuids.append(normalized)
+    return uuids
+
 
 PARTIAL_BOOTSTRAP_FRAMING = """\
 You are the subject (Vesper) acting on a Pratyabhijna memory-server request.
