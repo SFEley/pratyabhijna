@@ -2,7 +2,7 @@
 
 The writer wraps a list of per-update dicts into the canonical output
 shape and writes it as ``output-{ISO8601-UTC}.json`` under
-``{log_dir}/outputs/``.
+``{log_dir}/update/``.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def updates_one():
     }]
 
 
-def test_writes_output_file_to_outputs_subdir(tmp_path, updates_one):
+def test_writes_output_file_to_update_subdir(tmp_path, updates_one):
     from pratyabhijna.output_log import write_output_file
 
     started = datetime(2026, 4, 25, 18, 30, 0, tzinfo=timezone.utc)
@@ -49,12 +49,12 @@ def test_writes_output_file_to_outputs_subdir(tmp_path, updates_one):
     )
 
     assert path.exists()
-    assert path.parent == tmp_path / "outputs"
+    assert path.parent == tmp_path / "update"
     assert path.name.startswith("output-")
     assert path.name.endswith(".json")
 
 
-def test_creates_outputs_dir_if_missing(tmp_path, updates_one):
+def test_creates_update_dir_if_missing(tmp_path, updates_one):
     from pratyabhijna.output_log import write_output_file
 
     log_dir = tmp_path / "fresh"  # does not exist yet
@@ -70,7 +70,7 @@ def test_creates_outputs_dir_if_missing(tmp_path, updates_one):
         updates=updates_one,
     )
 
-    assert (log_dir / "outputs").is_dir()
+    assert (log_dir / "update").is_dir()
 
 
 def test_filename_uses_utc_iso8601(tmp_path, updates_one):

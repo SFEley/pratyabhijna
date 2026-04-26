@@ -18,10 +18,11 @@ Usage:
     python -m pratyabhijna deadletters retry ID  Reset to pending (or --all)
     python -m pratyabhijna deadletters purge ID  Delete permanently (or --all)
 
-    python -m pratyabhijna update DESCRIPTION [--cache]
+    python -m pratyabhijna update DESCRIPTION [--cache] [--output PATH]
                                                  Run a maintenance update (single)
                                                  (operator-only, off-MCP).
-    python -m pratyabhijna update --input PATH   Run batched updates from audit JSON
+    python -m pratyabhijna update --input PATH [--output PATH]
+                                                 Run batched updates from audit JSON
                                                  (operator-only, off-MCP).
 """
 
@@ -385,15 +386,16 @@ def run_tool(config: PratyabhijnaConfig, action: str, argv: list[str]) -> int:
     return 0
 
 
-def _parse_update_args(argv: list[str]) -> tuple[str | None, bool, str | None] | None:
-    """Parse ``update DESCRIPTION [--cache]`` or ``update --input PATH``.
+def _parse_update_args(argv: list[str]) -> tuple[str | None, bool, str | None, str | None] | None:
+    """Parse ``update DESCRIPTION [--cache] [--output PATH]`` or ``update --input PATH [--output PATH]``.
 
-    Returns (description, cache, input_path) or None on usage error.
+    Returns (description, cache, input_path, output_path) or None on usage error.
     Exactly one of description or input_path must be provided.
     """
     description: str | None = None
     cache = False
     input_path: str | None = None
+    output_path: str | None = None
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -402,6 +404,9 @@ def _parse_update_args(argv: list[str]) -> tuple[str | None, bool, str | None] |
             i += 1
         elif a == "--input" and i + 1 < len(argv):
             input_path = argv[i + 1]
+            i += 2
+        elif a == "--output" and i + 1 < len(argv):
+            output_path = argv[i + 1]
             i += 2
         elif not a.startswith("--") and description is None:
             description = a
@@ -413,7 +418,7 @@ def _parse_update_args(argv: list[str]) -> tuple[str | None, bool, str | None] |
         return None
     if description is not None and not description.strip():
         return None
-    return description, cache, input_path
+    return description, cache, input_path, output_path
 
 
 def run_update(config: PratyabhijnaConfig, argv: list[str]) -> int:
@@ -423,12 +428,12 @@ def run_update(config: PratyabhijnaConfig, argv: list[str]) -> int:
     parsed = _parse_update_args(argv)
     if parsed is None:
         print(
-            'Usage: python -m pratyabhijna update "DESCRIPTION" [--cache]\n'
-            '   or: python -m pratyabhijna update --input PATH',
+            'Usage: python -m pratyabhijna update "DESCRIPTION" [--cache] [--output PATH]\n'
+            '   or: python -m pratyabhijna update --input PATH [--output PATH]',
             file=sys.stderr,
         )
         return 2
-    description, cache, input_path = parsed
+    description, cache, input_path, output_path = parsed
 
     from pathlib import Path
 
@@ -462,13 +467,14 @@ def run_update(config: PratyabhijnaConfig, argv: list[str]) -> int:
             }]
         completed_at = datetime.now(timezone.utc)
 
-        output_path = write_output_file(
+        out = write_output_file(
             log_dir=Path(config.log_dir),
             group_id=config.subject_name,
             started_at=started_at,
             completed_at=completed_at,
             cache_requested=False,
             updates=results,
+            output_path=output_path,
         )
 
         # Tally
@@ -479,7 +485,7 @@ def run_update(config: PratyabhijnaConfig, argv: list[str]) -> int:
         summary = (
             f"Update batch complete: {counts['Updated']} Updated, "
             f"{counts['Deleted']} Deleted, {counts['Rejected']} Rejected, "
-            f"{counts['Error']} Errored [output: {output_path}]"
+            f"{counts['Error']} Errored [output: {out}]"
         )
         if counts["Error"] > 0:
             print(summary, file=sys.stderr)
@@ -518,18 +524,19 @@ def run_update(config: PratyabhijnaConfig, argv: list[str]) -> int:
         }
     completed_at = datetime.now(timezone.utc)
 
-    output_path = write_output_file(
+    out = write_output_file(
         log_dir=Path(config.log_dir),
         group_id=config.subject_name,
         started_at=started_at,
         completed_at=completed_at,
         cache_requested=cache,
         updates=[result],
+        output_path=output_path,
     )
 
     # One-line summary on stdout. Errors (non-zero exit) on Error/Rejected
     # so shell pipelines can branch on it.
-    summary = f"{result['status']}: {result['response']} [output: {output_path}]"
+    summary = f"{result['status']}: {result['response']} [output: {out}]"
     if result["status"] in ("Error", "Rejected"):
         print(summary, file=sys.stderr)
         return 1
@@ -762,8 +769,9 @@ Commands:
               [--time-range R]
 
   update DESCRIPTION [--cache]    Run a maintenance update (single)
+         [--output PATH]          (operator-only, off-MCP)
   update --input PATH             Run batched updates from an audit JSON file
-                                  (operator-only, off-MCP)
+         [--output PATH]          (operator-only, off-MCP)
 
   audit INPUT [--guidance G]      Run a node audit batch via the audit sub-agent
         [--output PATH]           (operator-only, off-MCP)

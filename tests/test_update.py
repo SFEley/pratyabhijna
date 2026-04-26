@@ -737,7 +737,7 @@ class TestParseUpdateArgsInputFlag:
     def test_accepts_input_flag(self):
         from pratyabhijna.__main__ import _parse_update_args
 
-        assert _parse_update_args(["--input", "audit.json"]) == (None, False, "audit.json")
+        assert _parse_update_args(["--input", "audit.json"]) == (None, False, "audit.json", None)
 
     def test_rejects_both_description_and_input(self):
         from pratyabhijna.__main__ import _parse_update_args
@@ -752,7 +752,7 @@ class TestParseUpdateArgsInputFlag:
     def test_accepts_description_with_cache(self):
         from pratyabhijna.__main__ import _parse_update_args
 
-        assert _parse_update_args(["fix N1", "--cache"]) == ("fix N1", True, None)
+        assert _parse_update_args(["fix N1", "--cache"]) == ("fix N1", True, None, None)
 
 
 # ---------------------------------------------------------------------------
