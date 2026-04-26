@@ -78,7 +78,9 @@ from pratyabhijna.tools.audit import build_audit_request, AUDIT_RESPONSE_SCHEMA
 
 def test_audit_response_schema_has_required_fields():
     props = AUDIT_RESPONSE_SCHEMA["properties"]
-    assert {"uuid", "name", "status", "analysis"} <= set(props)
+    # name is sourced from the input node, not echoed by the model
+    assert {"uuid", "status", "analysis"} <= set(props)
+    assert "name" not in props
     assert AUDIT_RESPONSE_SCHEMA["properties"]["status"]["enum"] == [
         "Valid", "Update", "Unfixable"
     ]

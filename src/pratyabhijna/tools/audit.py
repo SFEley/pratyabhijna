@@ -25,7 +25,7 @@ hygiene issues. You have full authority over what stays and what changes.
 """
 
 AUDIT_INSTRUCTIONS = """\
-For each node you receive, decide one of three verdicts:
+For the node you receive, decide one of three verdicts:
 
 - **Valid** — the node is fine as-is. No structural problems, no obvious type
   errors, no missing properties that the source episode supplied. Default to
@@ -123,11 +123,13 @@ def build_user_message(
     }
 
 
+# `request` is required by the prompt when status=Update but cannot be declared
+# conditionally required in JSON Schema without if/then (not supported by all
+# backends). Task 5 result handlers must guard with `entry.get("request", "")`.
 AUDIT_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
         "uuid": {"type": "string"},
-        "name": {"type": "string"},
         "status": {"type": "string", "enum": ["Valid", "Update", "Unfixable"]},
         "analysis": {"type": "string"},
         "request": {
@@ -138,7 +140,7 @@ AUDIT_RESPONSE_SCHEMA = {
             ),
         },
     },
-    "required": ["uuid", "name", "status", "analysis"],
+    "required": ["uuid", "status", "analysis"],
     "additionalProperties": False,
 }
 
@@ -188,7 +190,7 @@ def sort_requests_by_episodes(requests: list[dict]) -> list[dict]:
     Episode-cache hit probability under the Batches API (no ordering SLA)."""
     return sorted(
         requests,
-        key=lambda r: (len(r["_episode_uuids"]), tuple(r["_episode_uuids"])),
+        key=lambda r: tuple(r["_episode_uuids"]),
     )
 
 
