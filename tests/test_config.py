@@ -283,3 +283,52 @@ def test_audit_model_overridable():
 
     cfg = LLMConfig(audit_model="claude-opus-4-7")
     assert cfg.audit_model == "claude-opus-4-7"
+
+
+class TestConfigPathAnchoring:
+    """Project-relative paths in config resolve against _SERVER_ROOT, not CWD.
+
+    Regression: invoking ``pratyabhijna audit`` from outside the project
+    directory created ``logs/`` and ``data/`` in CWD instead of using
+    ``/opt/pratyabhijna/logs`` and ``/opt/pratyabhijna/data``, silently
+    routing audit output to the wrong place and wasting batch requests
+    before the operator noticed.
+    """
+
+    def test_relative_paths_anchor_to_server_root(self, tmp_path, monkeypatch):
+        """Relative defaults resolve under _SERVER_ROOT regardless of CWD."""
+        from pratyabhijna.config import PratyabhijnaConfig, _SERVER_ROOT
+
+        monkeypatch.chdir(tmp_path)
+        config = PratyabhijnaConfig()
+
+        assert Path(config.log_dir).is_absolute()
+        assert Path(config.queue.db_path).is_absolute()
+        assert Path(config.oauth.db_path).is_absolute()
+        assert Path(config.log_dir) == _SERVER_ROOT / "logs"
+        assert Path(config.queue.db_path) == _SERVER_ROOT / "data" / "queue.sqlite"
+        assert Path(config.oauth.db_path) == _SERVER_ROOT / "data" / "oauth.sqlite"
+
+    def test_absolute_paths_pass_through(self, tmp_path):
+        """Test fixtures that pass absolute paths must not be rewritten."""
+        from pratyabhijna.config import PratyabhijnaConfig
+
+        abs_log = tmp_path / "logs"
+        abs_queue = tmp_path / "queue.sqlite"
+        config = PratyabhijnaConfig(
+            log_dir=str(abs_log),
+            queue={"db_path": str(abs_queue)},
+        )
+        assert config.log_dir == str(abs_log)
+        assert config.queue.db_path == str(abs_queue)
+
+    def test_tilde_paths_pass_through(self):
+        """Tilde-prefixed paths (e.g. ~/vesper) are resolved by their consumers."""
+        from pratyabhijna.config import PratyabhijnaConfig
+
+        config = PratyabhijnaConfig(
+            resources={"repo_path": "~/elsewhere"},
+            log_dir="~/custom-logs",
+        )
+        assert config.resources.repo_path == "~/elsewhere"
+        assert config.log_dir == "~/custom-logs"
