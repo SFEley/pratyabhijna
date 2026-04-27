@@ -44,7 +44,7 @@ class TestRecallResults:
         from pratyabhijna.tools.recall import recall
 
         node1 = make_entity_node(uuid="node-1", name="Serah")
-        node2 = make_entity_node(uuid="node-2", name="directness", labels=["Position"])
+        node2 = make_entity_node(uuid="node-2", name="directness", labels=["Observation"])
         edge1 = make_entity_edge(
             uuid="edge-1",
             fact="Serah values directness",
@@ -168,7 +168,7 @@ class TestRecallFormatting:
         from pratyabhijna.tools.recall import recall
 
         node1 = make_entity_node(uuid="node-1", name="Serah")
-        node2 = make_entity_node(uuid="node-2", name="directness", labels=["Position"])
+        node2 = make_entity_node(uuid="node-2", name="directness", labels=["Observation"])
         edge1 = make_entity_edge(
             source_node_uuid="node-1",
             target_node_uuid="node-2",
@@ -219,7 +219,7 @@ class TestRecallFormatting:
 
         edge_low = make_entity_edge(uuid="edge-low", fact="low score edge")
         edge_high = make_entity_edge(uuid="edge-high", fact="high score edge")
-        node1 = make_entity_node(uuid="node-1", name="topic", labels=["Position"])
+        node1 = make_entity_node(uuid="node-1", name="topic", labels=["Observation"])
         mock_service.recall.return_value = SearchResults(
             edges=[edge_low, edge_high],
             edge_reranker_scores=[0.3, 0.9],

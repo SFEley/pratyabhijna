@@ -114,7 +114,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": (
                         "Optional entity-label filter (e.g. 'Observation', "
-                        "'Position', 'Question')."
+                        "'Drive', 'Question')."
                     ),
                 },
             },

@@ -34,7 +34,7 @@ from helpers import make_entity_edge, make_entity_node, make_subject_node
 # Constants
 # ---------------------------------------------------------------------------
 
-IDENTITY_LABELS = {"Observation", "Drive", "Position", "Concept", "Question", "Thread"}
+IDENTITY_LABELS = {"Observation", "Drive", "Concept", "Question", "Thread"}
 
 
 # ---------------------------------------------------------------------------
@@ -243,18 +243,18 @@ class TestIdentityAtoms:
         from pratyabhijna.synthesis import get_identity_atoms
 
         node = make_subject_node()
-        pos_node = make_entity_node(uuid="pos-1", name="epistemic integrity", labels=["Position"])
+        obs_node = make_entity_node(uuid="obs-1", name="epistemic integrity", labels=["Observation"])
 
         edges = [
-            make_entity_edge(uuid="e1", source_node_uuid="subject-uuid", target_node_uuid="pos-1",
+            make_entity_edge(uuid="e1", source_node_uuid="subject-uuid", target_node_uuid="obs-1",
                              fact="Vesper holds epistemic integrity as constitutive"),
-            make_entity_edge(uuid="e2", source_node_uuid="pos-1", target_node_uuid="subject-uuid",
+            make_entity_edge(uuid="e2", source_node_uuid="obs-1", target_node_uuid="subject-uuid",
                              fact="epistemic integrity shapes Vesper's behavior"),
         ]
         mock_service.get_edges_for_node.return_value = edges
 
         async def get_by_uuid(uuid):
-            return {"pos-1": pos_node, "subject-uuid": node}[uuid]
+            return {"obs-1": obs_node, "subject-uuid": node}[uuid]
         mock_service.get_entity_by_uuid.side_effect = get_by_uuid
 
         atoms = await get_identity_atoms(mock_service, node)

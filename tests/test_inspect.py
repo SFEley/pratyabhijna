@@ -132,7 +132,7 @@ class TestInspectEdge:
         mock_service.get_edge.return_value = edge
 
         source_node = make_entity_node(uuid="node-1", name="Serah", labels=["Person"])
-        target_node = make_entity_node(uuid="node-2", name="directness", labels=["Position"])
+        target_node = make_entity_node(uuid="node-2", name="directness", labels=["Observation"])
         # After the first call raises, reset side_effect for entity resolution
         call_count = 0
         async def get_entity_dispatch(uuid):
@@ -168,7 +168,7 @@ class TestInspectEdge:
         mock_service.get_edge.return_value = edge
 
         source_node = make_entity_node(uuid="node-1", name="Serah", labels=["Person"])
-        target_node = make_entity_node(uuid="node-2", name="directness", labels=["Position"])
+        target_node = make_entity_node(uuid="node-2", name="directness", labels=["Observation"])
         call_count = 0
         async def get_entity_dispatch(uuid):
             nonlocal call_count
@@ -184,7 +184,7 @@ class TestInspectEdge:
         assert result["source_entity"]["name"] == "Serah"
         assert result["source_entity"]["labels"] == ["Person"]
         assert result["target_entity"]["name"] == "directness"
-        assert result["target_entity"]["labels"] == ["Position"]
+        assert result["target_entity"]["labels"] == ["Observation"]
 
     async def test_inspect_edge_with_episodes(self, mock_service):
         """Edge episode UUIDs are fetched and returned with content."""

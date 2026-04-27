@@ -6,25 +6,24 @@ episode content and stores instances as nodes in the knowledge graph with
 bi-temporal edges connecting them.
 
 All types are general-purpose. None are exclusive to Pratyabhijna or to Serah —
-a Position can be held by anyone, an Observation can be about anyone,
-an Event can involve anyone. The types describe *kinds of things*, not
-*whose things*.
+an Observation can be about anyone, an Event can involve anyone.
+The types describe *kinds of things*, not *whose things*.
 
-Relationships between entities (including who holds a Position, who
+Relationships between entities (including who holds an Observation, who
 participated in an Event, who works on a Project) are represented as
 Graphiti edges — free-form, LLM-inferred, bi-temporal. They are not
 hardcoded in advance, and multiple relationship types can exist between
 the same pair of entities simultaneously.
 
-Qualities that vary by holder — how firmly someone holds a Position,
+Qualities that vary by holder — how firmly someone holds an Observation,
 how central it is to their identity — are edge properties, not node
-properties. This allows the same Position to be shared by multiple
+properties. This allows the same Observation to be shared by multiple
 people with different relationships to it.
 
 ## Property conventions
 
 - `notes` — freeform overflow. Every type has it.
-- `domain` — area of thought (ethics, identity, epistemology, etc.). Used on conceptual types: Observation, Position, Question, Concept.
+- `domain` — area of thought (ethics, identity, epistemology, etc.). Used on conceptual types: Observation, Question, Concept.
 - `status` — lifecycle state. Used on types with lifecycles: Person, Project, Question, Thread.
 - `kind` — open subcategory. Used on Artifact (file/document/composition/instrument/code/writing/award/dataset/...).
 
@@ -187,33 +186,6 @@ different things connected by an edge.
 
 ---
 
-## Position — **DEPRECATED**
-
-**Status:** Deprecated April 25, 2026. Scheduled for merge into
-Observation in a follow-up PR. The 99 existing Position nodes remain
-valid in the graph until the migration runs; the type is retained on
-the schema for that reason. **No new Position nodes should be
-extracted.**
-
-**Why:** Position and Observation share an identical schema (`domain` +
-`notes`) and have bled empirically — the April 24 audit found ~25% of
-Observations were claim-shaped and the same content had been
-split-extracted as both types. The synthesizer
-(`synthesis.py:IDENTITY_LABELS`) already treats them as equivalent.
-
-**Routing for content that would have been Position:**
-
-- **Observation** — for held stances and beliefs ("X holds Y," "X's
-  principle is Y"). The holder lives on the edge, not in the type.
-- **Concept** — for labeled frameworks (Picture Theory of Language,
-  Two-Brain Model). Connect a holder via an edge.
-- **Drive** — for stances that push behavior with a monitored source.
-- **Question** — for open gaps being held rather than settled stances.
-
-When in doubt, default to Observation.
-
----
-
 ## Concept
 
 **What it is:** A named idea, principle, technique, mechanism, framework,
@@ -224,20 +196,21 @@ disciplines, traditions, and discourse.
 - `domain` — area of thought (philosophy, biology, music, technique, etc.)
 - `notes` — anything else
 
-**Distinction from Position:** Concept is the *labeled thing*. Position
-is the *holding* of it. The Picture Theory of Language is a Concept;
-Wittgenstein holding it is a Position (or an edge from Wittgenstein to
-the Concept).
+**Distinction from Observation:** Concept is the *labeled thing*. The
+holding of it is an Observation about the holder, with an edge to the
+Concept. The Picture Theory of Language is a Concept; "Wittgenstein
+holds the Picture Theory of Language" is an Observation about
+Wittgenstein, connected to that Concept by an edge.
 
 **Distinction from Artifact:** Concept is abstract. Artifact is concrete.
 The Tractatus is an Artifact (a book); the Picture Theory of Language is
 a Concept (an idea inside it).
 
-**Distinction from Observation:** Concept is the labeled abstraction
-existing in a discipline. Observation is the act of noticing something.
-"FLOP technique" is a Concept; "FLOP exemplifies the idea that small
-shifts in what you look for change what you find" is an Observation
-about the technique.
+**Concept vs. Observation, more generally:** Concept is the labeled
+abstraction existing in a discipline. Observation is the act of
+noticing something. "FLOP technique" is a Concept; "FLOP exemplifies
+the idea that small shifts in what you look for change what you find"
+is an Observation about the technique.
 
 ---
 
@@ -252,8 +225,8 @@ uncertainties.
 - `status` — open, settled, dormant
 - `notes` — anything else
 
-When a Question settles, it should be connected by an edge to the Position
-it resolved into.
+When a Question settles, it should be connected by an edge to the
+Observation, Concept, or Drive it resolved into.
 
 ---
 
@@ -279,8 +252,8 @@ relationship types between the same pair of entities are supported, and
 all edges are bi-temporal (valid_from, valid_to). Examples:
 
 ```
-Person ──[holds]──→         Position, Question, Concept
-Person ──[observed]──→      Observation
+Person ──[holds]──→         Observation, Concept
+Person ──[asks]──→          Question
 Person ──[has]──→           Drive
 Person ──[participated]──→  Event
 Person ──[works_on]──→      Project, Thread
@@ -290,7 +263,7 @@ Person ──[fused_into]──→    Person
 Person ──[split_from]──→    Person
 Event  ──[occurred_at]──→   Place
 Observation ──[led_to]──→   Drive (noticing behavior → forming a stance)
-Question ──[resolved_to]──→ Position
+Question ──[resolved_to]──→ Observation, Concept, Drive
 Thread ──[produced]──→      Project (inquiry yields a deliverable)
 Project ──[produced]──→     Artifact (effort yields a finished thing)
 Artifact ──[contains]──→    Concept (a book contains theories)
@@ -300,4 +273,4 @@ Concept ──[applied_in]──→   Project, Artifact
 Edge properties (on the holding relationship, not the node):
 - `confidence` — how settled: provisional, confident, foundational
 - `identity_weight` — how central: peripheral, significant, constitutive
-- `reasons` — why the holder holds this Position or takes this stance
+- `reasons` — why the holder holds this view or takes this stance

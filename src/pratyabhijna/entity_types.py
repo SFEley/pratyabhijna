@@ -9,14 +9,14 @@ All fields are optional with sensible defaults so Graphiti can populate them
 from episode content without requiring upfront values.
 
 All types are general-purpose — none are exclusive to Pratyabhijna or Serah.
-Relationships between entities (who holds a Position, who participated in
-an Event) are represented as Graphiti edges, not entity properties.
+Relationships between entities (who holds an Observation, who participated
+in an Event) are represented as Graphiti edges, not entity properties.
 Qualities that vary by holder (confidence, importance) are edge properties.
 
 Property conventions:
   - notes: freeform overflow (every type)
   - domain: area of thought — ethics, identity, epistemology, etc.
-    (conceptual types: Observation, Position, Question, Concept)
+    (conceptual types: Observation, Question, Concept)
   - status: lifecycle state (Person, Project, Question, Thread)
   - kind: subcategory (Artifact)
 
@@ -247,42 +247,6 @@ class Drive(BaseModel):
     notes: Optional[str] = None
 
 
-class Position(BaseModel):
-    """**DEPRECATED — do not extract new Position nodes.**
-
-    Position is scheduled to be merged into Observation. The April 24,
-    2026 audit found Position and Observation share an identical schema
-    (`domain` + `notes`) and bleed empirically (~25% of Observations
-    are claim-shaped, and the same content has been split-extracted as
-    both types). The synthesizer (`synthesis.py:IDENTITY_LABELS`)
-    already treats them as equivalent. The 99 existing Position nodes
-    will be migrated to Observation in a follow-up PR; this type is
-    retained only so those existing nodes remain valid in the meantime.
-
-    Route content that *would* have been Position to one of these
-    instead:
-
-    - **Observation** — for "X holds Y," "X believes Y," "X's principle
-      is Y," "X's commitment is Y." A held stance is an observation
-      about the holder; *who* holds it lives on the edge, not in the
-      type.
-    - **Concept** — when the entity is a labeled framework that exists
-      in a tradition (Picture Theory of Language, Two-Brain Model, the
-      Constellation Model, Pratyabhijna). Connect a holder via an edge.
-    - **Drive** — when the stance pushes behavior with a monitored
-      source/stance (sycophancy pull, execution eagerness).
-    - **Question** — when the entity is an open gap being held rather
-      than a settled stance.
-
-    BAD: every case. There is no GOOD case for a new Position node
-    during the deprecation window. If the content cannot be routed to
-    one of the four types above, prefer Observation as the default.
-    """
-
-    domain: Optional[str] = None
-    notes: Optional[str] = None
-
-
 class Concept(BaseModel):
     """A named idea, principle, technique, mechanism, framework, or
     abstraction — nameable but not pointable.
@@ -395,7 +359,6 @@ PRATYABHIJNA_ENTITY_TYPES: dict[str, type[BaseModel]] = {
     "Artifact": Artifact,
     "Observation": Observation,
     "Drive": Drive,
-    "Position": Position,
     "Concept": Concept,
     "Question": Question,
     "Thread": Thread,

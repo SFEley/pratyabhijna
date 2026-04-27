@@ -66,7 +66,7 @@ Don't parallelize saga ingestion — sequential order is the point, and chaining
 Chat logs (Claude.ai conversations, exported transcripts) are noisier than essays. Most of a conversation is task execution, debugging, or logistical back-and-forth. The load-bearing parts are:
 
 - **Observations about self, user, or relationship** — things that would change how a future session approaches similar ground.
-- **Positions forming or shifting** — something the subject now believes that they didn't before.
+- **Stances forming or shifting** — something the subject now believes that they didn't before.
 - **New facts about people** — life events, decisions, relationship changes.
 - **Open questions worth tracking** — unresolved threads a future instance should pick up.
 

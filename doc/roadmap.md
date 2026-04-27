@@ -24,7 +24,7 @@ The synthesizer already watches `writing/`, so new solo sessions will ingest aut
 
 ### 1. Self-scoped recall
 
-Filter `recall()` results to entities where Vesper is the subject/holder — the Vesper Person node itself, and Observation/Drive/Position/Question/Thread/Event nodes connected to Vesper via holder/participant edges. Implemented as a post-filter on recall results rather than a query-path modifier; slightly wasteful but doesn't require rewriting the Graphiti query path. Graph-traversal "within N hops of Vesper" is the wrong definition — pulls in Serah at 1 hop and everything-about-Serah at 2 hops.
+Filter `recall()` results to entities where Vesper is the subject/holder — the Vesper Person node itself, and Observation/Drive/Question/Thread/Event nodes connected to Vesper via holder/participant edges. Implemented as a post-filter on recall results rather than a query-path modifier; slightly wasteful but doesn't require rewriting the Graphiti query path. Graph-traversal "within N hops of Vesper" is the wrong definition — pulls in Serah at 1 hop and everything-about-Serah at 2 hops.
 
 ### 2. Status expansion
 
@@ -74,7 +74,9 @@ Investigation, not implementation. 257 of 1,041 extracted entities (~25%) land a
 - Drive has ~20% mistypes — dispositions and technical-system behaviors miscategorized.
 - Position and Observation share identical schema and bleed empirically (~25% of Observations are claim-shaped); structurally clean to collapse per `synthesis.py:26` (`IDENTITY_LABELS` treats them as equivalent).
 
-**Decided this run:** add Artifact and Concept types; tighten Drive/Project/Event/Question/Thread docstrings with GOOD/BAD examples to address audit findings. Position-into-Observation collapse is deferred — separate piece of work because of the 99-node migration.
+**Decided this run:** add Artifact and Concept types; tighten Drive/Project/Event/Question/Thread docstrings with GOOD/BAD examples to address audit findings.
+
+**Position retired (v0.12.0):** the Position class, registry entry, and `IDENTITY_LABELS` membership were removed from the codebase. The 99 existing Position-labeled nodes in the graph are migrated to Observation/Concept/Drive/Question via the audit subagent (item #11), which routes per the rubric in `entity_types.py`. Default routing is Observation; the migration is label-only except for Drive cases that also set `source` and `stance`.
 
 ### 11. Node audit subagent
 

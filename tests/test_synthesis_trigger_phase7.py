@@ -24,7 +24,7 @@ from helpers import make_entity_edge, make_entity_node, make_subject_node
 # Constants
 # ---------------------------------------------------------------------------
 
-IDENTITY_LABELS = {"Observation", "Drive", "Position", "Concept", "Question", "Thread"}
+IDENTITY_LABELS = {"Observation", "Drive", "Concept", "Question", "Thread"}
 
 
 # ---------------------------------------------------------------------------
