@@ -22,9 +22,10 @@ def test_system_prompt_has_two_blocks_with_cache_markers():
     assert "SOUL TEXT" in blocks[0]["text"]
     assert "IDENTITY TEXT" in blocks[0]["text"]
     assert blocks[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
-    # Block 1: instructions, 5min cache (default TTL)
+    # Block 1: instructions, also 1h cache (paired audit/update flow shares
+    # the same prefix; 5min would expire mid-run on large cohorts).
     assert "INSTRUCTIONS TEXT" in blocks[1]["text"]
-    assert blocks[1]["cache_control"] == {"type": "ephemeral"}
+    assert blocks[1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
 
 def test_system_prompt_appends_guidance():
@@ -50,9 +51,9 @@ def test_user_message_orders_episode_recall_node():
     assert msg["role"] == "user"
     blocks = msg["content"]
     assert len(blocks) == 3
-    # Block 0: episode (cached)
+    # Block 0: episode (1h cached)
     assert "ep body" in blocks[0]["text"]
-    assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+    assert blocks[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     # Block 1: recall (no cache)
     assert "cache_control" not in blocks[1]
     # Block 2: object (no cache)
@@ -329,6 +330,13 @@ from pratyabhijna.tools.audit import submit_audit_batch
 
 
 async def test_submit_audit_batch_strips_internal_keys_and_returns_id():
+    """submit_audit_batch strips _episode_uuids and preserves caller-provided order.
+
+    Sorting is the caller's responsibility (typically via
+    sort_requests_by_episodes); submit_audit_batch is now a thin wrapper
+    around batches.create + key-strip so the primer can use the same
+    sorted ordering when it picks the first request.
+    """
     client = MagicMock()
     client.messages.batches.create = AsyncMock(return_value=MagicMock(id="batch_abc"))
     requests = [
@@ -341,12 +349,79 @@ async def test_submit_audit_batch_strips_internal_keys_and_returns_id():
     submitted = client.messages.batches.create.call_args.kwargs["requests"]
     # Internal sort-key fields must be stripped
     assert all("_episode_uuids" not in r for r in submitted)
-    # Sort-by-episode runs before strip — n2 (E1) should come before n1 (E2)
-    assert submitted[0]["custom_id"] == "n2"
-    assert submitted[1]["custom_id"] == "n1"
+    # Order is preserved — caller decides
+    assert submitted[0]["custom_id"] == "n1"
+    assert submitted[1]["custom_id"] == "n2"
 
 
-from pratyabhijna.tools.audit import poll_batch, process_results, AUDIT_REVISION
+from pratyabhijna.tools.audit import (
+    poll_batch, process_results, run_primer_audit, AUDIT_REVISION,
+)
+
+
+# --- Primer ---
+
+
+async def test_run_primer_audit_succeeds_returns_outcome_and_node_uuid():
+    """The primer sends one synchronous Messages.create and produces an
+    outcome dict in the same shape process_results yields per item, plus
+    the node uuid for audited_at stamping."""
+    client = MagicMock()
+    fake_message = MagicMock()
+    fake_message.content = [
+        MagicMock(type="text", text='{"uuid": "uuid-A", "status": "Valid", '
+                                    '"analysis": "fine"}'),
+    ]
+    client.messages.create = AsyncMock(return_value=fake_message)
+    request = {
+        "custom_id": "audit-uuid-A",
+        "params": {"model": "claude-sonnet-4-6", "max_tokens": 1024,
+                   "system": [], "messages": []},
+        "_episode_uuids": ["E1"],
+    }
+    queue = MagicMock()
+
+    outcome, node_uuid, edge_uuid = await run_primer_audit(
+        client, request, queue=queue,
+        node_names={"uuid-A": "A"},
+        object_kinds={"uuid-A": "entity_node"},
+    )
+
+    assert outcome["status"] == "Valid"
+    assert outcome["uuid"] == "uuid-A"
+    assert outcome["name"] == "A"
+    assert outcome["kind"] == "entity_node"
+    assert node_uuid == "uuid-A"
+    assert edge_uuid is None
+
+    # _episode_uuids must NOT leak into messages.create
+    create_kwargs = client.messages.create.call_args.kwargs
+    assert "_episode_uuids" not in create_kwargs
+
+
+async def test_run_primer_audit_returns_error_on_exception():
+    """Network/timeout failures during the primer surface as an Error outcome
+    with no audited UUIDs — the caller aborts the batch in this state."""
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=RuntimeError("boom"))
+    request = {
+        "custom_id": "audit-uuid-A",
+        "params": {"model": "claude-sonnet-4-6", "max_tokens": 1024,
+                   "system": [], "messages": []},
+        "_episode_uuids": ["E1"],
+    }
+
+    outcome, node_uuid, edge_uuid = await run_primer_audit(
+        client, request, queue=MagicMock(),
+        node_names={"uuid-A": "A"},
+        object_kinds={"uuid-A": "entity_node"},
+    )
+
+    assert outcome["status"] == "Error"
+    assert outcome["uuid"] == "uuid-A"
+    assert "RuntimeError" in outcome["error"]
+    assert node_uuid is None
+    assert edge_uuid is None
 
 
 async def test_poll_batch_returns_when_status_ended(monkeypatch):
@@ -698,18 +773,27 @@ async def test_run_audit_run_orchestrates_resolve_build_submit_process(monkeypat
         return ({"uuid": uuid, "name": name, "labels": ["Entity"]}, [], {"nodes": [], "edges": []}, name)
     monkeypatch.setattr("pratyabhijna.tools.audit.load_object", fake_load_object)
 
-    # Mock anthropic client + the three batch operations
+    # Mock anthropic client + the four batch/primer operations. The primer
+    # runs synchronously to warm the cache; the batch handles the rest.
     client = MagicMock()
+    primer_mock = AsyncMock(return_value=(
+        {"uuid": "uuid-A", "name": "A", "kind": "entity_node",
+         "status": "Valid", "analysis": "ok"},
+        "uuid-A",  # audited node uuid
+        None,      # audited edge uuid
+    ))
     submit_mock = AsyncMock(return_value="batch-xyz")
     poll_mock = AsyncMock()
     process_mock = AsyncMock(return_value=[
-        {"uuid": "uuid-A", "name": "A", "status": "Valid", "analysis": "ok"},
-        {"uuid": "uuid-B", "name": "B", "status": "Update",
-         "analysis": "wrong", "request": "fix it"},
+        {"uuid": "uuid-B", "name": "B", "kind": "entity_node",
+         "status": "Update", "analysis": "wrong", "request": "fix it"},
     ])
+    stamp_annotate_mock = AsyncMock()
+    monkeypatch.setattr("pratyabhijna.tools.audit.run_primer_audit", primer_mock)
     monkeypatch.setattr("pratyabhijna.tools.audit.submit_audit_batch", submit_mock)
     monkeypatch.setattr("pratyabhijna.tools.audit.poll_batch", poll_mock)
     monkeypatch.setattr("pratyabhijna.tools.audit.process_results", process_mock)
+    monkeypatch.setattr("pratyabhijna.tools.audit._stamp_and_annotate", stamp_annotate_mock)
 
     queue = MagicMock()
 
@@ -718,21 +802,144 @@ async def test_run_audit_run_orchestrates_resolve_build_submit_process(monkeypat
         guidance=None, anthropic_client=client,
     )
 
-    # Submit was called with both requests
+    # Primer ran once with the first sorted request
+    assert primer_mock.call_count == 1
+    primer_request = primer_mock.call_args.args[1]
+    assert primer_request["custom_id"] in {"audit-uuid-A", "audit-uuid-B"}
+
+    # Batch was submitted with the remaining 1 request
     requests_arg = submit_mock.call_args.args[1]
-    assert len(requests_arg) == 2
-    assert {r["custom_id"] for r in requests_arg} == {"audit-uuid-A", "audit-uuid-B"}
+    assert len(requests_arg) == 1
+
+    # All custom_ids accounted for across primer + batch
+    seen_ids = {primer_request["custom_id"]} | {r["custom_id"] for r in requests_arg}
+    assert seen_ids == {"audit-uuid-A", "audit-uuid-B"}
 
     # Process was called with node_names + object_kinds mappings for both
     process_kwargs = process_mock.call_args.kwargs
     assert process_kwargs["node_names"] == {"uuid-A": "A", "uuid-B": "B"}
     assert process_kwargs["object_kinds"] == {"uuid-A": "entity_node", "uuid-B": "entity_node"}
 
-    # Summary structure
+    # Summary structure — primer + batch outcomes both included
     assert summary["cohort_size"] == 2
     assert summary["model"] == "claude-sonnet-4-6"
     assert len(summary["results"]) == 2
     assert "started_at" in summary and "completed_at" in summary
+
+
+async def test_run_audit_run_aborts_batch_when_primer_fails(monkeypatch, tmp_path):
+    """If the synchronous primer fails, the batch is NOT submitted — submitting
+    would re-trigger the cache-write race the primer was meant to prevent.
+    Synthetic Error outcomes account for every cohort UUID in the JSON output.
+    """
+    from pratyabhijna.tools.audit import run_audit_run
+
+    service = MagicMock()
+    service.config = MagicMock()
+    service.config.resources = MagicMock(repo_path=str(tmp_path))
+    service.config.llm = MagicMock(audit_model="claude-sonnet-4-6")
+    (tmp_path / "memory").mkdir()
+    (tmp_path / "memory" / "SOUL.md").write_text("S")
+    (tmp_path / "memory" / "IDENTITY.md").write_text("I")
+
+    async def fake_resolve(input_str, *, service):
+        return ["uuid-A", "uuid-B", "uuid-C"]
+    monkeypatch.setattr("pratyabhijna.tools.audit.resolve_uuid_list", fake_resolve)
+
+    async def fake_detect_kind(svc, uuid):
+        return "entity_node"
+    monkeypatch.setattr("pratyabhijna.tools.audit.detect_kind", fake_detect_kind)
+
+    async def fake_load_object(svc, uuid, kind):
+        name = uuid[-1]
+        return ({"uuid": uuid, "name": name}, [], {"nodes": [], "edges": []}, name)
+    monkeypatch.setattr("pratyabhijna.tools.audit.load_object", fake_load_object)
+
+    primer_mock = AsyncMock(return_value=(
+        {"custom_id": "audit-uuid-A", "uuid": "uuid-A", "name": "A",
+         "kind": "entity_node", "status": "Error",
+         "error": "RuntimeError: connection refused"},
+        None,
+        None,
+    ))
+    submit_mock = AsyncMock()
+    process_mock = AsyncMock()
+    stamp_mock = AsyncMock()
+    monkeypatch.setattr("pratyabhijna.tools.audit.run_primer_audit", primer_mock)
+    monkeypatch.setattr("pratyabhijna.tools.audit.submit_audit_batch", submit_mock)
+    monkeypatch.setattr("pratyabhijna.tools.audit.process_results", process_mock)
+    monkeypatch.setattr("pratyabhijna.tools.audit._stamp_and_annotate", stamp_mock)
+
+    summary = await run_audit_run(
+        service, MagicMock(), "find stuff",
+        guidance=None, anthropic_client=MagicMock(),
+    )
+
+    # Batch was never submitted — that's the whole point
+    submit_mock.assert_not_called()
+    process_mock.assert_not_called()
+    # Primer's audited_at stamp must NOT land for an Error outcome
+    stamp_mock.assert_not_called()
+
+    # All three cohort UUIDs accounted for: primer's Error + 2 synthetic Errors
+    assert summary["cohort_size"] == 3
+    assert len(summary["results"]) == 3
+    statuses = [r["status"] for r in summary["results"]]
+    assert statuses == ["Error", "Error", "Error"]
+    errors = [r["error"] for r in summary["results"]]
+    assert "connection refused" in errors[0]
+    assert all("Primer" in e for e in errors[1:])
+
+
+async def test_run_audit_run_single_request_skips_batch(monkeypatch, tmp_path):
+    """A cohort of 1 runs the primer only — no batch submission."""
+    from pratyabhijna.tools.audit import run_audit_run
+
+    service = MagicMock()
+    service.config = MagicMock()
+    service.config.resources = MagicMock(repo_path=str(tmp_path))
+    service.config.llm = MagicMock(audit_model="claude-sonnet-4-6")
+    (tmp_path / "memory").mkdir()
+    (tmp_path / "memory" / "SOUL.md").write_text("S")
+    (tmp_path / "memory" / "IDENTITY.md").write_text("I")
+
+    async def fake_resolve(input_str, *, service):
+        return ["uuid-A"]
+    monkeypatch.setattr("pratyabhijna.tools.audit.resolve_uuid_list", fake_resolve)
+
+    async def fake_detect_kind(svc, uuid):
+        return "entity_node"
+    monkeypatch.setattr("pratyabhijna.tools.audit.detect_kind", fake_detect_kind)
+
+    async def fake_load_object(svc, uuid, kind):
+        return ({"uuid": uuid, "name": "A"}, [], {"nodes": [], "edges": []}, "A")
+    monkeypatch.setattr("pratyabhijna.tools.audit.load_object", fake_load_object)
+
+    primer_mock = AsyncMock(return_value=(
+        {"uuid": "uuid-A", "name": "A", "kind": "entity_node",
+         "status": "Valid", "analysis": "ok"},
+        "uuid-A",
+        None,
+    ))
+    submit_mock = AsyncMock()
+    process_mock = AsyncMock()
+    stamp_mock = AsyncMock()
+    monkeypatch.setattr("pratyabhijna.tools.audit.run_primer_audit", primer_mock)
+    monkeypatch.setattr("pratyabhijna.tools.audit.submit_audit_batch", submit_mock)
+    monkeypatch.setattr("pratyabhijna.tools.audit.process_results", process_mock)
+    monkeypatch.setattr("pratyabhijna.tools.audit._stamp_and_annotate", stamp_mock)
+
+    summary = await run_audit_run(
+        service, MagicMock(), "find one",
+        guidance=None, anthropic_client=MagicMock(),
+    )
+
+    submit_mock.assert_not_called()
+    process_mock.assert_not_called()
+    stamp_mock.assert_called_once()
+    assert summary["cohort_size"] == 1
+    assert len(summary["results"]) == 1
+    assert summary["results"][0]["status"] == "Valid"
 
 
 async def test_run_audit_run_empty_cohort_skips_batch(monkeypatch, tmp_path):

@@ -298,7 +298,13 @@ def build_system_prompt(
     instructions: str = AUDIT_INSTRUCTIONS,
     guidance: str | None = None,
 ) -> list[dict]:
-    """Two-block system prompt: SOUL+IDENTITY (1h cache) + instructions (5min)."""
+    """Two-block system prompt: SOUL+IDENTITY (1h cache) + instructions (1h cache).
+
+    Both blocks use 1h TTL because the audit + downstream update share the same
+    prefix and run as a paired flow, often with minutes between them. 5min would
+    expire mid-run for any batch over a few hundred nodes; 2x write cost is a
+    rounding error against the read savings on cohorts of even a few requests.
+    """
     bootstrap_block = {
         "type": "text",
         "text": PARTIAL_BOOTSTRAP_FRAMING.format(soul=soul, identity=identity),
@@ -312,7 +318,7 @@ def build_system_prompt(
     instructions_block = {
         "type": "text",
         "text": instructions_text,
-        "cache_control": {"type": "ephemeral"},  # default 5min TTL
+        "cache_control": {"type": "ephemeral", "ttl": "1h"},
     }
     return [bootstrap_block, instructions_block]
 
@@ -390,7 +396,7 @@ def build_user_message(
             {
                 "type": "text",
                 "text": _format_episodes(episodes, kind=kind),
-                "cache_control": {"type": "ephemeral"},  # 5min
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
             },
             {
                 "type": "text",
@@ -483,17 +489,64 @@ def strip_internal_keys(requests: list[dict]) -> list[dict]:
 
 
 async def submit_audit_batch(client, requests: list[dict]) -> str:
-    """Sort by episode, strip internal keys, submit. Returns batch ID.
+    """Strip internal keys and submit. Returns batch ID.
 
-    Sorting clusters same-episode requests adjacently to maximize cache-hit
-    probability under the Batches API (no ordering SLA, but adjacency helps).
+    Caller is expected to have sorted the requests by episode tuple already
+    (typically by `sort_requests_by_episodes`), so cohorts of same-episode
+    requests cluster adjacently — the Batches API has no ordering SLA, but
+    adjacency helps the per-episode cache breakpoint hit.
     """
-    sorted_reqs = sort_requests_by_episodes(requests)
-    cleaned = strip_internal_keys(sorted_reqs)
+    cleaned = strip_internal_keys(requests)
     _log.info("Submitting audit batch with %d requests", len(cleaned))
     batch = await client.messages.batches.create(requests=cleaned)
     _log.info("Batch submitted: id=%s", batch.id)
     return batch.id
+
+
+async def run_primer_audit(
+    client,
+    request: dict,
+    *,
+    queue,
+    node_names: dict[str, str],
+    object_kinds: dict[str, str],
+) -> tuple[dict, str | None, str | None]:
+    """Run a single audit request synchronously to pre-warm the prompt cache.
+
+    Submitting N parallel batch requests with identical 1h-cached prefixes
+    causes most of them to race the cache write — none can read what the
+    others are still writing, so each pays the 2x write premium. Running
+    one request synchronously *first* commits the cache before the batch
+    is submitted; the rest then read at 0.1x. Cohorts of one skip the
+    batch entirely and just use this path.
+
+    Returns ``(outcome, audited_node_uuid, audited_edge_uuid)`` matching
+    `_process_one_audit_result`. The caller stamps audited_at and
+    appends notes via `_stamp_and_annotate` so the primer's side effects
+    land on the graph the same way batch results do.
+    """
+    custom_id = request["custom_id"]
+    params = {k: v for k, v in request["params"].items()}
+    try:
+        message = await client.messages.create(**params)
+    except Exception as exc:
+        _log.exception("Primer audit %s failed before response", custom_id)
+        return await _process_one_audit_result(
+            custom_id,
+            succeeded=False,
+            message_or_error=f"{type(exc).__name__}: {exc}",
+            queue=queue,
+            node_names=node_names,
+            object_kinds=object_kinds,
+        )
+    return await _process_one_audit_result(
+        custom_id,
+        succeeded=True,
+        message_or_error=message,
+        queue=queue,
+        node_names=node_names,
+        object_kinds=object_kinds,
+    )
 
 
 async def poll_batch(client, batch_id: str, *, interval: float = 60.0):
@@ -520,67 +573,59 @@ async def poll_batch(client, batch_id: str, *, interval: float = 60.0):
         await asyncio.sleep(interval)
 
 
-async def process_results(
-    client,
-    batch_id: str,
+async def _process_one_audit_result(
+    custom_id: str,
     *,
-    service,
+    succeeded: bool,
+    message_or_error,
     queue,
     node_names: dict[str, str],
-    object_kinds: dict[str, str] | None = None,
-) -> list[dict]:
-    """Iterate batch results, dispatch side effects, return list of structured outcomes.
+    object_kinds: dict[str, str],
+) -> tuple[dict, str | None, str | None]:
+    """Process one audit API result (from batch or primer). Shared logic so
+    the synchronous primer and the batched cohort go through the same
+    UUID-mismatch check, status dispatch, and Thread enqueue.
 
-    Each outcome dict carries the model's verdict plus injected `name` and
-    `kind` (from `node_names` and `object_kinds`). Side effects:
-    - Valid: INFO log only
-    - Update: INFO log; the result dict is consumed downstream by `update --input`
-    - Unfixable: WARNING log + (for nodes only) Thread enqueue via `remember()`
-    - Errored: WARNING log; outcome dict has status "Error"
-    On completion: stamp audited_at + audit_revision on every audited object,
-    dispatching to a node-shaped Cypher or an edge-shaped Cypher by kind.
+    Returns ``(outcome, audited_node_uuid, audited_edge_uuid)`` where the two
+    UUID slots are mutually exclusive — at most one is non-None, and the
+    caller stamps audited_at against the matching kind. Both are None when
+    the outcome is an Error (no stamping for failures).
     """
-    object_kinds = object_kinds or {}
-    outcomes: list[dict] = []
-    audited_node_uuids: list[str] = []
-    audited_edge_uuids: list[str] = []
-
-    # AsyncBatches.results() returns a coroutine that resolves to an async
-    # iterator — must await before iterating.
-    results_iter = await client.messages.batches.results(batch_id)
-    async for result in results_iter:
-        if result.result.type != "succeeded":
-            error_str = str(getattr(result.result, "error", "unknown"))
-            uuid = _uuid_from_custom_id(result.custom_id)
-            _log.warning("Audit request %s failed: %s", result.custom_id, error_str)
-            outcomes.append({
-                "custom_id": result.custom_id,
+    if not succeeded:
+        error_str = str(message_or_error) if message_or_error is not None else "unknown"
+        uuid = _uuid_from_custom_id(custom_id)
+        _log.warning("Audit request %s failed: %s", custom_id, error_str)
+        return (
+            {
+                "custom_id": custom_id,
                 "uuid": uuid,
                 "name": node_names.get(uuid, ""),
                 "kind": object_kinds.get(uuid, KIND_UNKNOWN),
                 "status": "Error",
                 "error": error_str,
-            })
-            continue
-
-        text = next(
-            b.text for b in result.result.message.content if b.type == "text"
+            },
+            None,
+            None,
         )
-        parsed = json.loads(text)
-        expected_uuid = _uuid_from_custom_id(result.custom_id)
-        # Belt-and-braces against model echoing a wrong UUID (e.g. one from
-        # recall results or an edge endpoint). The instructions pin this, but
-        # if the model misbehaves we want to see it, not silently miss the
-        # audited_at stamp on the original object.
-        if parsed.get("uuid") != expected_uuid:
-            _log.error(
-                "Audit response UUID mismatch: expected=%s got=%s — "
-                "treating as error, original object will not be stamped",
-                expected_uuid,
-                parsed.get("uuid"),
-            )
-            outcomes.append({
-                "custom_id": result.custom_id,
+
+    message = message_or_error
+    text = next(b.text for b in message.content if b.type == "text")
+    parsed = json.loads(text)
+    expected_uuid = _uuid_from_custom_id(custom_id)
+    # Belt-and-braces against model echoing a wrong UUID (e.g. one from
+    # recall results or an edge endpoint). The instructions pin this, but
+    # if the model misbehaves we want to see it, not silently miss the
+    # audited_at stamp on the original object.
+    if parsed.get("uuid") != expected_uuid:
+        _log.error(
+            "Audit response UUID mismatch: expected=%s got=%s — "
+            "treating as error, original object will not be stamped",
+            expected_uuid,
+            parsed.get("uuid"),
+        )
+        return (
+            {
+                "custom_id": custom_id,
                 "uuid": expected_uuid,
                 "name": node_names.get(expected_uuid, ""),
                 "kind": object_kinds.get(expected_uuid, KIND_UNKNOWN),
@@ -589,46 +634,61 @@ async def process_results(
                     f"Audit response UUID mismatch: expected={expected_uuid} "
                     f"got={parsed.get('uuid')}"
                 ),
-            })
-            continue
-        # Inject name and kind from input (model doesn't echo them back).
-        parsed["name"] = node_names.get(parsed["uuid"], "")
-        parsed["kind"] = object_kinds.get(parsed["uuid"], KIND_ENTITY_NODE)
-        outcomes.append(parsed)
-        if parsed["kind"] in EDGE_KINDS:
-            audited_edge_uuids.append(parsed["uuid"])
+            },
+            None,
+            None,
+        )
+
+    # Inject name and kind from input (model doesn't echo them back).
+    parsed["name"] = node_names.get(parsed["uuid"], "")
+    parsed["kind"] = object_kinds.get(parsed["uuid"], KIND_ENTITY_NODE)
+    is_edge = parsed["kind"] in EDGE_KINDS
+
+    if parsed["status"] == "Valid":
+        _log.info("Audit Valid: %s (%s, %s)", parsed["name"], parsed["uuid"], parsed["kind"])
+    elif parsed["status"] == "Update":
+        _log.info(
+            "Audit Update: %s (%s, %s) — %s",
+            parsed["name"],
+            parsed["uuid"],
+            parsed["kind"],
+            parsed.get("request", "<no request provided>"),
+        )
+    elif parsed["status"] == "Unfixable":
+        # Threads are for node-level findings. Edges land in JSON only.
+        if parsed["kind"] in NODE_KINDS:
+            await _handle_unfixable(parsed, queue=queue)
         else:
-            audited_node_uuids.append(parsed["uuid"])
-
-        if parsed["status"] == "Valid":
-            _log.info("Audit Valid: %s (%s, %s)", parsed["name"], parsed["uuid"], parsed["kind"])
-        elif parsed["status"] == "Update":
-            _log.info(
-                "Audit Update: %s (%s, %s) — %s",
-                parsed["name"],
-                parsed["uuid"],
-                parsed["kind"],
-                parsed.get("request", "<no request provided>"),
+            _log.warning(
+                "Audit Unfixable (edge, no Thread): %s (%s, %s) — %s",
+                parsed["name"], parsed["uuid"], parsed["kind"],
+                parsed["analysis"],
             )
-        elif parsed["status"] == "Unfixable":
-            # Threads are for node-level findings. Edges land in JSON only.
-            if parsed["kind"] in NODE_KINDS:
-                await _handle_unfixable(parsed, queue=queue)
-            else:
-                _log.warning(
-                    "Audit Unfixable (edge, no Thread): %s (%s, %s) — %s",
-                    parsed["name"], parsed["uuid"], parsed["kind"],
-                    parsed["analysis"],
-                )
 
+    return (
+        parsed,
+        parsed["uuid"] if not is_edge else None,
+        parsed["uuid"] if is_edge else None,
+    )
+
+
+async def _stamp_and_annotate(
+    service,
+    outcomes: list[dict],
+    audited_node_uuids: list[str],
+    audited_edge_uuids: list[str],
+) -> None:
+    """Apply audited_at stamps and notes appends for a set of outcomes.
+
+    Shared by `process_results` (batch path) and the primer path in
+    `run_audit_run`. Notes only land on entity nodes (`attributes.notes`)
+    and entity edges (free `notes` property on RELATES_TO).
+    """
     if audited_node_uuids:
         await _stamp_audited_at_nodes(service, audited_node_uuids)
     if audited_edge_uuids:
         await _stamp_audited_at_edges(service, audited_edge_uuids)
 
-    # Notes only land on objects with a natural notes-bearing field:
-    # entity nodes (attributes.notes) and entity edges (free notes property
-    # on RELATES_TO).
     entity_node_updates = [
         o for o in outcomes
         if o.get("status") == "Update" and o.get("kind") == KIND_ENTITY_NODE
@@ -642,6 +702,55 @@ async def process_results(
     if entity_edge_updates:
         await _append_update_notes_edges(service, entity_edge_updates)
 
+
+async def process_results(
+    client,
+    batch_id: str,
+    *,
+    service,
+    queue,
+    node_names: dict[str, str],
+    object_kinds: dict[str, str] | None = None,
+) -> list[dict]:
+    """Iterate batch results, dispatch per-result side effects, stamp
+    audited_at, append notes. Returns the list of outcome dicts.
+
+    Per-result handling lives in `_process_one_audit_result`, which is also
+    called by the synchronous primer path so the two share the UUID-mismatch
+    check, status dispatch, and Thread enqueue. After-the-loop stamping and
+    notes-appending live in `_stamp_and_annotate` for the same reason.
+    """
+    object_kinds = object_kinds or {}
+    outcomes: list[dict] = []
+    audited_node_uuids: list[str] = []
+    audited_edge_uuids: list[str] = []
+
+    # AsyncBatches.results() returns a coroutine that resolves to an async
+    # iterator — must await before iterating.
+    results_iter = await client.messages.batches.results(batch_id)
+    async for result in results_iter:
+        succeeded = result.result.type == "succeeded"
+        message_or_error = (
+            result.result.message if succeeded
+            else getattr(result.result, "error", None)
+        )
+        outcome, node_uuid, edge_uuid = await _process_one_audit_result(
+            result.custom_id,
+            succeeded=succeeded,
+            message_or_error=message_or_error,
+            queue=queue,
+            node_names=node_names,
+            object_kinds=object_kinds,
+        )
+        outcomes.append(outcome)
+        if node_uuid:
+            audited_node_uuids.append(node_uuid)
+        if edge_uuid:
+            audited_edge_uuids.append(edge_uuid)
+
+    await _stamp_and_annotate(
+        service, outcomes, audited_node_uuids, audited_edge_uuids,
+    )
     return outcomes
 
 
@@ -1051,14 +1160,63 @@ async def run_audit_run(
             "guidance": guidance,
         }
 
-    batch_id = await submit_audit_batch(anthropic_client, requests)
-    await poll_batch(anthropic_client, batch_id, interval=60.0)
-    results = await process_results(
-        anthropic_client, batch_id,
-        service=service, queue=queue,
+    # Sort by episode tuple so same-episode requests cluster. The first
+    # sorted request becomes the synchronous primer — it warms both the
+    # global SOUL+IDENTITY+instructions cache and the episode cache for
+    # the leading batch group.
+    sorted_requests = sort_requests_by_episodes(requests)
+    primer_request = sorted_requests[0]
+    batch_requests = sorted_requests[1:]
+
+    primer_outcome, primer_node, primer_edge = await run_primer_audit(
+        anthropic_client, primer_request,
+        queue=queue,
         node_names=object_names,
         object_kinds=object_kinds,
     )
+
+    if primer_outcome.get("status") == "Error":
+        # Cache wasn't warmed — submitting the batch would burn the 2x
+        # write premium on every request again. Abort and synthesize
+        # Errors for the rest so the JSON file accounts for the cohort.
+        _log.error(
+            "Primer audit failed; skipping batch of %d to avoid uncached "
+            "writes. Re-run when ready.", len(batch_requests),
+        )
+        results = [primer_outcome] + [
+            {
+                "custom_id": r["custom_id"],
+                "uuid": _uuid_from_custom_id(r["custom_id"]),
+                "name": object_names.get(_uuid_from_custom_id(r["custom_id"]), ""),
+                "kind": object_kinds.get(_uuid_from_custom_id(r["custom_id"]), KIND_UNKNOWN),
+                "status": "Error",
+                "error": "Primer audit failed; batch not submitted",
+            }
+            for r in batch_requests
+        ]
+    else:
+        # Stamp the primer's audited_at + notes before the batch starts
+        # so a mid-batch failure still leaves the primer recorded on the
+        # graph. Batch results get the same treatment via process_results.
+        await _stamp_and_annotate(
+            service,
+            [primer_outcome],
+            [primer_node] if primer_node else [],
+            [primer_edge] if primer_edge else [],
+        )
+
+        if not batch_requests:
+            results = [primer_outcome]
+        else:
+            batch_id = await submit_audit_batch(anthropic_client, batch_requests)
+            await poll_batch(anthropic_client, batch_id, interval=60.0)
+            batch_outcomes = await process_results(
+                anthropic_client, batch_id,
+                service=service, queue=queue,
+                node_names=object_names,
+                object_kinds=object_kinds,
+            )
+            results = [primer_outcome] + batch_outcomes
     # Synthetic Error outcomes for UUIDs we couldn't load — they show up in
     # the JSON output and the count summary so nothing silently disappears.
     for uuid in skipped_unknown:

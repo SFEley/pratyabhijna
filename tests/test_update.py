@@ -445,11 +445,14 @@ class TestBuildUpdateRequest:
         params = req["params"]
         assert any(t["name"] == "execute_cypher_write" for t in params["tools"])
         assert any(t["name"] == "execute_cypher_read" for t in params["tools"])
-        # Cache markers preserved from audit's build_system_prompt
+        # Cache markers preserved from audit's build_system_prompt — both
+        # blocks now use 1h TTL so audit and update share warmed cache
+        # across the paired audit→update flow.
         assert params["system"][0]["cache_control"]["ttl"] == "1h"
-        assert params["system"][1]["cache_control"] == {"type": "ephemeral"}
-        # Episode cache breakpoint preserved on the first user content block
-        assert params["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert params["system"][1]["cache_control"]["ttl"] == "1h"
+        # Episode cache breakpoint also 1h — covers the entire audit/update
+        # window without expiring mid-batch.
+        assert params["messages"][0]["content"][0]["cache_control"]["ttl"] == "1h"
         # Request text appears as the final content block
         assert "Change entity_type to Observation" in params["messages"][0]["content"][-1]["text"]
         # Internal sort key at top level, not in params
@@ -522,12 +525,15 @@ class TestUpdateFromAuditFile:
 
         monkeypatch.setattr("pratyabhijna.tools.update.recall", fake_recall)
 
+        # Single Update entry → primer runs, no batch is needed.
+        primer_mock = AsyncMock(return_value={
+            "status": "Updated", "request": "Fix it", "response": "done",
+            "guids": None, "count": 1, "queries": [], "warnings": [], "errors": [],
+        })
         submit_mock = AsyncMock(return_value="batch-1")
         poll_mock = AsyncMock()
-        process_mock = AsyncMock(return_value=[
-            {"status": "Updated", "request": "Fix it", "response": "done",
-             "guids": None, "count": 1, "queries": [], "warnings": [], "errors": []},
-        ])
+        process_mock = AsyncMock()
+        monkeypatch.setattr("pratyabhijna.tools.update._run_primer_update", primer_mock)
         monkeypatch.setattr("pratyabhijna.tools.update._submit_batch", submit_mock)
         monkeypatch.setattr("pratyabhijna.tools.update.poll_batch", poll_mock)
         monkeypatch.setattr("pratyabhijna.tools.update.process_update_results", process_mock)
@@ -536,11 +542,14 @@ class TestUpdateFromAuditFile:
         client.close = AsyncMock()
         results = await update_from_audit_file(audit_json, service=svc, client=client)
 
-        # Only N2 was fetched
+        # Only N2 was fetched (Valid + Unfixable filtered out)
         svc.get_entity_by_uuid.assert_called_once_with("N2")
-        # process called once with batch and request_lookup keyed by custom_id
-        process_kwargs = process_mock.call_args.kwargs
-        assert "update-N2" in process_kwargs["request_lookup"]
+        # Primer ran with the only Update entry; batch was skipped
+        assert primer_mock.call_count == 1
+        primer_request = primer_mock.call_args.args[1]
+        assert primer_request["custom_id"] == "update-N2"
+        assert submit_mock.call_count == 0
+        assert process_mock.call_count == 0
         assert len(results) == 1
         assert results[0]["status"] == "Updated"
 
