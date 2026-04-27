@@ -1,7 +1,7 @@
 """JSON output log for ``pratyabhijna update`` runs.
 
 Each invocation of the update CLI writes a JSON file at
-``{log_dir}/update/output-{ISO8601-UTC}.json`` capturing what the
+``{log_dir}/update/update-{ISO8601-UTC}.json`` capturing what the
 operator asked for, what the agent decided, what Cypher ran, and any
 warnings or errors. The schema is post-mortem-oriented: the goal is
 that a human reading one of these files months later can reconstruct
@@ -70,7 +70,7 @@ def write_output_file(
     else:
         out_dir = Path(log_dir) / "update"
         out_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"output-{_filename_safe_iso(started_at)}.json"
+        filename = f"update-{_filename_safe_iso(started_at)}.json"
         path = out_dir / filename
 
     duration_ms = int((completed_at - started_at).total_seconds() * 1000)

@@ -1,7 +1,7 @@
 """Tests for the JSON output-file writer used by ``pratyabhijna update``.
 
 The writer wraps a list of per-update dicts into the canonical output
-shape and writes it as ``output-{ISO8601-UTC}.json`` under
+shape and writes it as ``update-{ISO8601-UTC}.json`` under
 ``{log_dir}/update/``.
 """
 
@@ -50,7 +50,7 @@ def test_writes_output_file_to_update_subdir(tmp_path, updates_one):
 
     assert path.exists()
     assert path.parent == tmp_path / "update"
-    assert path.name.startswith("output-")
+    assert path.name.startswith("update-")
     assert path.name.endswith(".json")
 
 

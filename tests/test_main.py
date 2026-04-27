@@ -364,7 +364,7 @@ class TestRunUpdate:
 
         assert rc == 1
         out_dir = tmp_path / "update"
-        files = list(out_dir.glob("output-*.json"))
+        files = list(out_dir.glob("update-*.json"))
         assert len(files) == 1, f"Expected one output file, found: {files}"
         payload = json.loads(files[0].read_text(encoding="utf-8"))
         assert payload["updates"][0]["status"] == "Error"
