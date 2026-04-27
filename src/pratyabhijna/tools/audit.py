@@ -115,6 +115,24 @@ For the node you receive, decide one of three verdicts:
   resolve from the available context. Provide your full analysis in the
   `analysis` field; a human will review.
 
+# Bare Entity nodes (special handling)
+
+A node labeled only as `Entity` — with no secondary type from {Person, Event,
+Place, Project, Artifact, Observation, Drive, Concept, Question, Thread} —
+is suspect by default. The ten typed labels are designed to cover everything
+that belongs in the graph: Person/Event/Place/Project/Artifact for the world,
+Observation/Drive/Concept/Question/Thread for thought. If a candidate doesn't
+fit any of them, the more likely diagnosis is that the extractor was
+overenthusiastic — the candidate isn't a real entity — than that the taxonomy
+has a gap.
+
+Examine the source episode: does it refer to a stable, distinct referent that
+future memories will reasonably connect to? If yes, classify (Update). If no
+— generic noun phrase, throwaway reference, no meaningful edges, no clear
+referent — verdict **Unfixable**, with an analysis explicitly recommending
+deletion. Do not force a typed label onto extractor noise just because Update
+requires one.
+
 Always provide an `analysis` field (1-3 sentences). Always respond as JSON
 matching the schema — no prose outside the JSON.
 
