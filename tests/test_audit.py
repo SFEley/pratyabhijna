@@ -912,7 +912,7 @@ class TestStampDispatch:
         )
 
         cypher = service.execute_write_query.call_args_list[0].args[0]
-        assert "()-[r {uuid: u}]-()" in cypher  # edge-shaped
+        assert "()-[r {uuid: u}]->()" in cypher  # edge-shaped
 
     async def test_mixed_cohort_splits_node_and_edge_stamps(self):
         from pratyabhijna.tools.audit import process_results
@@ -948,7 +948,7 @@ class TestStampDispatch:
         assert service.execute_write_query.call_count == 2
         cyphers = [c.args[0] for c in service.execute_write_query.call_args_list]
         assert any("MATCH (n {uuid: u})" in c for c in cyphers)
-        assert any("()-[r {uuid: u}]-()" in c for c in cyphers)
+        assert any("()-[r {uuid: u}]->()" in c for c in cyphers)
 
 
 class TestNotesDispatch:

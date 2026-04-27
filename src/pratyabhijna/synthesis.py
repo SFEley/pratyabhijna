@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
     from pratyabhijna.service import PratyabhijnaService
 
-IDENTITY_LABELS = {"Observation", "Drive", "Position", "Concept", "Question"}
+IDENTITY_LABELS = {"Observation", "Drive", "Position", "Concept", "Question", "Thread"}
 
 IDENTITY_FILES = {
     "soul": "SOUL.md",
@@ -106,7 +106,7 @@ async def get_identity_atoms(
     """Collect identity-typed edges connected to the subject node.
 
     Returns atoms for edges whose non-subject endpoint is an
-    identity type (Observation, Drive, Position, Question).
+    identity type (any label in IDENTITY_LABELS).
     """
     edges = await service.get_edges_for_node(node.uuid)
     atoms = []

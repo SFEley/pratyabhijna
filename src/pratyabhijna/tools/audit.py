@@ -68,10 +68,10 @@ async def resolve_uuid_list(input_str: str, *, service) -> list[str]:
         return parse_uuid_list(input_str)
     augmented = (
         f"{input_str}\n\n"
-        "Begin your response with the matching node UUIDs, one UUID per line, "
-        "and nothing else before them. After the UUID list you may add prose "
-        "explanation if useful, but only the leading block is read; anything "
-        "after the first non-UUID line is ignored."
+        "Begin your response with the matching UUIDs (nodes or edges), one "
+        "UUID per line, and nothing else before them. After the UUID list "
+        "you may add prose explanation if useful, but only the leading block "
+        "is read; anything after the first non-UUID line is ignored."
     )
     result = await _call_query(service, augmented)
     response = result.get("response", "") or ""
@@ -711,9 +711,12 @@ async def _append_update_notes_edges(service, updates: list[dict]) -> None:
         {"uuid": u["uuid"], "note": _format_audit_note(now, u["request"])}
         for u in updates
     ]
+    # Directed arrow is required: an undirected pattern with two wildcard
+    # endpoints binds the same relationship twice (once per direction), so
+    # the non-idempotent SET would append `u.note` to `r.notes` twice.
     cypher = """
     UNWIND $updates AS u
-    MATCH ()-[r:RELATES_TO {uuid: u.uuid}]-()
+    MATCH ()-[r:RELATES_TO {uuid: u.uuid}]->()
     SET r.notes = CASE
         WHEN r.notes IS NULL OR r.notes = '' THEN u.note
         ELSE r.notes + '\\n\\n' + u.note
@@ -747,7 +750,7 @@ async def _stamp_audited_at_edges(service, uuids: list[str]) -> None:
     now = datetime.now(timezone.utc).isoformat()
     cypher = """
     UNWIND $uuids AS u
-    MATCH ()-[r {uuid: u}]-()
+    MATCH ()-[r {uuid: u}]->()
     SET r.audited_at = $now, r.audit_revision = $rev
     """
     await service.execute_write_query(
