@@ -34,7 +34,7 @@ from helpers import make_entity_edge, make_entity_node, make_subject_node
 # Constants
 # ---------------------------------------------------------------------------
 
-IDENTITY_LABELS = {"Observation", "Drive", "Position", "Concept", "Question"}
+IDENTITY_LABELS = {"Observation", "Drive", "Position", "Concept", "Question", "Thread"}
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +350,46 @@ class TestIdentityDelta:
         edges = [
             make_entity_edge(uuid="e1", source_node_uuid="subject-uuid", target_node_uuid="obs-1",
                              fact="an observation"),
+        ]
+        mock_service.get_edges_for_node.return_value = edges
+        mock_service.get_entity_by_uuid.return_value = obs_node
+
+        delta = await get_identity_delta(mock_service, node)
+
+        assert len(delta) == 1
+
+    async def test_delta_handles_naive_rebuilt_at(self, mock_service):
+        """Naive context_rebuilt_at (no timezone) is treated as UTC — no TypeError."""
+        from pratyabhijna.synthesis import get_identity_delta
+
+        rebuild_time = datetime(2026, 3, 15, 12, 0)  # naive
+        node = make_subject_node(context_rebuilt_at=rebuild_time)
+
+        new_obs = make_entity_node(uuid="obs-new", name="new observation", labels=["Observation"])
+        edges = [
+            make_entity_edge(uuid="e-new", source_node_uuid="subject-uuid", target_node_uuid="obs-new",
+                             fact="new observation",
+                             created_at=datetime(2026, 3, 15, 13, 0, tzinfo=timezone.utc)),
+        ]
+        mock_service.get_edges_for_node.return_value = edges
+        mock_service.get_entity_by_uuid.return_value = new_obs
+
+        delta = await get_identity_delta(mock_service, node)
+
+        assert len(delta) == 1
+
+    async def test_delta_handles_naive_edge_created_at(self, mock_service):
+        """Naive edge.created_at is treated as UTC — no TypeError."""
+        from pratyabhijna.synthesis import get_identity_delta
+
+        rebuild_time = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+        node = make_subject_node(context_rebuilt_at=rebuild_time)
+
+        obs_node = make_entity_node(uuid="obs-1", name="observation", labels=["Observation"])
+        edges = [
+            make_entity_edge(uuid="e1", source_node_uuid="subject-uuid", target_node_uuid="obs-1",
+                             fact="observation",
+                             created_at=datetime(2026, 3, 15, 13, 0)),  # naive, after rebuild
         ]
         mock_service.get_edges_for_node.return_value = edges
         mock_service.get_entity_by_uuid.return_value = obs_node

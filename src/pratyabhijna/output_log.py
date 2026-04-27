@@ -1,7 +1,7 @@
 """JSON output log for ``pratyabhijna update`` runs.
 
 Each invocation of the update CLI writes a JSON file at
-``{log_dir}/outputs/output-{ISO8601-UTC}.json`` capturing what the
+``{log_dir}/update/update-{ISO8601-UTC}.json`` capturing what the
 operator asked for, what the agent decided, what Cypher ran, and any
 warnings or errors. The schema is post-mortem-oriented: the goal is
 that a human reading one of these files months later can reconstruct
@@ -54,19 +54,24 @@ def write_output_file(
     completed_at: datetime,
     cache_requested: bool,
     updates: Iterable[dict],
+    output_path: "Path | str | None" = None,
 ) -> Path:
     """Write the canonical update-run JSON file.
 
-    Returns the path written. Creates ``{log_dir}/outputs/`` if needed.
+    Returns the path written. Creates ``{log_dir}/update/`` if needed.
+    If *output_path* is given it overrides the default location (``--output``).
     """
     _ensure_utc("started_at", started_at)
     _ensure_utc("completed_at", completed_at)
 
-    out_dir = Path(log_dir) / "outputs"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    filename = f"output-{_filename_safe_iso(started_at)}.json"
-    path = out_dir / filename
+    if output_path is not None:
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        out_dir = Path(log_dir) / "update"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"update-{_filename_safe_iso(started_at)}.json"
+        path = out_dir / filename
 
     duration_ms = int((completed_at - started_at).total_seconds() * 1000)
 

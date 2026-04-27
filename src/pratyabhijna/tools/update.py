@@ -157,9 +157,10 @@ def build_update_request(
     here would defeat the cache.
     """
     user_msg = build_user_message(
-        node=node,
+        obj=node,
         episodes=episodes,
         recall_results=recall_results,
+        kind="entity_node",
     )
     user_msg["content"].append({
         "type": "text",

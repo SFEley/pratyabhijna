@@ -161,17 +161,17 @@ class TestParseUpdateArgs:
     def test_description_only(self):
         from pratyabhijna.__main__ import _parse_update_args
 
-        assert _parse_update_args(["fix the orphan Saga"]) == ("fix the orphan Saga", False, None)
+        assert _parse_update_args(["fix the orphan Saga"]) == ("fix the orphan Saga", False, None, None)
 
     def test_with_cache_flag(self):
         from pratyabhijna.__main__ import _parse_update_args
 
-        assert _parse_update_args(["fix things", "--cache"]) == ("fix things", True, None)
+        assert _parse_update_args(["fix things", "--cache"]) == ("fix things", True, None, None)
 
     def test_cache_flag_before_description(self):
         from pratyabhijna.__main__ import _parse_update_args
 
-        assert _parse_update_args(["--cache", "fix things"]) == ("fix things", True, None)
+        assert _parse_update_args(["--cache", "fix things"]) == ("fix things", True, None, None)
 
     def test_missing_description_returns_none(self):
         from pratyabhijna.__main__ import _parse_update_args
@@ -193,7 +193,13 @@ class TestParseUpdateArgs:
     def test_input_flag(self):
         from pratyabhijna.__main__ import _parse_update_args
 
-        assert _parse_update_args(["--input", "audit.json"]) == (None, False, "audit.json")
+        assert _parse_update_args(["--input", "audit.json"]) == (None, False, "audit.json", None)
+
+    def test_output_flag(self):
+        from pratyabhijna.__main__ import _parse_update_args
+
+        assert _parse_update_args(["fix things", "--output", "out.json"]) == ("fix things", False, None, "out.json")
+        assert _parse_update_args(["--input", "audit.json", "--output", "out.json"]) == (None, False, "audit.json", "out.json")
 
     def test_input_flag_rejects_both_description_and_input(self):
         from pratyabhijna.__main__ import _parse_update_args
@@ -357,8 +363,8 @@ class TestRunUpdate:
             rc = run_update(config, ["fix the orphan Saga"])
 
         assert rc == 1
-        out_dir = tmp_path / "outputs"
-        files = list(out_dir.glob("output-*.json"))
+        out_dir = tmp_path / "update"
+        files = list(out_dir.glob("update-*.json"))
         assert len(files) == 1, f"Expected one output file, found: {files}"
         payload = json.loads(files[0].read_text(encoding="utf-8"))
         assert payload["updates"][0]["status"] == "Error"

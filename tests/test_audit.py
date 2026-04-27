@@ -42,9 +42,10 @@ from pratyabhijna.tools.audit import build_user_message
 
 def test_user_message_orders_episode_recall_node():
     msg = build_user_message(
-        node={"uuid": "N1", "name": "test", "labels": ["Entity"], "summary": "..."},
+        obj={"uuid": "N1", "name": "test", "labels": ["Entity"], "summary": "..."},
         episodes=[{"uuid": "E1", "content": "ep body"}],
         recall_results={"nodes": [], "edges": []},
+        kind="entity_node",
     )
     assert msg["role"] == "user"
     blocks = msg["content"]
@@ -54,19 +55,20 @@ def test_user_message_orders_episode_recall_node():
     assert blocks[0]["cache_control"] == {"type": "ephemeral"}
     # Block 1: recall (no cache)
     assert "cache_control" not in blocks[1]
-    # Block 2: node (no cache)
+    # Block 2: object (no cache)
     assert "N1" in blocks[2]["text"]
     assert "cache_control" not in blocks[2]
 
 
 def test_user_message_handles_multiple_episodes():
     msg = build_user_message(
-        node={"uuid": "N1", "name": "x"},
+        obj={"uuid": "N1", "name": "x"},
         episodes=[
             {"uuid": "E1", "content": "first"},
             {"uuid": "E2", "content": "second"},
         ],
         recall_results={"nodes": [], "edges": []},
+        kind="entity_node",
     )
     text = msg["content"][0]["text"]
     assert "first" in text
@@ -78,7 +80,7 @@ from pratyabhijna.tools.audit import build_audit_request, AUDIT_RESPONSE_SCHEMA
 
 def test_audit_response_schema_has_required_fields():
     props = AUDIT_RESPONSE_SCHEMA["properties"]
-    # name is sourced from the input node, not echoed by the model
+    # name is sourced from the input object, not echoed by the model
     assert {"uuid", "status", "analysis"} <= set(props)
     assert "name" not in props
     assert AUDIT_RESPONSE_SCHEMA["properties"]["status"]["enum"] == [
@@ -89,9 +91,10 @@ def test_audit_response_schema_has_required_fields():
 def test_build_audit_request_returns_batch_request_shape():
     req = build_audit_request(
         custom_id="audit-N1",
-        node={"uuid": "N1", "name": "x"},
+        obj={"uuid": "N1", "name": "x"},
         episodes=[{"uuid": "E1", "content": "c"}],
         recall_results={"nodes": [], "edges": []},
+        kind="entity_node",
         soul="S", identity="I",
         guidance=None,
         model="claude-sonnet-4-6",
@@ -177,12 +180,12 @@ def test_parse_uuid_list_lowercases():
 
 
 from unittest.mock import MagicMock
-from pratyabhijna.tools.audit import resolve_node_list
+from pratyabhijna.tools.audit import resolve_uuid_list
 
 
 async def test_resolve_uuid_list_skips_query():
     service = MagicMock()
-    uuids = await resolve_node_list(
+    uuids = await resolve_uuid_list(
         "550e8400-e29b-41d4-a716-446655440000", service=service,
     )
     assert uuids == ["550e8400-e29b-41d4-a716-446655440000"]
@@ -198,7 +201,7 @@ async def test_resolve_augmented_prompt_asks_for_uuid_prefix(monkeypatch):
         return {"response": "", "cypher_log": [], "refused": False, "iterations": 1}
 
     monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
-    await resolve_node_list("find all Position nodes", service=MagicMock())
+    await resolve_uuid_list("find all Position nodes", service=MagicMock())
     assert "find all Position nodes" in seen["request"]
     # Contract pinned: leading UUIDs, one per line, nothing before
     lower = seen["request"].lower()
@@ -223,7 +226,7 @@ async def test_resolve_extracts_leading_uuid_block_only(monkeypatch):
             "iterations": 1,
         }
     monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
-    uuids = await resolve_node_list("find Position nodes", service=MagicMock())
+    uuids = await resolve_uuid_list("find Position nodes", service=MagicMock())
     assert uuids == [
         "550e8400-e29b-41d4-a716-446655440000",
         "660e8400-e29b-41d4-a716-446655440001",
@@ -245,7 +248,7 @@ async def test_resolve_returns_empty_when_uuids_only_appear_in_prose(monkeypatch
             "iterations": 1,
         }
     monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
-    uuids = await resolve_node_list("any", service=MagicMock())
+    uuids = await resolve_uuid_list("any", service=MagicMock())
     assert uuids == []
 
 
@@ -269,7 +272,7 @@ async def test_resolve_logs_warning_when_response_has_trailing_prose(
     monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
 
     with caplog.at_level(logging.WARNING, logger="pratyabhijna.tools.audit"):
-        uuids = await resolve_node_list("any", service=MagicMock())
+        uuids = await resolve_uuid_list("any", service=MagicMock())
     assert uuids == ["550e8400-e29b-41d4-a716-446655440000"]
     # The trailing prose lands in a WARNING record
     warnings = [
@@ -294,7 +297,7 @@ async def test_resolve_deduplicates_uuids(monkeypatch):
         }
     monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
     service = MagicMock()
-    uuids = await resolve_node_list("any prompt", service=service)
+    uuids = await resolve_uuid_list("any prompt", service=service)
     assert uuids == ["550e8400-e29b-41d4-a716-446655440000"]
 
 
@@ -308,7 +311,7 @@ async def test_resolve_returns_empty_when_query_returns_no_uuids(monkeypatch):
         }
     monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
     service = MagicMock()
-    uuids = await resolve_node_list("find unicorns", service=service)
+    uuids = await resolve_uuid_list("find unicorns", service=service)
     assert uuids == []
 
 
@@ -317,7 +320,7 @@ async def test_resolve_returns_empty_on_refusal(monkeypatch):
     async def fake_query(service, request, **kwargs):
         return {"response": "", "refused": True, "cypher_log": [], "iterations": 1}
     monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
-    uuids = await resolve_node_list("find anything", service=MagicMock())
+    uuids = await resolve_uuid_list("find anything", service=MagicMock())
     assert uuids == []
 
 
@@ -458,7 +461,17 @@ async def test_process_update_result_records_with_request_field():
     assert results[0]["status"] == "Update"
     assert results[0]["request"] == "Change entity_type to Observation"
     assert results[0]["name"] == "thing"
-    queue.enqueue.assert_not_called()  # Update doesn't enqueue a Thread either
+    queue.enqueue.assert_not_called()  # Update doesn't enqueue a Thread
+
+    # Two writes: stamp audited_at + append notes
+    assert service.execute_write_query.call_count == 2
+    notes_cypher, notes_params = service.execute_write_query.call_args_list[1].args
+    assert "n.notes" in notes_cypher
+    assert len(notes_params["updates"]) == 1
+    assert notes_params["updates"][0]["uuid"] == "N2"
+    note = notes_params["updates"][0]["note"]
+    assert note.startswith("Audit ")
+    assert "Change entity_type to Observation" in note
 
 
 async def test_process_unfixable_result_warns_and_enqueues_thread():
@@ -673,25 +686,17 @@ async def test_run_audit_run_orchestrates_resolve_build_submit_process(monkeypat
     # Resolve returns two UUIDs
     async def fake_resolve(input_str, *, service):
         return ["uuid-A", "uuid-B"]
-    monkeypatch.setattr("pratyabhijna.tools.audit.resolve_node_list", fake_resolve)
+    monkeypatch.setattr("pratyabhijna.tools.audit.resolve_uuid_list", fake_resolve)
 
-    # Mock service node + episode + recall fetchers
-    # Note: `name` is a special MagicMock constructor arg (sets repr name), so
-    # we set the `.name` attribute separately after construction.
-    node_a = MagicMock(uuid="uuid-A", labels=["Entity"], summary="...",
-                      attributes={}, created_at=None, group_id="")
-    node_a.name = "A"
-    node_b = MagicMock(uuid="uuid-B", labels=["Entity"], summary="...",
-                      attributes={}, created_at=None, group_id="")
-    node_b.name = "B"
-    service.get_entity_by_uuid = AsyncMock(side_effect=[node_a, node_b])
-    ep = MagicMock(uuid="ep-1", name="ep", content="body", source="self",
-                   source_description="", valid_at=None)
-    service.get_episodes_for_node = AsyncMock(return_value=[ep])
+    # Both UUIDs detect as entity nodes; load_object returns canned shapes.
+    async def fake_detect_kind(svc, uuid):
+        return "entity_node"
+    monkeypatch.setattr("pratyabhijna.tools.audit.detect_kind", fake_detect_kind)
 
-    async def fake_recall(svc, *, query, limit):
-        return {"nodes": [], "edges": []}
-    monkeypatch.setattr("pratyabhijna.tools.audit.recall", fake_recall)
+    async def fake_load_object(svc, uuid, kind):
+        name = "A" if uuid == "uuid-A" else "B"
+        return ({"uuid": uuid, "name": name, "labels": ["Entity"]}, [], {"nodes": [], "edges": []}, name)
+    monkeypatch.setattr("pratyabhijna.tools.audit.load_object", fake_load_object)
 
     # Mock anthropic client + the three batch operations
     client = MagicMock()
@@ -718,9 +723,10 @@ async def test_run_audit_run_orchestrates_resolve_build_submit_process(monkeypat
     assert len(requests_arg) == 2
     assert {r["custom_id"] for r in requests_arg} == {"audit-uuid-A", "audit-uuid-B"}
 
-    # Process was called with node_names mapping for both nodes
+    # Process was called with node_names + object_kinds mappings for both
     process_kwargs = process_mock.call_args.kwargs
     assert process_kwargs["node_names"] == {"uuid-A": "A", "uuid-B": "B"}
+    assert process_kwargs["object_kinds"] == {"uuid-A": "entity_node", "uuid-B": "entity_node"}
 
     # Summary structure
     assert summary["cohort_size"] == 2
@@ -743,7 +749,7 @@ async def test_run_audit_run_empty_cohort_skips_batch(monkeypatch, tmp_path):
 
     async def fake_resolve(input_str, *, service):
         return []
-    monkeypatch.setattr("pratyabhijna.tools.audit.resolve_node_list", fake_resolve)
+    monkeypatch.setattr("pratyabhijna.tools.audit.resolve_uuid_list", fake_resolve)
 
     submit_mock = AsyncMock()
     monkeypatch.setattr("pratyabhijna.tools.audit.submit_audit_batch", submit_mock)
@@ -779,3 +785,291 @@ def test_parse_audit_args_rejects_empty():
     assert _parse_audit_args([]) is None
     assert _parse_audit_args(["--guidance", "x"]) is None
     assert _parse_audit_args([""]) is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Kind detection + general-object support
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestDetectKind:
+    async def test_detects_entity_node(self):
+        from pratyabhijna.tools.audit import detect_kind, KIND_ENTITY_NODE
+
+        service = MagicMock()
+        service._graphiti.driver.execute_query = AsyncMock(return_value=(
+            [{"node_labels": ["Entity", "Person"], "edge_type": None}], None, None,
+        ))
+        kind = await detect_kind(service, "uuid-x")
+        assert kind == KIND_ENTITY_NODE
+
+    async def test_detects_episodic_node(self):
+        from pratyabhijna.tools.audit import detect_kind, KIND_EPISODIC_NODE
+
+        service = MagicMock()
+        service._graphiti.driver.execute_query = AsyncMock(return_value=(
+            [{"node_labels": ["Episodic"], "edge_type": None}], None, None,
+        ))
+        assert await detect_kind(service, "u") == KIND_EPISODIC_NODE
+
+    async def test_detects_community_node(self):
+        from pratyabhijna.tools.audit import detect_kind, KIND_COMMUNITY_NODE
+
+        service = MagicMock()
+        service._graphiti.driver.execute_query = AsyncMock(return_value=(
+            [{"node_labels": ["Community"], "edge_type": None}], None, None,
+        ))
+        assert await detect_kind(service, "u") == KIND_COMMUNITY_NODE
+
+    async def test_detects_saga_node(self):
+        from pratyabhijna.tools.audit import detect_kind, KIND_SAGA_NODE
+
+        service = MagicMock()
+        service._graphiti.driver.execute_query = AsyncMock(return_value=(
+            [{"node_labels": ["Saga"], "edge_type": None}], None, None,
+        ))
+        assert await detect_kind(service, "u") == KIND_SAGA_NODE
+
+    async def test_detects_entity_edge(self):
+        from pratyabhijna.tools.audit import detect_kind, KIND_ENTITY_EDGE
+
+        service = MagicMock()
+        service._graphiti.driver.execute_query = AsyncMock(return_value=(
+            [{"node_labels": [], "edge_type": "RELATES_TO"}], None, None,
+        ))
+        assert await detect_kind(service, "u") == KIND_ENTITY_EDGE
+
+    async def test_detects_mentions_edge(self):
+        from pratyabhijna.tools.audit import detect_kind, KIND_EPISODIC_EDGE
+
+        service = MagicMock()
+        service._graphiti.driver.execute_query = AsyncMock(return_value=(
+            [{"node_labels": [], "edge_type": "MENTIONS"}], None, None,
+        ))
+        assert await detect_kind(service, "u") == KIND_EPISODIC_EDGE
+
+    async def test_unknown_uuid_returns_unknown(self):
+        from pratyabhijna.tools.audit import detect_kind, KIND_UNKNOWN
+
+        service = MagicMock()
+        service._graphiti.driver.execute_query = AsyncMock(return_value=(
+            [{"node_labels": None, "edge_type": None}], None, None,
+        ))
+        assert await detect_kind(service, "u") == KIND_UNKNOWN
+
+
+class TestStampDispatch:
+    async def test_node_results_use_node_cypher(self):
+        from pratyabhijna.tools.audit import process_results
+
+        client = MagicMock()
+        client.messages.batches.results = AsyncMock(return_value=_async_iter([
+            MagicMock(custom_id="audit-N1", result=MagicMock(
+                type="succeeded",
+                message=MagicMock(content=[MagicMock(
+                    type="text",
+                    text='{"uuid":"N1","status":"Valid","analysis":"ok"}',
+                )]),
+            )),
+        ]))
+        service = MagicMock()
+        service.execute_write_query = AsyncMock()
+        queue = MagicMock()
+
+        await process_results(
+            client, "b",
+            service=service, queue=queue,
+            node_names={"N1": "n1"},
+            object_kinds={"N1": "entity_node"},
+        )
+
+        cypher = service.execute_write_query.call_args_list[0].args[0]
+        assert "MATCH (n {uuid: u})" in cypher  # node-shaped
+        assert "()-[r" not in cypher  # not edge-shaped
+
+    async def test_edge_results_use_edge_cypher(self):
+        from pratyabhijna.tools.audit import process_results
+
+        client = MagicMock()
+        client.messages.batches.results = AsyncMock(return_value=_async_iter([
+            MagicMock(custom_id="audit-E1", result=MagicMock(
+                type="succeeded",
+                message=MagicMock(content=[MagicMock(
+                    type="text",
+                    text='{"uuid":"E1","status":"Valid","analysis":"ok"}',
+                )]),
+            )),
+        ]))
+        service = MagicMock()
+        service.execute_write_query = AsyncMock()
+        queue = MagicMock()
+
+        await process_results(
+            client, "b",
+            service=service, queue=queue,
+            node_names={"E1": "fact"},
+            object_kinds={"E1": "entity_edge"},
+        )
+
+        cypher = service.execute_write_query.call_args_list[0].args[0]
+        assert "()-[r {uuid: u}]->()" in cypher  # edge-shaped
+
+    async def test_mixed_cohort_splits_node_and_edge_stamps(self):
+        from pratyabhijna.tools.audit import process_results
+
+        client = MagicMock()
+        client.messages.batches.results = AsyncMock(return_value=_async_iter([
+            MagicMock(custom_id="audit-N1", result=MagicMock(
+                type="succeeded",
+                message=MagicMock(content=[MagicMock(
+                    type="text",
+                    text='{"uuid":"N1","status":"Valid","analysis":"ok"}',
+                )]),
+            )),
+            MagicMock(custom_id="audit-E1", result=MagicMock(
+                type="succeeded",
+                message=MagicMock(content=[MagicMock(
+                    type="text",
+                    text='{"uuid":"E1","status":"Valid","analysis":"ok"}',
+                )]),
+            )),
+        ]))
+        service = MagicMock()
+        service.execute_write_query = AsyncMock()
+
+        await process_results(
+            client, "b",
+            service=service, queue=MagicMock(),
+            node_names={"N1": "n", "E1": "e"},
+            object_kinds={"N1": "entity_node", "E1": "entity_edge"},
+        )
+
+        # Two write calls: one node-shaped, one edge-shaped.
+        assert service.execute_write_query.call_count == 2
+        cyphers = [c.args[0] for c in service.execute_write_query.call_args_list]
+        assert any("MATCH (n {uuid: u})" in c for c in cyphers)
+        assert any("()-[r {uuid: u}]->()" in c for c in cyphers)
+
+
+class TestNotesDispatch:
+    async def test_entity_node_update_writes_node_notes(self):
+        from pratyabhijna.tools.audit import process_results
+
+        client = MagicMock()
+        client.messages.batches.results = AsyncMock(return_value=_async_iter([
+            MagicMock(custom_id="audit-N1", result=MagicMock(
+                type="succeeded",
+                message=MagicMock(content=[MagicMock(
+                    type="text",
+                    text='{"uuid":"N1","status":"Update",'
+                         '"analysis":"wrong type",'
+                         '"request":"Change to Observation"}',
+                )]),
+            )),
+        ]))
+        service = MagicMock()
+        service.execute_write_query = AsyncMock()
+
+        await process_results(
+            client, "b",
+            service=service, queue=MagicMock(),
+            node_names={"N1": "n"},
+            object_kinds={"N1": "entity_node"},
+        )
+
+        # Two writes: stamp + notes; notes Cypher targets nodes
+        assert service.execute_write_query.call_count == 2
+        notes_cypher = service.execute_write_query.call_args_list[1].args[0]
+        assert "MATCH (n:Entity {uuid: u.uuid})" in notes_cypher
+        assert "n.notes" in notes_cypher
+
+    async def test_entity_edge_update_writes_edge_notes(self):
+        from pratyabhijna.tools.audit import process_results
+
+        client = MagicMock()
+        client.messages.batches.results = AsyncMock(return_value=_async_iter([
+            MagicMock(custom_id="audit-E1", result=MagicMock(
+                type="succeeded",
+                message=MagicMock(content=[MagicMock(
+                    type="text",
+                    text='{"uuid":"E1","status":"Update",'
+                         '"analysis":"wrong group_id",'
+                         '"request":"Set group_id=Vesper"}',
+                )]),
+            )),
+        ]))
+        service = MagicMock()
+        service.execute_write_query = AsyncMock()
+
+        await process_results(
+            client, "b",
+            service=service, queue=MagicMock(),
+            node_names={"E1": "fact"},
+            object_kinds={"E1": "entity_edge"},
+        )
+
+        # Two writes: stamp + notes; notes Cypher targets RELATES_TO edges
+        assert service.execute_write_query.call_count == 2
+        notes_cypher = service.execute_write_query.call_args_list[1].args[0]
+        assert "[r:RELATES_TO {uuid: u.uuid}]" in notes_cypher
+        assert "r.notes" in notes_cypher
+
+    async def test_episodic_node_update_does_not_write_notes(self):
+        from pratyabhijna.tools.audit import process_results
+
+        client = MagicMock()
+        client.messages.batches.results = AsyncMock(return_value=_async_iter([
+            MagicMock(custom_id="audit-EP1", result=MagicMock(
+                type="succeeded",
+                message=MagicMock(content=[MagicMock(
+                    type="text",
+                    text='{"uuid":"EP1","status":"Update",'
+                         '"analysis":"bad source enum",'
+                         '"request":"Set source=text"}',
+                )]),
+            )),
+        ]))
+        service = MagicMock()
+        service.execute_write_query = AsyncMock()
+
+        await process_results(
+            client, "b",
+            service=service, queue=MagicMock(),
+            node_names={"EP1": "ep"},
+            object_kinds={"EP1": "episodic_node"},
+        )
+
+        # Only one write: the audited_at stamp. Notes are skipped for
+        # non-Entity kinds.
+        assert service.execute_write_query.call_count == 1
+
+
+class TestUnfixableEdgeBehavior:
+    async def test_edge_unfixable_does_not_enqueue_thread(self):
+        from pratyabhijna.tools.audit import process_results
+
+        client = MagicMock()
+        client.messages.batches.results = AsyncMock(return_value=_async_iter([
+            MagicMock(custom_id="audit-E1", result=MagicMock(
+                type="succeeded",
+                message=MagicMock(content=[MagicMock(
+                    type="text",
+                    text='{"uuid":"E1","status":"Unfixable",'
+                         '"analysis":"orphan edge — recommend deletion"}',
+                )]),
+            )),
+        ]))
+        service = MagicMock()
+        service.execute_write_query = AsyncMock()
+        queue = MagicMock()
+        queue.enqueue = AsyncMock()
+
+        await process_results(
+            client, "b",
+            service=service, queue=queue,
+            node_names={"E1": "edge"},
+            object_kinds={"E1": "entity_edge"},
+        )
+
+        # Edge Unfixable does NOT enqueue a Thread; only nodes do.
+        queue.enqueue.assert_not_called()

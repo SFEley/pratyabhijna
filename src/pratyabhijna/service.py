@@ -13,7 +13,7 @@ from graphiti_core import Graphiti
 from graphiti_core.driver.neo4j_driver import Neo4jDriver
 from graphiti_core.edges import EntityEdge
 from graphiti_core.errors import EdgeNotFoundError, NodeNotFoundError
-from graphiti_core.nodes import CommunityNode, EntityNode, EpisodicNode
+from graphiti_core.nodes import CommunityNode, EntityNode, EpisodicNode, SagaNode
 from graphiti_core.search.search_config import SearchResults
 from graphiti_core.search.search_config_recipes import (
     COMBINED_HYBRID_SEARCH_CROSS_ENCODER,
@@ -220,6 +220,18 @@ class PratyabhijnaService:
         if not uuids:
             return []
         return await EpisodicNode.get_by_uuids(self._graphiti.driver, uuids)
+
+    async def get_episode_by_uuid(self, uuid: str) -> EpisodicNode:
+        """Get a single episodic node by UUID. Raises NodeNotFoundError."""
+        return await EpisodicNode.get_by_uuid(self._graphiti.driver, uuid)
+
+    async def get_community_by_uuid(self, uuid: str) -> CommunityNode:
+        """Get a community node by UUID. Raises NodeNotFoundError."""
+        return await CommunityNode.get_by_uuid(self._graphiti.driver, uuid)
+
+    async def get_saga_by_uuid(self, uuid: str) -> SagaNode:
+        """Get a saga node by UUID. Raises NodeNotFoundError."""
+        return await SagaNode.get_by_uuid(self._graphiti.driver, uuid)
 
     async def get_latest_episode_by_name(self, name: str) -> EpisodicNode | None:
         """Return the most-recently-created episode whose name matches exactly.

@@ -1,44 +1,9 @@
-"""Audit run output: JSON files in logs/audit/ + appended summary in memory/AUDIT.md."""
+"""Audit run output: JSON files in logs/audit/."""
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-
-AUDIT_MD_HEADER = (
-    "# Audit Log\n\n"
-    "This file is appended to by `pratyabhijna audit` runs. "
-    "Not loaded on bootstrap.\n\n"
-)
-
-
-def append_to_audit_md(*, repo_path: str | Path, run_summary: dict) -> None:
-    """Append a dated section summarizing one audit run.
-
-    Creates the file with a header if it doesn't exist; otherwise appends.
-    The Unfixable subsection is omitted when there are no unfixable nodes.
-    """
-    audit_md = Path(repo_path) / "memory" / "AUDIT.md"
-    if not audit_md.exists():
-        audit_md.write_text(AUDIT_MD_HEADER)
-    section = _format_section(run_summary)
-    with audit_md.open("a") as f:
-        f.write(section)
-
-
-def _format_section(s: dict) -> str:
-    lines = [
-        f"\n## Run {s['started_at']}\n",
-        f"- Valid: {s['valid']}",
-        f"- Update: {s['update']}",
-        f"- Unfixable: {s['unfixable']}",
-        f"- Errored: {s['errored']}",
-    ]
-    if s["unfixable_details"]:
-        lines.append("\n### Unfixable\n")
-        for u in s["unfixable_details"]:
-            lines.append(f"- **{u['name']}** (`{u['uuid']}`): {u['analysis']}")
-    return "\n".join(lines) + "\n"
 
 
 def write_audit_file(
