@@ -111,6 +111,81 @@ def test_build_audit_request_returns_batch_request_shape():
     assert req["_episode_uuids"] == ["E1"]
 
 
+def test_audit_system_prompt_invariant_across_requests():
+    """Every audit request in a run must ship a byte-identical system prompt.
+
+    The primer warms one cached prefix; every batch request relies on that
+    prefix matching theirs exactly. If `build_audit_request` ever started
+    folding per-call data into the system blocks, the primer would warm a
+    cache no batch request could read — silently regressing the cohort to
+    the pre-primer cost model.
+    """
+    common = {
+        "soul": "SOUL TEXT",
+        "identity": "IDENTITY TEXT",
+        "guidance": "RUN-SPECIFIC GUIDANCE",
+        "kind": "entity_node",
+        "model": "claude-sonnet-4-6",
+    }
+    req_a = build_audit_request(
+        custom_id="audit-N1",
+        obj={"uuid": "N1", "name": "node-one"},
+        episodes=[{"uuid": "E1", "content": "first episode body"}],
+        recall_results={"nodes": [{"uuid": "X1"}], "edges": []},
+        **common,
+    )
+    req_b = build_audit_request(
+        custom_id="audit-N2",
+        obj={"uuid": "N2", "name": "node-two", "summary": "totally different"},
+        episodes=[
+            {"uuid": "E2", "content": "totally different episode"},
+            {"uuid": "E3", "content": "third one"},
+        ],
+        recall_results={"nodes": [], "edges": [{"uuid": "Y1"}]},
+        **common,
+    )
+    # System blocks: byte-identical text and identical cache markers.
+    assert req_a["params"]["system"] == req_b["params"]["system"]
+    # Tools / output_config are also fixed per run — also identical.
+    assert req_a["params"].get("tools") == req_b["params"].get("tools")
+    assert req_a["params"]["output_config"] == req_b["params"]["output_config"]
+    # User messages MUST differ (sanity: we changed the inputs).
+    assert req_a["params"]["messages"] != req_b["params"]["messages"]
+
+
+def test_audit_system_prompt_blocks_clear_cache_minimum():
+    """Both system-prompt cache breakpoints must hold enough text to cache.
+
+    Anthropic's prompt cache requires a minimum prefix of 1024 tokens to
+    register. The first breakpoint covers SOUL+IDENTITY+framing; the second
+    covers everything plus AUDIT_INSTRUCTIONS. We don't tokenize here (no
+    tokenizer dependency in the test path) but ~4 chars/token is a
+    conservative floor, so we assert ≥4096 chars at each breakpoint.
+    """
+    from pratyabhijna.tools.audit import (
+        AUDIT_INSTRUCTIONS,
+        PARTIAL_BOOTSTRAP_FRAMING,
+    )
+
+    # Realistic minimum: a short soul+identity still keeps the framing
+    # boilerplate. In production these are thousands of tokens each.
+    framed = PARTIAL_BOOTSTRAP_FRAMING.format(
+        soul="SOUL " * 800,  # ~4000 chars
+        identity="IDENTITY " * 800,  # ~7200 chars
+    )
+    assert len(framed) >= 4096, (
+        "First cache breakpoint may be too small to commit to Anthropic's "
+        "prompt cache (min prefix is 1024 tokens ≈ 4096 chars)."
+    )
+    # The instructions block is static text — its size is fixed by the
+    # AUDIT_INSTRUCTIONS literal. Confirm the literal alone is large enough
+    # that the second breakpoint (framed + instructions) is well above min.
+    assert len(AUDIT_INSTRUCTIONS) >= 1024, (
+        f"AUDIT_INSTRUCTIONS is only {len(AUDIT_INSTRUCTIONS)} chars; the "
+        "second cache breakpoint may not register."
+    )
+
+
 from pratyabhijna.tools.audit import sort_requests_by_episodes, strip_internal_keys
 
 
