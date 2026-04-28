@@ -157,7 +157,7 @@ def test_is_uuid_list_recognizes_canonical_uuids():
 
 
 def test_is_uuid_list_rejects_prose_and_malformed():
-    assert not is_uuid_list("find all Position nodes")
+    assert not is_uuid_list("find all Drive nodes")
     assert not is_uuid_list("nodes created last week")
     assert not is_uuid_list("abc123-def456-7890")  # not canonical UUID shape
     assert not is_uuid_list("")
@@ -201,8 +201,8 @@ async def test_resolve_augmented_prompt_asks_for_uuid_prefix(monkeypatch):
         return {"response": "", "cypher_log": [], "refused": False, "iterations": 1}
 
     monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
-    await resolve_uuid_list("find all Position nodes", service=MagicMock())
-    assert "find all Position nodes" in seen["request"]
+    await resolve_uuid_list("find all Drive nodes", service=MagicMock())
+    assert "find all Drive nodes" in seen["request"]
     # Contract pinned: leading UUIDs, one per line, nothing before
     lower = seen["request"].lower()
     assert "one" in lower and "per line" in lower
@@ -226,7 +226,7 @@ async def test_resolve_extracts_leading_uuid_block_only(monkeypatch):
             "iterations": 1,
         }
     monkeypatch.setattr("pratyabhijna.tools.audit._call_query", fake_query)
-    uuids = await resolve_uuid_list("find Position nodes", service=MagicMock())
+    uuids = await resolve_uuid_list("find Drive nodes", service=MagicMock())
     assert uuids == [
         "550e8400-e29b-41d4-a716-446655440000",
         "660e8400-e29b-41d4-a716-446655440001",
@@ -239,7 +239,7 @@ async def test_resolve_returns_empty_when_uuids_only_appear_in_prose(monkeypatch
     async def fake_query(service, request, **kwargs):
         return {
             "response": (
-                "Found 2 Position nodes: "
+                "Found 2 Drive nodes: "
                 "550e8400-e29b-41d4-a716-446655440000 and "
                 "660e8400-e29b-41d4-a716-446655440001."
             ),
@@ -766,18 +766,18 @@ async def test_run_audit_run_empty_cohort_skips_batch(monkeypatch, tmp_path):
 
 def test_parse_audit_args_minimal():
     from pratyabhijna.__main__ import _parse_audit_args
-    parsed = _parse_audit_args(["find Position nodes"])
-    assert parsed == ("find Position nodes", None, None)
+    parsed = _parse_audit_args(["find Drive nodes"])
+    assert parsed == ("find Drive nodes", None, None)
 
 
 def test_parse_audit_args_with_guidance_and_output():
     from pratyabhijna.__main__ import _parse_audit_args
     parsed = _parse_audit_args([
-        "find Position nodes",
+        "find Drive nodes",
         "--guidance", "migrate to Observation",
         "--output", "/tmp/audit.json",
     ])
-    assert parsed == ("find Position nodes", "migrate to Observation", "/tmp/audit.json")
+    assert parsed == ("find Drive nodes", "migrate to Observation", "/tmp/audit.json")
 
 
 def test_parse_audit_args_rejects_empty():

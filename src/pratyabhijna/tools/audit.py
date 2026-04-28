@@ -219,8 +219,7 @@ treated as errors.
 ## Entity nodes
 
 Update for: wrong entity_type label, missing property the source episode
-supplied, deprecated label (e.g. Position; should be Observation), broken
-edges, group_id != "Vesper".
+supplied, broken edges, group_id != "Vesper".
 
 ### Bare Entity nodes (special handling)
 

@@ -17,7 +17,6 @@ EXPECTED_TYPE_NAMES = [
     "Artifact",
     "Observation",
     "Drive",
-    "Position",
     "Concept",
     "Question",
     "Thread",
@@ -96,7 +95,7 @@ class TestFieldConsistency:
         model_class = PRATYABHIJNA_ENTITY_TYPES[type_name]
         assert "notes" in model_class.model_fields
 
-    @pytest.mark.parametrize("type_name", ["Observation", "Position", "Question", "Concept"])
+    @pytest.mark.parametrize("type_name", ["Observation", "Question", "Concept"])
     def test_conceptual_types_have_domain(self, type_name):
         """Conceptual types use 'domain' consistently for area-of-thought."""
         from pratyabhijna.entity_types import PRATYABHIJNA_ENTITY_TYPES
@@ -265,36 +264,24 @@ class TestDriveFields:
         assert "notes" in Drive.model_fields
 
     def test_does_not_have_counterexample_field(self):
-        """Old TrainedPattern's counterexample removed; use related Positions."""
+        """Old TrainedPattern's counterexample removed; use related Observations."""
         from pratyabhijna.entity_types import Drive
 
         assert "counterexample" not in Drive.model_fields
 
 
-class TestPositionFields:
-    """Position: a held view, principle, commitment, or stance."""
+class TestPositionRemoved:
+    """Position was deprecated and removed in v0.12.0; routed to Observation."""
 
-    def test_has_domain_field(self):
-        from pratyabhijna.entity_types import Position
+    def test_position_class_not_importable(self):
+        from pratyabhijna import entity_types
 
-        assert "domain" in Position.model_fields
+        assert not hasattr(entity_types, "Position")
 
-    def test_has_notes_field(self):
-        from pratyabhijna.entity_types import Position
+    def test_position_not_in_registry(self):
+        from pratyabhijna.entity_types import PRATYABHIJNA_ENTITY_TYPES
 
-        assert "notes" in Position.model_fields
-
-    def test_does_not_have_topic_field(self):
-        """Unified on 'domain' for consistency across conceptual types."""
-        from pratyabhijna.entity_types import Position
-
-        assert "topic" not in Position.model_fields
-
-    def test_does_not_have_description_field(self):
-        """Graphiti's summary handles description."""
-        from pratyabhijna.entity_types import Position
-
-        assert "description" not in Position.model_fields
+        assert "Position" not in PRATYABHIJNA_ENTITY_TYPES
 
 
 class TestQuestionFields:

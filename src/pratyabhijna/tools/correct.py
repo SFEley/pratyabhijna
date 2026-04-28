@@ -63,7 +63,7 @@ def make_handler(service: PratyabhijnaService, queue: WorkQueue | None = None):
 
     When ``queue`` is provided, the handler schedules a singleton
     synthesis task whenever the subject Person node has any neighbor
-    with an identity label (Observation, Drive, Position, Question).
+    with an identity label (Observation, Drive, Concept, Question, Thread).
     This is intentionally broad — the singleton kick-forward in
     ``reschedule_or_enqueue`` collapses repeated triggers into one run,
     while under-triggering would silently skip real identity changes.
