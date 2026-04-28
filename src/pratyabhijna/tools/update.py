@@ -38,6 +38,7 @@ from pratyabhijna.tools.audit import (
     build_system_prompt,
     build_user_message,
     poll_batch,
+    sort_requests_by_episodes,
     submit_audit_batch as _submit_batch,
 )
 from pratyabhijna.tools.recall import recall
@@ -245,16 +246,86 @@ async def update_from_audit_file(
                 "request_text": req_text,
             }
 
-        batch_id = await _submit_batch(client, requests)
+        # Sort by episode tuple so same-episode updates cluster, then run
+        # the first as a synchronous primer to warm the 1h prompt cache
+        # (SOUL+IDENTITY+instructions, plus the leading episode group's
+        # episode block) before submitting the batch. Without the primer,
+        # parallel batch requests race the cache write and each pays the
+        # 2x premium — see PR notes for the cohort math.
+        sorted_requests = sort_requests_by_episodes(requests)
+        primer_request = sorted_requests[0]
+        batch_requests = sorted_requests[1:]
+
+        primer_outcome = await _run_primer_update(
+            client,
+            primer_request,
+            service=service,
+            request_lookup=request_lookup,
+        )
+
+        if primer_outcome.get("status") == "Error":
+            _log.error(
+                "Primer update failed; skipping batch of %d to avoid "
+                "uncached writes. Re-run when ready.", len(batch_requests),
+            )
+            outcomes = [primer_outcome]
+            for r in batch_requests:
+                meta = request_lookup.get(r["custom_id"], {})
+                outcomes.append(_failed_outcome(
+                    meta.get("request_text", ""),
+                    "Primer update failed; batch not submitted",
+                ))
+            return outcomes
+
+        if not batch_requests:
+            return [primer_outcome]
+
+        batch_id = await _submit_batch(client, batch_requests)
         await poll_batch(client, batch_id, interval=60.0)
-        return await process_update_results(
+        batch_outcomes = await process_update_results(
             client, batch_id,
             service=service,
             request_lookup=request_lookup,
         )
+        return [primer_outcome] + batch_outcomes
     finally:
         if close_client:
             await client.close()
+
+
+async def _run_primer_update(
+    client,
+    request: dict,
+    *,
+    service,
+    request_lookup: dict[str, dict],
+) -> dict:
+    """Run a single update request synchronously to pre-warm the prompt cache.
+
+    Mirrors `audit.run_primer_audit` but for the update worker — sends turn 1
+    via `messages.create()`, then funnels the response through the same
+    `_handle_batched_message` dispatcher the batch path uses (which
+    transparently drops into `_sync_continue` if the model called read tools
+    or multiple writes). Returns the same outcome shape `process_update_results`
+    yields per item.
+    """
+    custom_id = request["custom_id"]
+    meta = request_lookup.get(custom_id, {})
+    request_text = meta.get("request_text", "")
+    request_params = meta.get("params", {})
+    params = {k: v for k, v in request["params"].items()}
+    try:
+        message = await client.messages.create(**params)
+    except Exception as exc:
+        _log.exception("Primer update %s failed before response", custom_id)
+        return _failed_outcome(request_text, f"{type(exc).__name__}: {exc}")
+    return await _handle_batched_message(
+        message=message,
+        request_text=request_text,
+        request_params=request_params,
+        service=service,
+        client=client,
+    )
 
 
 async def process_update_results(
