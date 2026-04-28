@@ -34,14 +34,10 @@ from pratyabhijna.log import get_logger
 from pratyabhijna.synthesis import read_identity_files
 from pratyabhijna.tools.audit import (
     _entity_to_dict,
-    _episode_to_dict,
     build_system_prompt,
-    build_user_message,
     poll_batch,
-    sort_requests_by_episodes,
     submit_audit_batch as _submit_batch,
 )
-from pratyabhijna.tools.recall import recall
 
 if TYPE_CHECKING:
     from pratyabhijna.service import PratyabhijnaService
@@ -120,26 +116,55 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 # --- Batch update instructions and request builder ---
 
 UPDATE_INSTRUCTIONS = """\
-You will receive a single node from your knowledge graph along with a request
-to fix a hygiene issue identified by the audit pass. You have two tools:
+You will receive an update directive — a hygiene fix identified by the audit
+pass — and the UUID and name of the target node. You have two tools:
 
-- execute_cypher_read: query the graph for additional context if needed
+- execute_cypher_read: query the graph for current node state if needed
 - execute_cypher_write: apply the change
 
-Most updates can be expressed as a single execute_cypher_write call given the
-node context already provided in this prompt. Use execute_cypher_read only if
-you genuinely need information beyond what's already here.
+The audit already evaluated the node's source episodes and surrounding context
+to produce the directive. Treat the directive as the operative instruction.
+Most updates can be expressed as a single execute_cypher_write call against the
+target's UUID; use execute_cypher_read first only if you need to confirm the
+node's current state before writing.
 
 When done, respond briefly summarizing what changed (or why no change was made).
 """
+
+
+def build_update_user_message(
+    *,
+    uuid: str,
+    name: str,
+    request_text: str,
+) -> dict:
+    """Lean user message for a batched update call.
+
+    Carries only what the update sub-agent needs: the audit's directive and
+    the target's UUID + name. The audit already digested source episodes and
+    recall context into the directive — re-sending them here is dead weight
+    and (with a per-node cache breakpoint on the episodes block) was
+    fragmenting the prompt cache across the cohort.
+
+    No cache_control on the user message: the system prompt carries the
+    cached prefix shared by every call in the run. The user message is the
+    per-call tail and stays small enough not to matter.
+    """
+    return {
+        "role": "user",
+        "content": (
+            f"# Target node\n\n"
+            f"- uuid: `{uuid}`\n"
+            f"- name: {name}\n\n"
+            f"# Update request\n\n{request_text}"
+        ),
+    }
 
 
 def build_update_request(
     *,
     custom_id: str,
     node: dict,
-    episodes: list[dict],
-    recall_results: dict,
     request_text: str,
     soul: str,
     identity: str,
@@ -148,25 +173,16 @@ def build_update_request(
 ) -> dict:
     """Build a single Anthropic Messages.batches request for one update.
 
-    Mirrors the audit batch request structure (same SOUL+IDENTITY + episode
-    cache breakpoints) so the prompt cache hits across audit and update runs.
-    Adds the audit's `request` text as a final content block in the user
-    message, and exposes the Cypher tools.
+    Every update call in a run shares an identical system prompt (SOUL +
+    IDENTITY + UPDATE_INSTRUCTIONS), so the cache breakpoint placed there
+    is reused by the entire batch — primer warms it once, every other
+    request reads it. Per-call variation lives only in the (uncached) user
+    message.
 
-    Note: uses `audit_model` (same as the audit pass) to preserve cache
-    continuity across the audit→update pipeline. Using a different model
-    here would defeat the cache.
+    Note: uses `audit_model` (same as the audit pass) so the SOUL+IDENTITY
+    breakpoint stays warm across the audit→update boundary; using a
+    different model here would defeat that.
     """
-    user_msg = build_user_message(
-        obj=node,
-        episodes=episodes,
-        recall_results=recall_results,
-        kind="entity_node",
-    )
-    user_msg["content"].append({
-        "type": "text",
-        "text": f"# Update request\n\n{request_text}",
-    })
     return {
         "custom_id": custom_id,
         "params": {
@@ -176,10 +192,13 @@ def build_update_request(
                 soul=soul, identity=identity,
                 instructions=UPDATE_INSTRUCTIONS,
             ),
-            "messages": [user_msg],
+            "messages": [build_update_user_message(
+                uuid=node["uuid"],
+                name=node.get("name", ""),
+                request_text=request_text,
+            )],
             "tools": TOOL_SCHEMAS,
         },
-        "_episode_uuids": [ep["uuid"] for ep in episodes],
     }
 
 
@@ -228,14 +247,10 @@ async def update_from_audit_file(
         for entry in update_entries:
             uuid = entry["uuid"]
             node = await service.get_entity_by_uuid(uuid)
-            episodes = await service.get_episodes_for_node(uuid)
-            recall_result = await recall(service, query=node.name, limit=5)
             req_text = entry.get("request", "") or ""
             req = build_update_request(
                 custom_id=f"update-{uuid}",
                 node=_entity_to_dict(node),
-                episodes=[_episode_to_dict(e) for e in episodes],
-                recall_results=recall_result,
                 request_text=req_text,
                 soul=soul, identity=identity,
                 model=model,
@@ -246,15 +261,13 @@ async def update_from_audit_file(
                 "request_text": req_text,
             }
 
-        # Sort by episode tuple so same-episode updates cluster, then run
-        # the first as a synchronous primer to warm the 1h prompt cache
-        # (SOUL+IDENTITY+instructions, plus the leading episode group's
-        # episode block) before submitting the batch. Without the primer,
-        # parallel batch requests race the cache write and each pays the
-        # 2x premium — see PR notes for the cohort math.
-        sorted_requests = sort_requests_by_episodes(requests)
-        primer_request = sorted_requests[0]
-        batch_requests = sorted_requests[1:]
+        # Every request in the cohort has an identical system prompt, so
+        # the primer commits the one cached prefix the rest of the batch
+        # reads — no cohort sort needed. Without the primer, parallel
+        # batch requests would race the cache write and each pay the 2x
+        # premium on the SOUL+IDENTITY block.
+        primer_request = requests[0]
+        batch_requests = requests[1:]
 
         primer_outcome = await _run_primer_update(
             client,

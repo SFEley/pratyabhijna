@@ -429,14 +429,12 @@ class TestErrors:
 
 
 class TestBuildUpdateRequest:
-    def test_includes_node_context_and_cypher_tools(self):
+    def test_lean_user_message_and_cached_system_prompt(self):
         from pratyabhijna.tools.update import build_update_request
 
         req = build_update_request(
             custom_id="update-N1",
             node={"uuid": "N1", "name": "x"},
-            episodes=[{"uuid": "E1", "content": "c"}],
-            recall_results={"nodes": [], "edges": []},
             request_text="Change entity_type to Observation",
             soul="S", identity="I",
             model="claude-sonnet-4-6",
@@ -445,32 +443,36 @@ class TestBuildUpdateRequest:
         params = req["params"]
         assert any(t["name"] == "execute_cypher_write" for t in params["tools"])
         assert any(t["name"] == "execute_cypher_read" for t in params["tools"])
-        # Cache markers preserved from audit's build_system_prompt — both
-        # blocks now use 1h TTL so audit and update share warmed cache
-        # across the paired audit→update flow.
+        # Cache lives entirely in the system prompt: both audit's
+        # SOUL+IDENTITY block and the update instructions block carry 1h
+        # cache_control so every call in the cohort reads the same prefix.
         assert params["system"][0]["cache_control"]["ttl"] == "1h"
         assert params["system"][1]["cache_control"]["ttl"] == "1h"
-        # Episode cache breakpoint also 1h — covers the entire audit/update
-        # window without expiring mid-batch.
-        assert params["messages"][0]["content"][0]["cache_control"]["ttl"] == "1h"
-        # Request text appears as the final content block
-        assert "Change entity_type to Observation" in params["messages"][0]["content"][-1]["text"]
-        # Internal sort key at top level, not in params
-        assert req["_episode_uuids"] == ["E1"]
+        # User message is a single uncached string (no per-call cache
+        # breakpoints to fragment the cohort cache).
+        msg = params["messages"][0]
+        assert msg["role"] == "user"
+        assert isinstance(msg["content"], str)
+        assert "N1" in msg["content"]
+        assert "Change entity_type to Observation" in msg["content"]
+        # No `_episode_uuids` key — episode-cluster sorting is gone with
+        # the per-node cache breakpoint.
+        assert "_episode_uuids" not in req
 
-    def test_empty_episodes_produces_empty_episode_uuids(self):
+    def test_uses_node_uuid_and_name(self):
         from pratyabhijna.tools.update import build_update_request
 
         req = build_update_request(
             custom_id="update-N2",
-            node={"uuid": "N2", "name": "y"},
-            episodes=[],
-            recall_results={"nodes": [], "edges": []},
-            request_text="Fix it",
+            node={"uuid": "abc-123", "name": "Position thing"},
+            request_text="Reclassify as Concept",
             soul="S", identity="I",
             model="claude-sonnet-4-6",
         )
-        assert req["_episode_uuids"] == []
+        content = req["params"]["messages"][0]["content"]
+        assert "abc-123" in content
+        assert "Position thing" in content
+        assert "Reclassify as Concept" in content
 
 
 # ---------------------------------------------------------------------------
@@ -518,12 +520,6 @@ class TestUpdateFromAuditFile:
         node_b.created_at = None
         node_b.group_id = ""
         svc.get_entity_by_uuid = AsyncMock(return_value=node_b)
-        svc.get_episodes_for_node = AsyncMock(return_value=[])
-
-        async def fake_recall(svc_arg, *, query, limit):
-            return {"nodes": [], "edges": []}
-
-        monkeypatch.setattr("pratyabhijna.tools.update.recall", fake_recall)
 
         # Single Update entry → primer runs, no batch is needed.
         primer_mock = AsyncMock(return_value={
