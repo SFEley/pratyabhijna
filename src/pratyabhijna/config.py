@@ -14,12 +14,26 @@ Select the environment with PRATYABHIJNA_ENV (default: "dev").
 import os
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 # Root of the server package (server/)
 _SERVER_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _anchor(value: str, root: Path = _SERVER_ROOT) -> str:
+    """Anchor a relative path against the project root.
+
+    Absolute paths and tilde-prefixed paths pass through unchanged. Empty
+    strings pass through too (callers treat them as "unconfigured").
+    """
+    if not value:
+        return value
+    p = Path(value)
+    if p.is_absolute() or value.startswith("~"):
+        return value
+    return str((root / p).resolve())
 
 
 class Neo4jConfig(BaseModel):
@@ -142,6 +156,26 @@ class PratyabhijnaConfig(BaseSettings):
     oauth: OAuthConfig = Field(default_factory=OAuthConfig)
     seed: SeedConfig = Field(default_factory=SeedConfig)
     resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
+
+    @model_validator(mode="after")
+    def _anchor_paths(self) -> "PratyabhijnaConfig":
+        """Resolve every project-relative path against ``_SERVER_ROOT``.
+
+        Paths in YAML configs are written as ``./logs`` and ``./data/X``
+        for readability, but consumers (logging, sqlite, file writes)
+        eventually call ``Path(...)`` which resolves relative to CWD.
+        Anchoring at config-load time means the values are always
+        absolute by the time they leave this class, regardless of where
+        the process was launched from.
+
+        Absolute and tilde paths pass through unchanged, so test
+        fixtures that pass ``tmp_path`` and ``resources.repo_path``'s
+        ``~/vesper`` are unaffected.
+        """
+        self.log_dir = _anchor(self.log_dir)
+        self.queue.db_path = _anchor(self.queue.db_path)
+        self.oauth.db_path = _anchor(self.oauth.db_path)
+        return self
 
     @classmethod
     def settings_customise_sources(cls, settings_cls, **kwargs):

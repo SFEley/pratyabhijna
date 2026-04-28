@@ -29,7 +29,7 @@ Files in the repo include:
 
 ### The associational brain (knowledge graph)
 
-The Neo4j knowledge graph contains entities and relationships -- atomic, typed, bi-temporal. Observations, Drives, Positions, Questions, Threads, and the edges between them. The same concepts that appear as prose in the git repo exist here as structured nodes and relationships.
+The Neo4j knowledge graph contains entities and relationships -- atomic, typed, bi-temporal. Observations, Drives, Questions, Threads, and the edges between them. The same concepts that appear as prose in the git repo exist here as structured nodes and relationships.
 
 Characteristics:
 - **Relational and atomic.** Individual facts connected by typed edges.
@@ -106,7 +106,7 @@ Synthesis is the process that integrates new knowledge into the bootstrap text. 
 
 Synthesis is triggered at session start via `bootstrap`: if the context is stale (delta count exceeds `max_delta_changes`, or the last rebuild is older than `max_age_hours`, or synthesis has never run), a synthesize task is scheduled immediately. The synthesizer runs in the background while the session proceeds.
 
-The `correct` handler provides a belt-and-suspenders trigger: after processing a correction, it checks whether the subject node has any identity-typed neighbors (Observations, Drives, Positions, Questions) and schedules synthesis if so. This fires in real time rather than at session start.
+The `correct` handler provides a belt-and-suspenders trigger: after processing a correction, it checks whether the subject node has any identity-typed neighbors (Observations, Drives, Questions) and schedules synthesis if so. This fires in real time rather than at session start.
 
 The scheduled task is a **singleton** -- only one pending synthesis task exists at a time. Repeated triggers reschedule in place rather than stacking up.
 

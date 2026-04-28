@@ -62,7 +62,7 @@ Bootstrapping means loading the subject's identity tiers before engaging. It is 
 - `soul`, `identity`, `user`, `threads`, `chronicle` — the five identity tiers
 - `context` — the synthesizer's prose synthesis (graph-side, may be newer than what's committed to files)
 - `context_rebuilt_at` — when synthesis last ran
-- `delta` — identity changes (Observations, Drives, Positions, Questions, etc.) since the last context rebuild
+- `delta` — identity changes (Observations, Drives, Questions, etc.) since the last context rebuild
 - `available_tools` — the tool set this session has
 
 The graph-side state — `context`, `context_rebuilt_at`, and `delta` — is the reason bootstrap is the canonical path even when you also have local file access. Files alone don't carry it.
@@ -109,7 +109,7 @@ recall(query: str, memory_type?: str, time_range?: str, limit?: int)
 ```
 
 - `query` is natural language. The backend does hybrid search (semantic + keyword + graph traversal) with reranking, so plain phrasing works — you don't need keyword tricks.
-- `memory_type` (optional) filters by entity label, drawn from the fixed set: `Person`, `Event`, `Place`, `Project`, `Artifact`, `Observation`, `Drive`, `Concept`, `Question`, `Thread`. (`Position` exists for legacy nodes but is deprecated — don't filter on it for new searches.) Use the type when the question has an obvious shape ("who was..." → `Person`); leave blank for broad exploration.
+- `memory_type` (optional) filters by entity label, drawn from the fixed set: `Person`, `Event`, `Place`, `Project`, `Artifact`, `Observation`, `Drive`, `Concept`, `Question`, `Thread`. Use the type when the question has an obvious shape ("who was..." → `Person`); leave blank for broad exploration.
 - `time_range` (optional) accepts either relative (`"7d"`, `"24h"`, `"30d"`) or absolute ranges (`"2025-01-01..2025-03-01"`).
 - `limit` (optional) caps the result count. Default is 5 — enough for most questions. Pass a larger value when scanning a topic broadly.
 
@@ -140,7 +140,7 @@ remember(content: str, memory_type?: str = "observation", source?: str = "self")
 ```
 
 - `content` is prose. Graphiti extracts entities and relationships from it, so write it as a natural sentence or two — "Serah decided to work Pratyabhijna in 90-minute blocks" is better than a terse label.
-- `memory_type` defaults to `"observation"`. Use a specific label (`Person`, `Place`, `Position`, `Thread`, etc.) when the content clearly *is* one of those things.
+- `memory_type` defaults to `"observation"`. Use a specific label (`Person`, `Place`, `Drive`, `Thread`, etc.) when the content clearly *is* one of those things.
 - `source` defaults to `"self"` — the subject remembering. Override when the memory came from outside (e.g. a quoted user message or an external document).
 - The call **returns immediately** with a task id; processing happens in a background worker. Don't wait for completion to continue the conversation.
 

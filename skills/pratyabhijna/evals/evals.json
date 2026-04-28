@@ -13,7 +13,7 @@
       "id": 1,
       "name": "remember-threshold",
       "prompt": "I just decided that going forward, I want to work on Pratyabhijna in 90-minute focused blocks rather than dribbling at it all day.",
-      "expected_output": "Assistant recognizes this as a Position (a stated commitment / working-style decision that should persist) and calls mcp__Pratyabhijna__remember with content capturing the 90-minute block decision. memory_type should be 'Position' (or 'observation' as fallback). source should be 'self' (the subject remembering on its own initiative about the user) or reflect attribution to the user.",
+      "expected_output": "Assistant recognizes this as an Observation (a stated commitment / working-style decision that should persist) and calls mcp__Pratyabhijna__remember with content capturing the 90-minute block decision. memory_type should be 'Observation' (or 'observation' as fallback). source should be 'self' (the subject remembering on its own initiative about the user) or reflect attribution to the user.",
       "files": [],
       "assertions": []
     },

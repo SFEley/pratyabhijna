@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
     from pratyabhijna.service import PratyabhijnaService
 
-IDENTITY_LABELS = {"Observation", "Drive", "Position", "Concept", "Question", "Thread"}
+IDENTITY_LABELS = {"Observation", "Drive", "Concept", "Question", "Thread"}
 
 IDENTITY_FILES = {
     "soul": "SOUL.md",

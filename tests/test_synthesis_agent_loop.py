@@ -228,7 +228,7 @@ def test_initial_message_renders_candidates_and_atoms():
         "fact": "X holds view Y",
         "edge_uuid": "abcdef12-3456-7890-1234-567890abcdef",
         "node_name": "N",
-        "node_type": "Position",
+        "node_type": "Observation",
         "created_at": datetime(2026, 4, 1, tzinfo=timezone.utc),
     }
     msg = _build_initial_user_message(
@@ -247,7 +247,7 @@ def test_initial_message_renders_candidates_and_atoms():
     assert "writing/p.md" in msg
     assert "[new]" in msg
     assert "X holds view Y" in msg
-    assert "[Position]" in msg
+    assert "[Observation]" in msg
 
 
 # --- _dispatch_tool_call ---
