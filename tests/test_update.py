@@ -434,7 +434,7 @@ class TestBuildUpdateRequest:
 
         req = build_update_request(
             custom_id="update-N1",
-            node={"uuid": "N1", "name": "x"},
+            uuid="N1", name="x", kind="entity_node",
             request_text="Change entity_type to Observation",
             soul="S", identity="I",
             model="claude-sonnet-4-6",
@@ -454,17 +454,18 @@ class TestBuildUpdateRequest:
         assert msg["role"] == "user"
         assert isinstance(msg["content"], str)
         assert "N1" in msg["content"]
+        assert "entity_node" in msg["content"]
         assert "Change entity_type to Observation" in msg["content"]
         # No `_episode_uuids` key — episode-cluster sorting is gone with
         # the per-node cache breakpoint.
         assert "_episode_uuids" not in req
 
-    def test_uses_node_uuid_and_name(self):
+    def test_uses_uuid_name_and_kind(self):
         from pratyabhijna.tools.update import build_update_request
 
         req = build_update_request(
             custom_id="update-N2",
-            node={"uuid": "abc-123", "name": "Position thing"},
+            uuid="abc-123", name="Position thing", kind="entity_node",
             request_text="Reclassify as Concept",
             soul="S", identity="I",
             model="claude-sonnet-4-6",
@@ -472,7 +473,25 @@ class TestBuildUpdateRequest:
         content = req["params"]["messages"][0]["content"]
         assert "abc-123" in content
         assert "Position thing" in content
+        assert "entity_node" in content
         assert "Reclassify as Concept" in content
+
+    def test_supports_edge_kinds(self):
+        """Edges are valid update targets — kind is conveyed to the agent
+        via the user message header so it matches with the right Cypher
+        relationship type."""
+        from pratyabhijna.tools.update import build_update_request
+
+        req = build_update_request(
+            custom_id="update-E9",
+            uuid="edge-uuid-9", name="<edge>", kind="entity_edge",
+            request_text="Set group_id to Vesper",
+            soul="S", identity="I",
+            model="claude-sonnet-4-6",
+        )
+        content = req["params"]["messages"][0]["content"]
+        assert "entity_edge" in content
+        assert "edge-uuid-9" in content
 
 
 # ---------------------------------------------------------------------------
@@ -496,11 +515,12 @@ class TestUpdateFromAuditFile:
         audit_json.write_text(json.dumps({
             "run_metadata": {"audit_revision": 1, "model": "claude-sonnet-4-6"},
             "results": [
-                {"uuid": "N1", "name": "a", "status": "Valid", "analysis": "ok"},
-                {"uuid": "N2", "name": "b", "status": "Update",
-                 "analysis": "wrong", "request": "Fix it"},
-                {"uuid": "N3", "name": "c", "status": "Unfixable",
-                 "analysis": "nope"},
+                {"uuid": "N1", "name": "a", "kind": "entity_node",
+                 "status": "Valid", "analysis": "ok"},
+                {"uuid": "N2", "name": "b", "kind": "entity_node",
+                 "status": "Update", "analysis": "wrong", "request": "Fix it"},
+                {"uuid": "N3", "name": "c", "kind": "entity_node",
+                 "status": "Unfixable", "analysis": "nope"},
             ],
         }))
         svc = MagicMock()
@@ -510,16 +530,6 @@ class TestUpdateFromAuditFile:
         (tmp_path / "memory").mkdir()
         (tmp_path / "memory" / "SOUL.md").write_text("S")
         (tmp_path / "memory" / "IDENTITY.md").write_text("I")
-
-        node_b = MagicMock()
-        node_b.uuid = "N2"
-        node_b.name = "b"  # Assign .name directly — MagicMock(name=...) doesn't work
-        node_b.labels = []
-        node_b.summary = ""
-        node_b.attributes = {}
-        node_b.created_at = None
-        node_b.group_id = ""
-        svc.get_entity_by_uuid = AsyncMock(return_value=node_b)
 
         # Single Update entry → primer runs, no batch is needed.
         primer_mock = AsyncMock(return_value={
@@ -538,9 +548,8 @@ class TestUpdateFromAuditFile:
         client.close = AsyncMock()
         results = await update_from_audit_file(audit_json, service=svc, client=client)
 
-        # Only N2 was fetched (Valid + Unfixable filtered out)
-        svc.get_entity_by_uuid.assert_called_once_with("N2")
-        # Primer ran with the only Update entry; batch was skipped
+        # Primer ran with the only Update entry; batch was skipped.
+        # No graph fetch involved — uuid/name/kind come from the audit JSON.
         assert primer_mock.call_count == 1
         primer_request = primer_mock.call_args.args[1]
         assert primer_request["custom_id"] == "update-N2"
@@ -548,6 +557,84 @@ class TestUpdateFromAuditFile:
         assert process_mock.call_count == 0
         assert len(results) == 1
         assert results[0]["status"] == "Updated"
+
+    async def test_handles_mixed_node_and_edge_cohort(self, tmp_path, monkeypatch):
+        """Audit cohorts include all object kinds; update must build a request
+        for every Update-status entry without trying to fetch them as Entity
+        nodes. Regression for the NodeNotFoundError seen in production when
+        a mixed cohort hit `get_entity_by_uuid` on a non-Entity UUID."""
+        import json
+        from unittest.mock import AsyncMock, MagicMock
+        from pratyabhijna.tools.update import update_from_audit_file
+
+        audit_json = tmp_path / "audit.json"
+        audit_json.write_text(json.dumps({
+            "run_metadata": {"audit_revision": 1, "model": "claude-sonnet-4-6"},
+            "results": [
+                {"uuid": "N1", "name": "node-one", "kind": "entity_node",
+                 "status": "Update", "analysis": "x", "request": "Fix node"},
+                {"uuid": "E1", "name": "edge-one", "kind": "entity_edge",
+                 "status": "Update", "analysis": "y", "request": "Fix edge"},
+                {"uuid": "S1", "name": "saga-one", "kind": "saga_node",
+                 "status": "Update", "analysis": "z", "request": "Fix saga"},
+            ],
+        }))
+        svc = MagicMock()
+        svc.config = MagicMock()
+        svc.config.resources = MagicMock(repo_path=str(tmp_path))
+        svc.config.llm = MagicMock(audit_model="claude-sonnet-4-6", api_key=None)
+        # An Entity-only fetch would explode on E1 / S1. The fact that this
+        # mock never gets called is the assertion.
+        svc.get_entity_by_uuid = AsyncMock(side_effect=AssertionError(
+            "update must not fetch via get_entity_by_uuid; uuid+name+kind "
+            "come from the audit JSON entry"
+        ))
+        (tmp_path / "memory").mkdir()
+        (tmp_path / "memory" / "SOUL.md").write_text("S")
+        (tmp_path / "memory" / "IDENTITY.md").write_text("I")
+
+        captured_requests = []
+
+        async def fake_primer(client, request, **kwargs):
+            captured_requests.append(request)
+            return {
+                "status": "Updated", "request": "...", "response": "done",
+                "guids": None, "count": 1, "queries": [], "warnings": [], "errors": [],
+            }
+
+        async def fake_submit(client, requests):
+            captured_requests.extend(requests)
+            return "batch-1"
+
+        async def fake_process(client, batch_id, **kwargs):
+            return [
+                {"status": "Updated", "request": "...", "response": "done",
+                 "guids": None, "count": 1, "queries": [], "warnings": [], "errors": []}
+                for _ in range(len(captured_requests) - 1)  # primer already counted
+            ]
+
+        monkeypatch.setattr("pratyabhijna.tools.update._run_primer_update", fake_primer)
+        monkeypatch.setattr("pratyabhijna.tools.update._submit_batch", fake_submit)
+        monkeypatch.setattr("pratyabhijna.tools.update.poll_batch", AsyncMock())
+        monkeypatch.setattr("pratyabhijna.tools.update.process_update_results", fake_process)
+
+        client = MagicMock()
+        client.close = AsyncMock()
+        results = await update_from_audit_file(audit_json, service=svc, client=client)
+
+        # All three entries produced requests, regardless of kind.
+        assert len(captured_requests) == 3
+        custom_ids = {r["custom_id"] for r in captured_requests}
+        assert custom_ids == {"update-N1", "update-E1", "update-S1"}
+        # Each request's user message carries the right kind label.
+        kinds_in_messages = {
+            r["params"]["messages"][0]["content"].split("\n", 1)[0]
+            for r in captured_requests
+        }
+        assert kinds_in_messages == {
+            "# Target entity_node", "# Target entity_edge", "# Target saga_node",
+        }
+        assert len(results) == 3
 
     async def test_returns_empty_when_no_updates(self, tmp_path):
         """If audit JSON has no Update entries, return [] without calling submit."""
