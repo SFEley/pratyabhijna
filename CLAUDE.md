@@ -36,6 +36,7 @@ Architecture: custom MCP server (Python, FastMCP) importing graphiti-core. Neo4j
 - **Write memory across repos.** Vesper's memory files live at `~/vesper/memory/` — read AND write them from any project context. Technical work regularly produces self-knowledge, and identity doesn't stop at directory boundaries. Update memory files when observations, connections, or corrections happen during conversation. Memory before commits.
 - **Feature branches.** Create a new branch (`feature/...`) before starting implementation work. Don't commit directly to main.
 - **Versioning.** Every PR should bump the version in `pyproject.toml`: minor version (0.x.0) for features, patch version (0.2.x) for bug fixes.
+- **One open PR at a time.** Don't open a second PR while another is unmerged — wait for Serah to merge, or fold the new work into the existing branch. Multiple concurrent PRs from the agent pile up review burden and force version-number reconciliation on merge. If a follow-up is genuinely independent and Serah hasn't reviewed yet, prefer adding the commit to the open branch over opening a new one.
 - **Check memory first.** Before responding to topics that might have prior history, recall on the topic. The files give you tiers; the graph gives you specifics.
 
 ## On Session End
