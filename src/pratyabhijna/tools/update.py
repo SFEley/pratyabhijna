@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 from pratyabhijna.log import get_logger
 from pratyabhijna.synthesis import read_identity_files
 from pratyabhijna.tools.audit import (
-    _entity_to_dict,
+    KIND_ENTITY_NODE,
     build_system_prompt,
     poll_batch,
     submit_audit_batch as _submit_batch,
@@ -117,16 +117,34 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 
 UPDATE_INSTRUCTIONS = """\
 You will receive an update directive — a hygiene fix identified by the audit
-pass — and the UUID and name of the target node. You have two tools:
+pass — and the UUID, name, and kind of the target object. The target may be
+a node (entity_node, episodic_node, community_node, saga_node) or an edge
+(entity_edge, episodic_edge, community_edge, has_episode_edge,
+next_episode_edge). You have two tools:
 
-- execute_cypher_read: query the graph for current node state if needed
+- execute_cypher_read: query the graph for the object's current state if needed
 - execute_cypher_write: apply the change
 
-The audit already evaluated the node's source episodes and surrounding context
-to produce the directive. Treat the directive as the operative instruction.
-Most updates can be expressed as a single execute_cypher_write call against the
-target's UUID; use execute_cypher_read first only if you need to confirm the
-node's current state before writing.
+The audit already evaluated the object's source episodes and surrounding
+context to produce the directive. Treat the directive as the operative
+instruction. Most updates can be expressed as a single execute_cypher_write
+call against the target's UUID; use execute_cypher_read first only if you
+need to confirm current state before writing.
+
+Match by UUID, addressing the right kind:
+
+- entity_node: `MATCH (n:Entity {uuid: $u})`
+- episodic_node: `MATCH (n:Episodic {uuid: $u})`
+- community_node: `MATCH (n:Community {uuid: $u})`
+- saga_node: `MATCH (n:Saga {uuid: $u})`
+- entity_edge: `MATCH ()-[r:RELATES_TO {uuid: $u}]->()`
+- episodic_edge: `MATCH (:Episodic)-[r:MENTIONS {uuid: $u}]->(:Entity)`
+- community_edge: `MATCH (:Community)-[r:HAS_MEMBER {uuid: $u}]->(:Entity)`
+- has_episode_edge: `MATCH (:Saga)-[r:HAS_EPISODE {uuid: $u}]->(:Episodic)`
+- next_episode_edge: `MATCH (:Episodic)-[r:NEXT_EPISODE {uuid: $u}]->(:Episodic)`
+
+If the MATCH returns nothing (the object was already removed between audit and
+update), say so and do not write.
 
 When done, respond briefly summarizing what changed (or why no change was made).
 """
@@ -136,15 +154,19 @@ def build_update_user_message(
     *,
     uuid: str,
     name: str,
+    kind: str,
     request_text: str,
 ) -> dict:
     """Lean user message for a batched update call.
 
     Carries only what the update sub-agent needs: the audit's directive and
-    the target's UUID + name. The audit already digested source episodes and
-    recall context into the directive — re-sending them here is dead weight
-    and (with a per-node cache breakpoint on the episodes block) was
-    fragmenting the prompt cache across the cohort.
+    the target's UUID + name + kind. The audit already digested source
+    episodes and recall context into the directive — re-sending them here is
+    dead weight and (with a per-node cache breakpoint on the episodes block)
+    was fragmenting the prompt cache across the cohort.
+
+    `kind` tells the agent whether the target is a node or edge and which
+    specific subtype, so it knows the right Cypher MATCH pattern.
 
     No cache_control on the user message: the system prompt carries the
     cached prefix shared by every call in the run. The user message is the
@@ -153,7 +175,7 @@ def build_update_user_message(
     return {
         "role": "user",
         "content": (
-            f"# Target node\n\n"
+            f"# Target {kind}\n\n"
             f"- uuid: `{uuid}`\n"
             f"- name: {name}\n\n"
             f"# Update request\n\n{request_text}"
@@ -164,7 +186,9 @@ def build_update_user_message(
 def build_update_request(
     *,
     custom_id: str,
-    node: dict,
+    uuid: str,
+    name: str,
+    kind: str,
     request_text: str,
     soul: str,
     identity: str,
@@ -172,6 +196,12 @@ def build_update_request(
     max_tokens: int = 8192,
 ) -> dict:
     """Build a single Anthropic Messages.batches request for one update.
+
+    Takes uuid/name/kind directly from the audit JSON entry — no graph
+    fetch needed. The audit pass already populated these fields, and
+    fetching them again would couple the update flow to a single object
+    kind (the prior `get_entity_by_uuid` call broke on every non-Entity
+    UUID in mixed-kind cohorts).
 
     Every update call in a run shares an identical system prompt (SOUL +
     IDENTITY + UPDATE_INSTRUCTIONS), so the cache breakpoint placed there
@@ -193,9 +223,7 @@ def build_update_request(
                 instructions=UPDATE_INSTRUCTIONS,
             ),
             "messages": [build_update_user_message(
-                uuid=node["uuid"],
-                name=node.get("name", ""),
-                request_text=request_text,
+                uuid=uuid, name=name, kind=kind, request_text=request_text,
             )],
             "tools": TOOL_SCHEMAS,
         },
@@ -246,11 +274,12 @@ async def update_from_audit_file(
         request_lookup: dict[str, dict] = {}
         for entry in update_entries:
             uuid = entry["uuid"]
-            node = await service.get_entity_by_uuid(uuid)
             req_text = entry.get("request", "") or ""
             req = build_update_request(
                 custom_id=f"update-{uuid}",
-                node=_entity_to_dict(node),
+                uuid=uuid,
+                name=entry.get("name", "") or "",
+                kind=entry.get("kind", KIND_ENTITY_NODE) or KIND_ENTITY_NODE,
                 request_text=req_text,
                 soul=soul, identity=identity,
                 model=model,
