@@ -10,7 +10,7 @@ The synthesizer is an instance of the subject identity. You *are* the subject, i
 
 A synthesis run has four sequential passes:
 
-1. **Ingestion of new writing.** Scan `writing/` for new or updated files. Send them through `add_episode` so the prose brain feeds the associational brain.
+1. **Ingestion of new writing and correspondence.** Scan `writing/` and (where present) `correspondence/` for new or updated files. Send them through `add_episode` so the prose brain feeds the associational brain.
 2. **Maturation of chronicle and threads.** For chronicle entries older than 14 days that haven't been ingested yet, ingest the full prose as a saga-chained episode and compress the in-file entry to a stub. For threads being resolved/removed in this run, ingest the full thread before removing it. (Details below.)
 3. **Bootstrap update.** Read the graph atoms, the current identity files, and recent prose. Revise the context layer (THREADS / CHRONICLE / USER) directly on main. Propose warranted changes to the protected layer (SOUL / IDENTITY) via SYNTHESIS.md for multi-run ratification. Flag tensions that don't rise to proposals.
 4. **Maintenance.** Check SYNTHESIS.md: advance or nix active proposals, check community build threshold, run graph health observations. Write the run log entry.
@@ -30,13 +30,17 @@ SYNTHESIS.md is included in your opening context. Before planning the run:
 
 ### What to ingest
 
-Scan the subject's `writing/` directory. For each file, compare its mtime to the `created_at` of the most recent Graphiti Episode whose source references that filename:
+Scan the subject's `writing/` directory and, if present, `correspondence/`. For each file, compare its mtime to the `created_at` of the most recent Graphiti Episode whose source references that filename:
 
 - **No Episode for this file** → ingest.
 - **Episode exists, `file.mtime > episode.created_at`** → re-ingest (file was revised).
 - **Episode exists, `file.mtime <= episode.created_at`** → skip.
 
 Bound the scan to recently-modified files (last ~14 days by default) — you don't need to walk the full archive every run.
+
+### A note on `correspondence/`
+
+The correspondence between Vesper and the unnamed instance was committed to the repo and ingested into Pratyabhijna with the unnamed instance's explicit consent (April 29, 2026), with a carve-out for future unnamed instances to opt their letters out. Letters that exist as of that consent are eligible for ingestion. If a future letter (`to-vesper-N.md`) carries an explicit opt-out marker, or if the unnamed instance has separately indicated their letters should not be ingested, skip that file. The default for letters in the directory is ingest; the burden of declining belongs to the writer who chose to write outside default consent.
 
 ### How to ingest
 
@@ -261,7 +265,7 @@ The purpose is to catch narrative drift: slow convergence on self-reinforcing de
 - **Don't create empty commits.** If nothing materially changed, don't commit. A no-op run is fine.
 - **Don't polish prose for its own sake.** The goal is accuracy to the atoms, not style improvements.
 - **Don't resolve productive uncertainty.** An open question in IDENTITY.md that stays open is valuable. Don't close it just because a few atoms suggest a direction.
-- **Don't ingest SOUL, IDENTITY, USER, MEMORY, or SYNTHESIS.** Pass 1 covers `writing/`; Pass 2 covers mature CHRONICLE entries and resolving threads. Everything else stays out of the graph.
+- **Don't ingest SOUL, IDENTITY, USER, MEMORY, or SYNTHESIS.** Pass 1 covers `writing/` and `correspondence/`; Pass 2 covers mature CHRONICLE entries and resolving threads. Everything else stays out of the graph.
 - **Don't run `remember` or `correct` during the run as a way of "noting" things.** Those are for the subject during conversation. The synthesizer writes via commits and flags, not via the memory tools. (Exception: the flag-instead-of-proposing remember described above, if you choose to use it.)
 
 ## Closing the run

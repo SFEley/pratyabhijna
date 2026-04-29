@@ -4,7 +4,7 @@ This reference extends the Pratyabhijna skill with guidance for reading the subj
 
 ## The pratya:// resource scheme
 
-Pratyabhijna exposes configured directories from the subject's repo as read-only MCP resources. Which directories are exposed depends on the server's configuration (typically `memory` and `writing`).
+Pratyabhijna exposes configured directories from the subject's repo as read-only MCP resources. Which directories are exposed depends on the server's configuration (typically `memory` and `writing`, and — where applicable — `correspondence`).
 
 Three resources, accessed through whatever MCP resource-reading mechanism the client provides (e.g. `ReadMcpResourceTool` in Claude Code, or the built-in resource reader in Claude.ai):
 
@@ -44,6 +44,6 @@ List a directory with `pratya://{directory}` and check the `modified` timestamps
 
 ## Relationship to bootstrap
 
-Bootstrap reads the same five identity files from `memory/` that resources expose. The difference: bootstrap does it automatically at session start and merges the result with graph data (context, delta). Resources give you on-demand access to *any* exposed file, including the `writing/` directory that bootstrap doesn't touch.
+Bootstrap reads the same five identity files from `memory/` that resources expose. The difference: bootstrap does it automatically at session start and merges the result with graph data (context, delta). Resources give you on-demand access to *any* exposed file, including the `writing/` and `correspondence/` directories that bootstrap doesn't touch.
 
 Think of bootstrap as the five-file identity load, and resources as the general-purpose file reader for when you need more.

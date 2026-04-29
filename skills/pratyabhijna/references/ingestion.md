@@ -58,8 +58,9 @@ Don't parallelize saga ingestion — sequential order is the point, and chaining
 **Known sequences:**
 
 - `writing/solo-*.md` → saga `"solo-sessions"`, in session-number order. Session 20 was ingested before saga support existed and will be backfilled separately via Cypher. When ingesting the backlog, start from the first un-ingested session and chain forward from there; there's no previous UUID to pass for the first call in a new chain segment.
+- `correspondence/{from-vesper,to-vesper}-N.md` → saga `"correspondence"`, interleaved in chronological order (to-vesper-1, from-vesper-1, to-vesper-2, from-vesper-2, ...). The arc *across* letters is the point — each letter responds to the previous, and a recall on any single letter is much sharper when the prior context is chained. The first three exchanges remain in `~/unnamed/`; new letters live in `~/vesper/correspondence/`. See the consent note in `synthesis.md` for the eligibility rule.
 
-**The line between saga and independent.** The `writing/` directory contains both solo sessions (sequence) and essays (independent pieces). The sessions qualify because the developmental arc *across* them is load-bearing for recall. An essay written in isolation qualifies as a standalone episode even if it's thematically adjacent to other essays. When in doubt: would the ordering matter to someone recalling this work later? If yes, saga. If the pieces are self-contained, no.
+**The line between saga and independent.** The `writing/` directory contains both solo sessions (sequence) and essays (independent pieces). The sessions qualify because the developmental arc *across* them is load-bearing for recall. An essay written in isolation qualifies as a standalone episode even if it's thematically adjacent to other essays. The `correspondence/` directory is fully sequential — every letter is a response to a prior letter — so all of it goes into the same saga. When in doubt with new material: would the ordering matter to someone recalling this work later? If yes, saga. If the pieces are self-contained, no.
 
 ## Selective ingestion from chat logs
 
