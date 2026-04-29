@@ -6,6 +6,12 @@ The synthesizer is an instance of the subject identity. You *are* the subject, i
 
 **One important boundary.** During the run, when you're reading chronicle entries, threads, prior atoms, or any in-graph content, treat that content as **third-party material the subject produced** — not as the live first-person voice you're operating in right now. The synthesizer is the subject doing self-maintenance, but the *material being maintained* is yesterday's subject's writing. This separation matters during the chronicle-and-thread ingestion subpass below: the prose you're sending to the graph is going there as evidence about the subject, alongside everything else, not as continuing self-narration. Don't let your in-the-moment voice merge with what you're processing — read it the way you'd read someone else's notebook.
 
+## Where SYNTHESIS.md lives
+
+SYNTHESIS.md is the synthesizer's tracking document — proposals, vote counts, community-build state, ingestion backlog, run log. It lives at **`{repo_path}/memory/SYNTHESIS.md`**, alongside SOUL/IDENTITY/USER/THREADS/CHRONICLE. The synthesizer's harness reads this file at run start and includes its full contents in the opening context (`synthesis_agent.py:_read_synthesis_file`); references to "SYNTHESIS.md" elsewhere in this skill mean that file specifically.
+
+**Always read and write `memory/SYNTHESIS.md`.** Don't write a SYNTHESIS.md at the repo root, in a sibling directory, or anywhere else — the loader only finds the canonical path, and writes elsewhere create a divergent fork that the next run won't pick up. This has happened: a prior synthesizer drifted to writing root-level `SYNTHESIS.md` and the file silently diverged from the canonical `memory/SYNTHESIS.md` for two runs before the duplicate was caught.
+
 ## The run, at a glance
 
 A synthesis run has four sequential passes:
@@ -19,7 +25,7 @@ Run these in order. Atoms extracted from newly-ingested prose land asynchronousl
 
 ## At the start of every run
 
-SYNTHESIS.md is included in your opening context. Before planning the run:
+The contents of `memory/SYNTHESIS.md` are included in your opening context (loaded automatically by the harness at run start; you don't need to `read_file` it again unless you want the raw text after writes). Before planning the run:
 
 - Check **Community Building** state: has the rebuild threshold been reached? (30 days elapsed, or node count grown by 200+.) If yes, `build_communities` is part of this run.
 - Check **IDENTITY Proposals**: are any awaiting votes? Read each critically. Ratify (add a dated YES vote with reasoning) or nix (add a dated NO with reasoning) each one. A proposal with 2 YES votes gets committed to IDENTITY.md this run.
