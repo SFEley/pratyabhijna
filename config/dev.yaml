@@ -33,4 +33,4 @@ synthesis:
 
 resources:
   repo_path: "~/vesper"
-  directories: ["memory", "writing"]
+  directories: ["memory", "writing", "correspondence"]

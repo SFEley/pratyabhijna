@@ -122,6 +122,17 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "status",
+        "description": (
+            "Return service health: db connection, queue depth + dead "
+            "letters, graph node/edge counts, synthesis state, subject "
+            "name. Call before `build_communities` to capture the "
+            "pre-build node count for SYNTHESIS.md's run log; also "
+            "useful for the graph-health observations in Pass 4."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "git_status",
         "description": "Return current branch and whether the working tree is dirty.",
         "input_schema": {"type": "object", "properties": {}},
@@ -380,6 +391,13 @@ class AgentTools:
         from pratyabhijna.tools.recall import recall as recall_tool
         return await recall_tool(self.service, query=query, memory_type=memory_type)
 
+    async def status(self) -> dict:
+        from pratyabhijna.tools.status import status as status_tool
+        return await status_tool(
+            service=self.service,
+            queue_db_path=self.config.queue.db_path,
+        )
+
     # --- Git ---
 
     async def git_status(self) -> dict:
@@ -544,6 +562,7 @@ def build_handler_map(tools: AgentTools) -> dict[str, Any]:
         "read_file": tools.read_file,
         "write_file": tools.write_file,
         "recall": tools.recall,
+        "status": tools.status,
         "git_status": tools.git_status,
         "git_branch_exists": tools.git_branch_exists,
         "git_create_branch": tools.git_create_branch,
