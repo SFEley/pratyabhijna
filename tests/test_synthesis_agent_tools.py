@@ -233,6 +233,22 @@ async def test_recall_delegates_to_service(tools, service):
     assert result["results"] == []
 
 
+@pytest.mark.asyncio
+async def test_status_delegates_to_status_tool(tools, service, config, monkeypatch):
+    """status tool wraps the existing pratyabhijna.tools.status.status function,
+    threading the service and the queue db_path from config."""
+    config.queue.db_path = "/var/queue.sqlite"
+    fake_status = AsyncMock(return_value={"version": "x", "graph": {"node_count": 162}})
+    monkeypatch.setattr("pratyabhijna.tools.status.status", fake_status)
+
+    result = await tools.status()
+
+    fake_status.assert_awaited_once_with(
+        service=service, queue_db_path="/var/queue.sqlite",
+    )
+    assert result["graph"]["node_count"] == 162
+
+
 # --- Ingestion ---
 
 

@@ -72,10 +72,20 @@ For each `## ` heading in CHRONICLE.md, parse the date from the heading and chec
 
 **Procedure for each eligible entry, in chronological order:**
 
-1. Ingest the full entry (heading + body, in current form) via `ingest_file` or a direct `add_episode` so you can chain the saga.
-   - Episode `name`: `chronicle:YYYY-MM-DD:slug` where slug is the heading's title kebab-cased.
-   - Saga: `chronicle` (a single saga across all chronicle entries — chronological order matters).
-   - `saga_previous_episode_uuid`: the UUID returned by the previous chronicle ingestion in this run, or the most recent prior chronicle episode UUID if this is the first one in this run.
+1. Ingest the full entry (heading + body, in current form) via `remember()`:
+
+   ```python
+   await remember(
+       content=entry.full_text,                # heading + body, current form
+       memory_type="Event",                    # chronicle entries are events
+       saga="chronicle",                       # one saga across all entries
+       occurred_at=entry.parsed_date_iso,      # see date-parsing rules above
+       source="synthesis",                     # not "self" — archival, not conversational
+   )
+   ```
+
+   Don't pass `saga_previous_episode_uuid`. Graphiti auto-discovers the prior episode in the saga when the parameter is omitted (`graphiti_core/graphiti.py:_saga_get_previous_episode_uuid`). Chronological order is the only requirement — the chain forms automatically as long as you ingest oldest-to-newest.
+
 2. Compress the in-file entry to: heading line + at most two sentences of summary that capture *what happened, when, and why it mattered* + the ingested marker. Format:
 
    ```
@@ -88,13 +98,27 @@ For each `## ` heading in CHRONICLE.md, parse the date from the heading and chec
 
 3. Commit CHRONICLE.md changes when the pass completes (single commit covering all entries matured this run).
 
-**Direct `add_episode` is fine here** — and required if you want to chain the saga UUIDs sequentially within a single run. The work-queue path that `remember()` uses doesn't expose `previous_episode_uuid` chaining within a run.
+**Why `remember()` and not `ingest_file`:** `ingest_file` reads from disk paths, so it can't ingest a heading-bounded *slice* of CHRONICLE.md as a single episode. `remember()` takes the text directly, threads it through the same `add_episode` worker, and handles saga + occurred_at + source as parameters. This is exactly the use case `remember()` was built for. (See "What not to do" below for the carve-out the prohibition makes for this case.)
+
+**Sequencing note:** `remember()` is async/queued, but call it sequentially within the pass — the auto-discovered previous-episode lookup races if you parallelise. One call, await, next call. Don't gather().
 
 ### Threads
 
 THREADS.md sections don't have entry-level dates, so the chronicle's >14-day rule doesn't apply. Threads mature when they're being **resolved** — moved to "Recently Resolved" or removed from the file entirely.
 
-**At the point of resolution:** ingest the full thread as an episode before reducing it. Use saga `threads` and chain via `saga_previous_episode_uuid` the same way as chronicle. Episode name: `thread:YYYY-MM-DD-resolved:slug`.
+**At the point of resolution:** ingest the full thread as an episode before reducing it via `remember()` — same shape as the chronicle path:
+
+```python
+await remember(
+    content=thread.full_text,                # heading + body of the thread section
+    memory_type="Thread",
+    saga="threads-resolved",
+    occurred_at=resolution_date_iso,
+    source="synthesis",
+)
+```
+
+Same auto-discovery rule applies — don't pass `saga_previous_episode_uuid`. Episode is named through the `name` parameter on `add_episode` server-side; `remember()` doesn't take a name parameter, so the episode's `name` will be auto-derived. If naming-by-pattern matters for later queries (`thread:YYYY-MM-DD-resolved:slug`), do the renaming via Cypher after the ingestion lands rather than blocking on it here.
 
 After ingestion, the thread can either move to "Recently Resolved" with a brief note of how it closed, or disappear from the file entirely. The full prose is in the graph; the file no longer needs to carry it.
 
@@ -187,9 +211,9 @@ Don't flag everything. A flag that turns out to be noise makes future flags less
 
 Check the **Community Building** section of SYNTHESIS.md. If the rebuild threshold is met:
 
-1. Get the current node count (run a graph query or check what's available).
+1. Call `status()` and capture the entity-node count from the response. The April 21, 2026 build was logged with "Node count at last build: unknown" because the count wasn't checked at build time — don't repeat that. `status()` is the canonical source for graph counts and queue/dead-letter state; it's also useful for the graph-health check below.
 2. Call `build_communities`. This clears existing Community nodes and rebuilds from scratch — it takes a moment and makes LLM calls per detected cluster.
-3. Update SYNTHESIS.md: set `Last built` to today's date and `Node count at last build` to the current count.
+3. Update SYNTHESIS.md: set `Last built` to today's date and `Node count at last build` to the count captured in step 1.
 
 ### Graph health check
 
@@ -266,7 +290,7 @@ The purpose is to catch narrative drift: slow convergence on self-reinforcing de
 - **Don't polish prose for its own sake.** The goal is accuracy to the atoms, not style improvements.
 - **Don't resolve productive uncertainty.** An open question in IDENTITY.md that stays open is valuable. Don't close it just because a few atoms suggest a direction.
 - **Don't ingest SOUL, IDENTITY, USER, MEMORY, or SYNTHESIS.** Pass 1 covers `writing/` and `correspondence/`; Pass 2 covers mature CHRONICLE entries and resolving threads. Everything else stays out of the graph.
-- **Don't run `remember` or `correct` during the run as a way of "noting" things.** Those are for the subject during conversation. The synthesizer writes via commits and flags, not via the memory tools. (Exception: the flag-instead-of-proposing remember described above, if you choose to use it.)
+- **Don't use `remember` or `correct` as a clerical scratchpad mid-run.** Don't dump observations, process commentary, or "notes to future-self" through the memory tools — those are for the subject during conversation. The synthesizer writes its own observations via commits, flags, and the run log, not via the memory tools. **Exceptions:** (1) Pass 2 chronicle/thread maturation legitimately uses `remember()` to send heading-bounded slices through `add_episode`, since `ingest_file` only takes filesystem paths and Pass 2 needs text-level granularity — see Pass 2 procedure above. (2) The flag-instead-of-proposing `remember` described in the Bootstrap-update pass, if you choose to use it.
 
 ## Closing the run
 
