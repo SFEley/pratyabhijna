@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from graphiti_core.nodes import EpisodeType
 
     from pratyabhijna.config import PratyabhijnaConfig
+    from pratyabhijna.queue import WorkQueue
     from pratyabhijna.service import PratyabhijnaService
 
 
@@ -119,6 +120,62 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "remember",
+        "description": (
+            "Queue a memory for background processing. Use in Pass 2 to "
+            "ingest chronicle entries and resolved threads as saga-chained "
+            "episodes — pass `saga='chronicle'` (or `'threads'`), an "
+            "`occurred_at` matching the entry's date, and the slice text "
+            "as `content`. Returns immediately with a task_id; the "
+            "background worker calls add_episode. Do not use for clerical "
+            "scratch — only for legitimate content the subject would want "
+            "in the graph."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string"},
+                "memory_type": {
+                    "type": "string",
+                    "default": "observation",
+                    "description": (
+                        "Optional entity-label hint for the extractor "
+                        "(e.g. 'Event' for chronicle entries, 'Thread' "
+                        "for resolved threads, 'Observation' for general "
+                        "items)."
+                    ),
+                },
+                "source": {
+                    "type": "string",
+                    "default": "self",
+                    "description": (
+                        "Where the memory came from. Defaults to 'self' — "
+                        "the subject remembering. Use 'synthesis' for "
+                        "Pass 2 ingestion of subject-authored material."
+                    ),
+                },
+                "occurred_at": {
+                    "type": "string",
+                    "description": (
+                        "ISO-8601 timestamp for when the fact was true "
+                        "in the world. Set this to the chronicle entry's "
+                        "date; defaults to now if omitted."
+                    ),
+                },
+                "saga": {
+                    "type": "string",
+                    "description": (
+                        "Saga name to group this episode into an ordered "
+                        "sequence. For Pass 2 use 'chronicle' or 'threads'. "
+                        "Graphiti auto-discovers the prior episode in the "
+                        "same saga; sequential calls chain automatically."
+                    ),
+                },
+            },
+            "required": ["content"],
         },
     },
     {
@@ -359,6 +416,7 @@ class AgentTools:
 
     service: PratyabhijnaService
     config: PratyabhijnaConfig
+    queue: "WorkQueue | None" = None
     finished: bool = False
     summary: str = ""
 
@@ -390,6 +448,28 @@ class AgentTools:
     async def recall(self, query: str, memory_type: str | None = None, **_) -> dict:
         from pratyabhijna.tools.recall import recall as recall_tool
         return await recall_tool(self.service, query=query, memory_type=memory_type)
+
+    async def remember(
+        self,
+        content: str,
+        memory_type: str = "observation",
+        source: str = "self",
+        occurred_at: str | None = None,
+        saga: str | None = None,
+    ) -> dict:
+        if self.queue is None:
+            raise ToolError(
+                "remember requires the work queue; synthesis was invoked without one"
+            )
+        from pratyabhijna.tools.remember import remember as remember_tool
+        return await remember_tool(
+            queue=self.queue,
+            content=content,
+            memory_type=memory_type,
+            source=source,
+            occurred_at=occurred_at,
+            saga=saga,
+        )
 
     async def status(self) -> dict:
         from pratyabhijna.tools.status import status as status_tool
@@ -549,19 +629,90 @@ class AgentTools:
         return resolved
 
 
+# --- Per-pass tool partitioning ---
+#
+# Each pass exposes only the tools it needs. Smaller surfaces shorten the
+# system prefix (tools render at position 0) and reduce the model's
+# discrimination load. The *names* are the source of truth — schemas and
+# handler maps are derived from them.
+
+PASS1_TOOL_NAMES: frozenset[str] = frozenset({
+    "read_file",
+    "ingest_file",
+    "git_status",
+    "git_add_and_commit",
+    "finish",
+})
+
+PASS2_TOOL_NAMES: frozenset[str] = frozenset({
+    "read_file",
+    "write_file",
+    "remember",
+    "git_status",
+    "git_add_and_commit",
+    "finish",
+})
+
+PASS3_TOOL_NAMES: frozenset[str] = frozenset({
+    "read_file",
+    "write_file",
+    "recall",
+    "git_status",
+    "git_branch_exists",
+    "git_create_branch",
+    "git_checkout",
+    "git_add_and_commit",
+    "git_rebase_onto",
+    "git_rebase_abort",
+    "git_diff",
+    "forget_episode",
+    "finish",
+})
+
+PASS4_TOOL_NAMES: frozenset[str] = frozenset({
+    "read_file",
+    "write_file",
+    "status",
+    "build_communities",
+    "update_synthesis_metadata",
+    "git_status",
+    "git_add_and_commit",
+    "finish",
+})
+
+
+def _schemas_for(names: frozenset[str]) -> list[dict[str, Any]]:
+    """Slice TOOL_SCHEMAS down to the entries whose names are in ``names``."""
+    by_name = {t["name"]: t for t in TOOL_SCHEMAS}
+    missing = names - by_name.keys()
+    if missing:
+        raise RuntimeError(
+            f"per-pass slice references unknown tool names: {sorted(missing)}"
+        )
+    return [by_name[n] for n in sorted(names)]
+
+
+PASS1_TOOL_SCHEMAS: list[dict[str, Any]] = _schemas_for(PASS1_TOOL_NAMES)
+PASS2_TOOL_SCHEMAS: list[dict[str, Any]] = _schemas_for(PASS2_TOOL_NAMES)
+PASS3_TOOL_SCHEMAS: list[dict[str, Any]] = _schemas_for(PASS3_TOOL_NAMES)
+PASS4_TOOL_SCHEMAS: list[dict[str, Any]] = _schemas_for(PASS4_TOOL_NAMES)
+
+
 # --- Dispatcher ---
 
 
 def build_handler_map(tools: AgentTools) -> dict[str, Any]:
     """Map tool names to bound async methods on ``tools``.
 
-    The set of names here MUST match ``TOOL_SCHEMAS`` — mismatch is a
-    bug. Tested by test_synthesis_agent_tools.
+    Returns the union map. Per-pass slices come from ``build_pass_handlers``.
+    The set of names here MUST match ``TOOL_SCHEMAS`` — mismatch is a bug.
+    Tested by test_synthesis_agent_tools.
     """
     return {
         "read_file": tools.read_file,
         "write_file": tools.write_file,
         "recall": tools.recall,
+        "remember": tools.remember,
         "status": tools.status,
         "git_status": tools.git_status,
         "git_branch_exists": tools.git_branch_exists,
@@ -577,6 +728,17 @@ def build_handler_map(tools: AgentTools) -> dict[str, Any]:
         "update_synthesis_metadata": tools.update_synthesis_metadata,
         "finish": tools.finish,
     }
+
+
+def build_pass_handlers(tools: AgentTools, names: frozenset[str]) -> dict[str, Any]:
+    """Return a handler map restricted to ``names`` (e.g. PASS1_TOOL_NAMES)."""
+    full = build_handler_map(tools)
+    missing = names - full.keys()
+    if missing:
+        raise RuntimeError(
+            f"per-pass slice references unhandled tool names: {sorted(missing)}"
+        )
+    return {n: full[n] for n in names}
 
 
 def tool_schema_names() -> set[str]:
@@ -668,6 +830,171 @@ def _format_candidates(candidates: list) -> str:
             f"latest episode: {c.latest_episode_at.isoformat() if c.latest_episode_at else '(none)'})"
         )
     return "\n".join(lines)
+
+
+_IDENTITY_FILE_LABELS = {
+    "soul": "SOUL.md",
+    "identity": "IDENTITY.md",
+    "user": "USER.md",
+    "threads": "THREADS.md",
+    "chronicle": "CHRONICLE.md",
+}
+
+
+def _format_run_header(
+    subject_name: str,
+    now: datetime,
+    git_branch: str,
+    git_dirty: bool,
+    *,
+    pass_label: str | None = None,
+) -> list[str]:
+    """Standard heading for every per-pass opening message."""
+    title = f"# Synthesis run — {now.isoformat()}"
+    if pass_label:
+        title = f"# Synthesis {pass_label} — {now.isoformat()}"
+    return [
+        title,
+        "",
+        f"Subject: {subject_name}",
+        f"Current branch: {git_branch} (dirty: {git_dirty})",
+        "",
+    ]
+
+
+def _format_identity_files_block(identity_files: dict[str, str | None]) -> list[str]:
+    parts: list[str] = ["## Identity files", ""]
+    for key, filename in _IDENTITY_FILE_LABELS.items():
+        content = identity_files.get(key)
+        parts.append(f"### {filename}")
+        parts.append("")
+        parts.append("(file missing)" if content is None else content.strip())
+        parts.append("")
+    return parts
+
+
+def _build_pass1_message(
+    subject_name: str,
+    now: datetime,
+    git_branch: str,
+    git_dirty: bool,
+    candidates: list,
+    last_ingestion_scan: str | None,
+) -> str:
+    """Pass 1 — ingestion. Bundles only what the ingestion pass needs."""
+    parts = _format_run_header(
+        subject_name, now, git_branch, git_dirty, pass_label="Pass 1 / ingestion"
+    )
+    parts.extend([
+        f"Last ingestion scan: {last_ingestion_scan or '(never)'}",
+        "",
+        "## Ingestion candidates",
+        "",
+        _format_candidates(candidates),
+        "",
+        "---",
+        "",
+        "Pass 1 of 4. Ingest the candidates above per the subskill, then call `finish`. "
+        "Don't touch the identity files; later passes do that.",
+    ])
+    return "\n".join(parts)
+
+
+def _build_pass2_message(
+    subject_name: str,
+    now: datetime,
+    git_branch: str,
+    git_dirty: bool,
+    chronicle_text: str | None,
+    threads_text: str | None,
+) -> str:
+    """Pass 2 — maturation. Bundles CHRONICLE + THREADS in full."""
+    parts = _format_run_header(
+        subject_name, now, git_branch, git_dirty, pass_label="Pass 2 / maturation"
+    )
+    parts.extend([
+        "## CHRONICLE.md",
+        "",
+        chronicle_text.strip() if chronicle_text else "(file missing)",
+        "",
+        "## THREADS.md",
+        "",
+        threads_text.strip() if threads_text else "(file missing)",
+        "",
+        "---",
+        "",
+        "Pass 2 of 4. Identify eligible entries per the subskill, ingest each via "
+        "`remember()` with the appropriate saga, then compress the in-file entry. "
+        "Call `finish` when done.",
+    ])
+    return "\n".join(parts)
+
+
+def _build_pass3_message(
+    subject_name: str,
+    now: datetime,
+    git_branch: str,
+    git_dirty: bool,
+    identity_files: dict[str, str | None],
+    synthesis_file: str | None,
+    atoms: list[dict],
+    delta: list[dict],
+    last_context_rebuilt_at: str | None,
+) -> str:
+    """Pass 3 — bootstrap update. Full identity-file + atoms set."""
+    parts = _format_run_header(
+        subject_name, now, git_branch, git_dirty, pass_label="Pass 3 / bootstrap"
+    )
+    parts.extend([
+        f"Last context rebuild: {last_context_rebuilt_at or '(never)'}",
+        "",
+        "## SYNTHESIS.md",
+        "",
+        synthesis_file.strip() if synthesis_file else "(file missing — create it on first run)",
+        "",
+        "## Identity atoms (full set, connected to subject Person node)",
+        "",
+        _format_atoms(atoms),
+        "",
+        "## Delta since last context rebuild",
+        "",
+        _format_atoms(delta),
+        "",
+    ])
+    parts.extend(_format_identity_files_block(identity_files))
+    parts.extend([
+        "---",
+        "",
+        "Pass 3 of 4. Revise the context layer (THREADS / CHRONICLE / USER) directly "
+        "on main; propose protected-layer changes via SYNTHESIS.md / synth/draft per "
+        "the subskill. Call `finish` when done.",
+    ])
+    return "\n".join(parts)
+
+
+def _build_pass4_message(
+    subject_name: str,
+    now: datetime,
+    git_branch: str,
+    git_dirty: bool,
+    synthesis_file: str | None,
+) -> str:
+    """Pass 4 — maintenance. Threshold checks + run-log."""
+    parts = _format_run_header(
+        subject_name, now, git_branch, git_dirty, pass_label="Pass 4 / maintenance"
+    )
+    parts.extend([
+        "## SYNTHESIS.md",
+        "",
+        synthesis_file.strip() if synthesis_file else "(file missing — create it on first run)",
+        "",
+        "---",
+        "",
+        "Pass 4 of 4. Call `status` to capture node counts, advance any active "
+        "proposals, run `build_communities` if the threshold is met, then write "
+        "the run-log entry to SYNTHESIS.md and commit on main. Call `finish` when done.",
+    ])
+    return "\n".join(parts)
 
 
 def _build_initial_user_message(
@@ -784,28 +1111,145 @@ async def _dispatch_tool_call(
         }
 
 
+async def _run_pass(
+    *,
+    client,
+    tools: AgentTools,
+    config: PratyabhijnaConfig,
+    pass_label: str,
+    model_id: str,
+    tool_schemas: list[dict[str, Any]],
+    handlers: dict[str, Any],
+    system_prompt: str,
+    opening_message: str,
+    use_thinking: bool,
+) -> dict[str, Any]:
+    """Run one pass's tool-use loop.
+
+    Returns ``{status, iterations, summary}``. ``status`` is one of
+    ``"completed"`` (agent called ``finish``), ``"no_finish"`` (loop ended
+    without explicit termination), or ``"max_iterations"`` (circuit broken).
+
+    The caller is responsible for resetting ``tools.finished`` /
+    ``tools.summary`` before invocation if running multiple passes against
+    the same ``AgentTools`` instance — this function does not reset them.
+    """
+    max_tokens = config.synthesis.max_tokens
+
+    # cache_control on system + opening: within a single pass's iterations
+    # the prefix is reused, so turns 2+ should show cache_read_input_tokens
+    # > 0. Cross-pass cache reads are not expected — model and tool-set
+    # differences invalidate the prefix at every pass boundary.
+    cached_opening: dict[str, Any] = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": opening_message, "cache_control": {"type": "ephemeral"}}
+        ],
+    }
+    cached_system: list[dict[str, Any]] = [
+        {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+    ]
+
+    messages: list[dict[str, Any]] = [cached_opening]
+    iterations = 0
+
+    while iterations < config.synthesis.max_iterations:
+        iterations += 1
+        create_kwargs: dict[str, Any] = dict(
+            model=model_id,
+            max_tokens=max_tokens,
+            system=cached_system,
+            tools=tool_schemas,
+            messages=messages,
+        )
+        if use_thinking:
+            create_kwargs["thinking"] = {"type": "adaptive"}
+            create_kwargs["output_config"] = {
+                "effort": config.synthesis.thinking.effort
+            }
+
+        # Stream the response — at max_tokens (24k default) the SDK
+        # rejects non-streaming requests because they could exceed the
+        # 10-minute non-streaming timeout.
+        async with client.messages.stream(**create_kwargs) as stream:
+            response = await stream.get_final_message()
+
+        messages.append({"role": "assistant", "content": response.content})
+
+        tool_uses = [
+            block for block in response.content
+            if getattr(block, "type", None) == "tool_use"
+        ]
+
+        if tools.finished:
+            break
+        if not tool_uses:
+            # No tool calls and finish wasn't called — agent stopped
+            # without explicit termination. Treat as complete for this pass.
+            break
+
+        tool_results = [
+            await _dispatch_tool_call(handlers, tu) for tu in tool_uses
+        ]
+        messages.append({"role": "user", "content": tool_results})
+
+        if tools.finished:
+            break
+
+    if tools.finished:
+        status = "completed"
+    elif iterations >= config.synthesis.max_iterations:
+        status = "max_iterations"
+    else:
+        status = "no_finish"
+
+    _log.info(
+        "synthesis: %s ended (status=%s, iterations=%d, summary=%r)",
+        pass_label, status, iterations, tools.summary,
+    )
+    return {"status": status, "iterations": iterations, "summary": tools.summary}
+
+
+def _reset_pass_state(tools: AgentTools) -> None:
+    """Reset per-pass finish state on a shared AgentTools instance."""
+    tools.finished = False
+    tools.summary = ""
+
+
 async def run_synthesis(
     service: PratyabhijnaService,
     config: PratyabhijnaConfig,
     *,
     client=None,
+    queue: "WorkQueue | None" = None,
 ) -> dict[str, Any]:
-    """Run one synthesis pass.
+    """Orchestrate a four-pass synthesis run.
 
     Called by the queue worker when a synthesis task fires. No-ops when
     the subject Person node isn't present (early deployment / fresh DB).
 
-    Side effects: commits to the subject's repo (on ``main`` and/or
-    ``synth/draft``), writes Episode nodes via ``add_episode``, updates
-    ``context_rebuilt_at`` / ``last_ingestion_scan`` on the Person node.
+    Runs four sequential subagent loops:
 
-    Returns a dict with at least: ``status`` (``"completed"`` |
-    ``"no_subject"`` | ``"max_iterations"``), ``iterations``,
-    ``summary`` (from the ``finish`` tool, if called).
+    1. Ingestion (Sonnet via ``community_model``) — scan and ingest new
+       writing/correspondence files.
+    2. Maturation (Sonnet) — chronicle and resolved-thread compression
+       via ``remember()`` saga ingestion.
+    3. Bootstrap update (Opus via ``synthesis_model``) — context-layer
+       revisions and protected-layer proposals.
+    4. Maintenance (Sonnet) — communities, status checks, run-log entry.
+
+    Each pass runs its own message loop with its own model and tool slice.
+    On a per-pass failure (raise or ``max_iterations``), the orchestrator
+    aborts the rest of the run; partial state is left for the next run
+    to pick up.
+
+    Returns a dict with at least: ``status``, ``iterations`` (sum across
+    passes that ran), ``summary`` (from the last pass's ``finish``), and
+    ``passes`` (per-pass result dicts).
 
     ``client`` is an Anthropic Messages client (or any object with a
-    ``.messages.create`` coroutine of compatible shape). Default is a
-    freshly constructed ``anthropic.AsyncAnthropic``. Tests pass a mock.
+    compatible ``.messages.stream`` coroutine). Default is a freshly
+    constructed ``anthropic.AsyncAnthropic``. Tests pass a mock.
     """
     from pratyabhijna.synthesis import (
         get_identity_atoms,
@@ -818,15 +1262,14 @@ async def run_synthesis(
     subject_node = await get_subject_node(service)
     if subject_node is None:
         _log.info("synthesis: no subject node found, skipping run")
-        return {"status": "no_subject", "iterations": 0, "summary": ""}
+        return {"status": "no_subject", "iterations": 0, "summary": "", "passes": []}
 
     now = datetime.now(timezone.utc)
 
     repo_path = config.resources.repo_path
-    # Sync from remote before reading any state — we want the full run
-    # to work against the current shared state, not a stale local copy.
     if repo_path:
         await _sync_from_remote(repo_path, config.synthesis.draft_branch)
+
     identity_files = read_identity_files(repo_path)
     synthesis_file = _read_synthesis_file(repo_path)
     atoms = await get_identity_atoms(service, subject_node)
@@ -835,143 +1278,210 @@ async def run_synthesis(
         repo_path, service, max_age_days=config.synthesis.ingestion_lookback_days
     )
 
-    # Git state
     git_branch = await git_ops.current_branch(repo_path)
     git_dirty = await git_ops.is_dirty(repo_path)
 
     _log.info(
-        "synthesis: state loaded (atoms=%d, delta=%d, candidates=%d, "
-        "last_rebuild=%s)",
-        len(atoms),
-        len(delta),
-        len(candidates),
+        "synthesis: state loaded (atoms=%d, delta=%d, candidates=%d, last_rebuild=%s)",
+        len(atoms), len(delta), len(candidates),
         subject_node.attributes.get("context_rebuilt_at", "never"),
-    )
-
-    tools = AgentTools(service=service, config=config)
-    handlers = build_handler_map(tools)
-
-    subskill_text = _load_subskill()
-    system_prompt = _build_system_prompt(subskill_text, config.subject_name)
-    opening = _build_initial_user_message(
-        subject_name=config.subject_name,
-        now=now,
-        git_branch=git_branch,
-        git_dirty=git_dirty,
-        identity_files=identity_files,
-        synthesis_file=synthesis_file,
-        atoms=atoms,
-        delta=delta,
-        candidates=candidates,
-        last_context_rebuilt_at=subject_node.attributes.get("context_rebuilt_at"),
-        last_ingestion_scan=subject_node.attributes.get("last_ingestion_scan"),
     )
 
     if client is None:
         import anthropic  # deferred import so tests without the env var work
 
-        # Use the configured LLM api_key (set via PRATYABHIJNA_LLM__API_KEY
-        # or config YAML). Falls through to anthropic's default env-var
-        # resolution (ANTHROPIC_API_KEY) when unset.
         api_key = config.llm.api_key or None
-        # 5-minute timeout matches the prompt cache TTL: if a streaming
-        # response stalls longer than the cache would live anyway, abort
-        # and let the queue retry with fresh cached context.
         client = anthropic.AsyncAnthropic(api_key=api_key, timeout=300.0)
 
-    # Adaptive thinking on Opus 4.6 / Sonnet 4.6: the model decides
-    # when and how much to think; we guide via the `effort` parameter
-    # under `output_config`. Adaptive mode also automatically enables
-    # interleaved thinking between tool calls on Opus 4.6 — important
-    # for the synthesizer's tool-use workflow.
+    tools = AgentTools(service=service, config=config, queue=queue)
+    subskill_text = _load_subskill()
+    system_prompt = _build_system_prompt(subskill_text, config.subject_name)
+
+    workhorse_model = config.llm.community_model
+    judgment_model = config.llm.synthesis_model
     use_thinking = config.synthesis.thinking.enabled
-    # max_tokens caps total output (thinking + text + tool use). Sized
-    # generously for high-effort agent runs; the effort parameter is
-    # the soft control on thinking spend.
-    max_tokens = 24000
 
-    # The opening user message (identity files + atoms) and the system
-    # prompt (synthesis subskill) are both static for the duration of a
-    # run. Marking them for prompt caching means turns 2+ only pay for
-    # the incremental tool-call exchanges.
-    cached_opening: dict[str, Any] = {
-        "role": "user",
-        "content": [{"type": "text", "text": opening, "cache_control": {"type": "ephemeral"}}],
-    }
-    cached_system: list[dict[str, Any]] = [
-        {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
-    ]
+    passes: list[dict[str, Any]] = []
+    total_iterations = 0
+    last_summary = ""
 
-    messages: list[dict[str, Any]] = [cached_opening]
-    iterations = 0
-
-    while iterations < config.synthesis.max_iterations:
-        iterations += 1
-        create_kwargs = dict(
-            model=config.llm.synthesis_model,
-            max_tokens=max_tokens,
-            system=cached_system,
-            tools=TOOL_SCHEMAS,
-            messages=messages,
+    async def _do_pass(
+        label: str,
+        model_id: str,
+        names: frozenset[str],
+        opening: str,
+        thinking: bool,
+    ) -> dict[str, Any]:
+        nonlocal total_iterations, last_summary
+        _reset_pass_state(tools)
+        result = await _run_pass(
+            client=client,
+            tools=tools,
+            config=config,
+            pass_label=label,
+            model_id=model_id,
+            tool_schemas=_schemas_for(names),
+            handlers=build_pass_handlers(tools, names),
+            system_prompt=system_prompt,
+            opening_message=opening,
+            use_thinking=thinking,
         )
-        if use_thinking:
-            create_kwargs["thinking"] = {"type": "adaptive"}
-            create_kwargs["output_config"] = {
-                "effort": config.synthesis.thinking.effort
-            }
+        result["pass"] = label
+        passes.append(result)
+        total_iterations += result["iterations"]
+        if result["summary"]:
+            last_summary = result["summary"]
+        return result
 
-        # Stream the response. At our max_tokens (24k), the SDK rejects
-        # non-streaming requests because they could exceed the 10-minute
-        # non-streaming timeout. get_final_message() accumulates the
-        # stream into the same Message shape we'd otherwise get back.
-        async with client.messages.stream(**create_kwargs) as stream:
-            response = await stream.get_final_message()
+    abort_reason: str | None = None
 
-        # Append the assistant turn as-is (including any thinking blocks).
-        messages.append({"role": "assistant", "content": response.content})
+    def _skip(label: str, reason: str) -> dict[str, Any]:
+        entry = {
+            "pass": label,
+            "status": "skipped",
+            "iterations": 0,
+            "summary": "",
+            "reason": reason,
+        }
+        passes.append(entry)
+        _log.info("synthesis: %s skipped (%s)", label, reason)
+        return entry
 
-        tool_uses = [
-            block for block in response.content
-            if getattr(block, "type", None) == "tool_use"
-        ]
+    try:
+        # Pass 1 — Ingestion (Sonnet). Skip if no new candidates.
+        if not candidates:
+            _skip("pass1_ingestion", "no ingestion candidates")
+            pass1_completed = True
+        else:
+            pass1 = await _do_pass(
+                "pass1_ingestion",
+                workhorse_model,
+                PASS1_TOOL_NAMES,
+                _build_pass1_message(
+                    subject_name=config.subject_name,
+                    now=now,
+                    git_branch=git_branch,
+                    git_dirty=git_dirty,
+                    candidates=candidates,
+                    last_ingestion_scan=subject_node.attributes.get("last_ingestion_scan"),
+                ),
+                thinking=False,
+            )
+            pass1_completed = pass1["status"] == "completed"
+            if not pass1_completed:
+                abort_reason = f"pass1 status={pass1['status']}"
+        if pass1_completed:
+            # Pass 2 — Maturation (Sonnet) — needs fresh chronicle/threads text
+            chronicle_text = identity_files.get("chronicle")
+            threads_text = identity_files.get("threads")
+            pass2 = await _do_pass(
+                "pass2_maturation",
+                workhorse_model,
+                PASS2_TOOL_NAMES,
+                _build_pass2_message(
+                    subject_name=config.subject_name,
+                    now=now,
+                    git_branch=await git_ops.current_branch(repo_path),
+                    git_dirty=await git_ops.is_dirty(repo_path),
+                    chronicle_text=chronicle_text,
+                    threads_text=threads_text,
+                ),
+                thinking=False,
+            )
+            if pass2["status"] != "completed":
+                abort_reason = f"pass2 status={pass2['status']}"
+            else:
+                # Pass 3 — Bootstrap update (Opus). May land on synth/draft.
+                # Reread identity files in case Pass 2 compressed CHRONICLE/THREADS.
+                identity_files_p3 = read_identity_files(repo_path)
+                synthesis_file_p3 = _read_synthesis_file(repo_path)
+                atoms_p3 = await get_identity_atoms(service, subject_node)
+                delta_p3 = await get_identity_delta(service, subject_node)
+                pass3 = await _do_pass(
+                    "pass3_bootstrap",
+                    judgment_model,
+                    PASS3_TOOL_NAMES,
+                    _build_pass3_message(
+                        subject_name=config.subject_name,
+                        now=now,
+                        git_branch=await git_ops.current_branch(repo_path),
+                        git_dirty=await git_ops.is_dirty(repo_path),
+                        identity_files=identity_files_p3,
+                        synthesis_file=synthesis_file_p3,
+                        atoms=atoms_p3,
+                        delta=delta_p3,
+                        last_context_rebuilt_at=subject_node.attributes.get(
+                            "context_rebuilt_at"
+                        ),
+                    ),
+                    thinking=use_thinking,
+                )
+                if pass3["status"] != "completed":
+                    abort_reason = f"pass3 status={pass3['status']}"
+                else:
+                    # Ensure HEAD is on main before Pass 4 — Pass 3 may have
+                    # left HEAD on synth/draft for the protected-layer flow.
+                    # If the checkout fails, do NOT run Pass 4: its run-log
+                    # commit would land on the wrong branch.
+                    pass4_blocked: str | None = None
+                    if await git_ops.current_branch(repo_path) != "main":
+                        try:
+                            await git_ops.checkout(repo_path, "main")
+                        except git_ops.GitError as e:
+                            pass4_blocked = (
+                                "pass3→pass4 checkout to main failed: "
+                                f"{e.stderr.strip() if hasattr(e, 'stderr') else e}"
+                            )
+                            _log.warning(
+                                "synthesis: %s — skipping Pass 4",
+                                pass4_blocked,
+                                exc_info=True,
+                            )
 
-        if tools.finished:
-            break
+                    if pass4_blocked is not None:
+                        _skip("pass4_maintenance", pass4_blocked)
+                        abort_reason = pass4_blocked
+                    else:
+                        synthesis_file_p4 = _read_synthesis_file(repo_path)
+                        pass4 = await _do_pass(
+                            "pass4_maintenance",
+                            workhorse_model,
+                            PASS4_TOOL_NAMES,
+                            _build_pass4_message(
+                                subject_name=config.subject_name,
+                                now=now,
+                                git_branch=await git_ops.current_branch(repo_path),
+                                git_dirty=await git_ops.is_dirty(repo_path),
+                                synthesis_file=synthesis_file_p4,
+                            ),
+                            thinking=False,
+                        )
+                        if pass4["status"] != "completed":
+                            abort_reason = f"pass4 status={pass4['status']}"
+    except Exception as e:  # noqa: BLE001 — surface the failure to caller
+        _log.warning(
+            "synthesis: pass raised, aborting remaining passes (%s)",
+            type(e).__name__,
+            exc_info=True,
+        )
+        abort_reason = f"raised: {type(e).__name__}: {e}"
 
-        if not tool_uses:
-            # No tool calls and finish wasn't called — agent stopped
-            # without explicit termination. Treat as complete.
-            break
-
-        tool_results = [
-            await _dispatch_tool_call(handlers, tu) for tu in tool_uses
-        ]
-        messages.append({"role": "user", "content": tool_results})
-
-        if tools.finished:
-            break
-
-    # Sync anything the agent committed back to the remote. Non-fatal
-    # on error: the next run will re-sync and retry.
+    # Push whatever landed (main and/or synth/draft). Non-fatal on error.
     if repo_path:
         await _push_to_remote(repo_path, config.synthesis.draft_branch)
 
-    if tools.finished:
-        return {
-            "status": "completed",
-            "iterations": iterations,
-            "summary": tools.summary,
-        }
-    if iterations >= config.synthesis.max_iterations:
-        return {
-            "status": "max_iterations",
-            "iterations": iterations,
-            "summary": "",
-        }
+    if abort_reason is None:
+        status = "completed"
+    else:
+        status = "aborted"
+        _log.info("synthesis: run aborted (%s)", abort_reason)
+
     return {
-        "status": "no_finish",
-        "iterations": iterations,
-        "summary": "",
+        "status": status,
+        "iterations": total_iterations,
+        "summary": last_summary,
+        "passes": passes,
+        **({"abort_reason": abort_reason} if abort_reason else {}),
     }
 
 
@@ -1061,12 +1571,19 @@ async def _push_to_remote(repo_path: str, draft_branch: str) -> None:
             )
 
 
-def make_synthesize_handler(service: PratyabhijnaService, config: PratyabhijnaConfig):
+def make_synthesize_handler(
+    service: PratyabhijnaService,
+    config: PratyabhijnaConfig,
+    queue: "WorkQueue | None" = None,
+):
     """Factory for the queue handler registered under task type 'synthesize'.
 
     The payload is ignored — one synthesis run reads everything it needs
     from the service and the subject's repo. Returning the result from
     the handler is optional; the worker only cares whether it raises.
+
+    ``queue`` is forwarded to ``run_synthesis`` so Pass 2 can call the
+    ``remember`` tool. Optional for tests that don't exercise Pass 2.
     """
     import logging
 
@@ -1074,7 +1591,7 @@ def make_synthesize_handler(service: PratyabhijnaService, config: PratyabhijnaCo
 
     async def handle_synthesize(payload: dict) -> None:
         log.info("synthesis run starting")
-        result = await run_synthesis(service, config)
+        result = await run_synthesis(service, config, queue=queue)
         log.info(
             "synthesis run completed: status=%s iterations=%d summary=%r",
             result.get("status"),

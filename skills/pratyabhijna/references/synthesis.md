@@ -17,6 +17,8 @@ A synthesis run has four sequential passes:
 
 Run these in order. Atoms extracted from newly-ingested prose land asynchronously; they inform the *next* synthesis run, not this one. A one-cycle lag is fine — don't block waiting for extraction.
 
+**Each pass runs as its own subagent loop.** You are invoked as one of the four — Pass 1, 2, 3, or 4 — never the whole run. Your opening message tells you which pass you are. Earlier passes have already run and committed; later passes will run after you. Do **only** your pass's work and call `finish` when you're done. Calling `finish` ends *your* pass; the orchestrator handles run-level completion. Don't try to do work that belongs to another pass — the orchestrator splits the run for a reason (smaller message history per pass, model selection per role). The `## At the start of every run` section below applies only to passes that need that state — Pass 4 is the one that acts on community-build thresholds and proposals; Pass 3 reads SYNTHESIS.md to inform its bootstrap update; Passes 1 and 2 don't read it.
+
 ## At the start of every run
 
 SYNTHESIS.md is included in your opening context. Before planning the run:
@@ -27,6 +29,8 @@ SYNTHESIS.md is included in your opening context. Before planning the run:
 - Check **Ingestion Backlog**: note what's pending so you can prioritize new ingestion accordingly.
 
 ## Pass 1: Ingesting new writings
+
+*You are the Pass 1 subagent. Your job is the writing/correspondence ingestion described below — nothing else. The other passes run before/after you and you don't manage them. Your opening message lists the candidates already scanned for you; act on those, then `finish`.*
 
 ### What to ingest
 
@@ -55,6 +59,8 @@ Use the ingestion guidance in `ingestion.md` for the mechanics. Key points as th
 Some files in `writing/` may not be worth ingesting as episodes — scratch files, drafts abandoned mid-sentence, content that duplicates something already in the graph. Use judgment. The accumulation impulse ("get everything in for completeness") is the wrong motivation. A file ingested poorly is worse than a file not ingested yet.
 
 ## Pass 2: Maturing chronicle and thread content
+
+*You are the Pass 2 subagent. Your job is chronicle and resolved-thread maturation — ingest aging entries into the graph via `remember()` and compress the in-file content. Pass 1 has already ingested any new writing; Pass 3 will update the bootstrap after you. Your opening message bundles CHRONICLE.md and THREADS.md in full; do the eligibility scan yourself, act, then `finish`.*
 
 The point: keep the bootstrap surface small without losing knowledge. Mature chronicle entries and resolved threads make the one-way trip from prose-brain (full text in the file) to graph-brain (extracted atoms via `add_episode`), with a compact stub left behind in the file.
 
@@ -132,6 +138,8 @@ After ingestion, the thread can either move to "Recently Resolved" with a brief 
 
 ## Pass 3: Updating the bootstrap
 
+*You are the Pass 3 subagent. Your job is the bootstrap update — context-layer revisions on main, protected-layer proposals via SYNTHESIS.md and the `synth/draft` branch. Passes 1 and 2 ran before you; Pass 4 (maintenance) runs after. You're the only pass with judgment authority over identity-file content. Your opening message has the full atom set, identity files, and SYNTHESIS.md state. When you're done, leave HEAD on main if you've finished the protected-layer work, or on `synth/draft` only if your edits are still mid-flight on that branch — the orchestrator returns HEAD to main before Pass 4 runs.*
+
 ### Read before writing
 
 Before deciding what changes:
@@ -206,6 +214,8 @@ For atoms that suggest something but don't rise to a proposal:
 Don't flag everything. A flag that turns out to be noise makes future flags less trustworthy.
 
 ## Pass 4: Maintenance
+
+*You are the Pass 4 subagent. Your job is the maintenance work below — communities (if threshold met), graph-health observations via `status`, advancing or nixing active SYNTHESIS.md proposals, and writing the run-log entry. Passes 1, 2, and 3 ran before you; everything they did is already committed on main (and possibly on `synth/draft`). HEAD is on main when you start. Read SYNTHESIS.md from your opening message, check what needs doing, do it, then `finish`.*
 
 ### Community building
 

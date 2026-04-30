@@ -215,7 +215,47 @@ class TestLiveSynthesisRun:
     ):
         result = await run_synthesis(live_service, live_config)
 
-        assert result["status"] in {"completed", "no_finish", "max_iterations"}, (
+        assert result["status"] in {"completed", "aborted"}, (
             f"unexpected status: {result}"
         )
+        # The orchestrator runs four passes; each emits a result entry
+        # (status one of completed/skipped/no_finish/max_iterations).
+        passes = result.get("passes", [])
+        assert {p["pass"] for p in passes} <= {
+            "pass1_ingestion",
+            "pass2_maturation",
+            "pass3_bootstrap",
+            "pass4_maintenance",
+        }
         assert result["iterations"] >= 1
+
+    async def test_run_synthesis_per_pass_progression(
+        self, live_service, live_config, seeded,
+    ):
+        """Per-pass shape: passes run in order, Pass 3 uses synthesis_model
+        and Passes 1/2/4 use community_model. We can't easily assert the
+        model from outside, but we can verify the pass labels and ordering
+        and that completed passes have non-zero iterations."""
+        result = await run_synthesis(live_service, live_config)
+
+        passes = result.get("passes", [])
+        labels_in_order = [p["pass"] for p in passes]
+
+        expected_order = [
+            "pass1_ingestion",
+            "pass2_maturation",
+            "pass3_bootstrap",
+            "pass4_maintenance",
+        ]
+        # Filter expected to those that actually ran (skipped passes appear
+        # too, with status="skipped"). The order of appearance must match.
+        appeared = [lbl for lbl in expected_order if lbl in labels_in_order]
+        assert labels_in_order == appeared, (
+            f"passes ran out of order: {labels_in_order}"
+        )
+
+        for entry in passes:
+            if entry["status"] == "completed":
+                assert entry["iterations"] >= 1, entry
+            elif entry["status"] == "skipped":
+                assert entry["iterations"] == 0, entry

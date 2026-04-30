@@ -1,14 +1,20 @@
-"""Tests for the synthesis agent loop.
+"""Tests for the synthesis agent loops.
 
-The loop itself — message threading, tool dispatch, termination — is
-tested with a scripted fake Anthropic client. Real Opus calls are
-expensive and flaky for CI; use ``--live`` integration tests for
-real-service confidence.
+The synthesizer is split into four sequential subagent loops (Pass 1
+ingestion, Pass 2 maturation, Pass 3 bootstrap, Pass 4 maintenance) and
+a thin orchestrator. These tests script the fake Anthropic client per
+pass — real Opus/Sonnet calls live in ``test_live_synthesis.py`` behind
+``--live``.
+
+The default test repo has a README.md committed, so the ingestion-candidate
+scan returns at least one entry and all four passes dispatch. Tests that
+specifically exercise Pass 1's empty-input fast-path monkey-patch the
+candidate scan to return ``[]``.
 """
 
 from __future__ import annotations
 
-import subprocess  # noqa: F401 — used by the remote-sync tests below
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,11 +25,19 @@ import pytest
 from pratyabhijna import synthesis_agent as agent_mod
 from pratyabhijna.config import PratyabhijnaConfig
 from pratyabhijna.synthesis_agent import (
+    AgentTools,
+    PASS1_TOOL_NAMES,
+    PASS2_TOOL_NAMES,
+    PASS3_TOOL_NAMES,
+    PASS4_TOOL_NAMES,
+    ToolError,
     _build_initial_user_message,
+    _build_pass1_message,
+    _build_pass2_message,
+    _build_pass3_message,
+    _build_pass4_message,
     _build_system_prompt,
     _dispatch_tool_call,
-    AgentTools,
-    ToolError,
     build_handler_map,
     run_synthesis,
 )
@@ -52,7 +66,6 @@ def _init_repo(repo: Path) -> None:
 def repo(tmp_path):
     repo_path = tmp_path / "subject-repo"
     _init_repo(repo_path)
-    # Also create identity files so bootstrap has something to pass in.
     memory = repo_path / "memory"
     memory.mkdir()
     for name in ("SOUL.md", "IDENTITY.md", "USER.md", "THREADS.md", "CHRONICLE.md"):
@@ -61,13 +74,20 @@ def repo(tmp_path):
 
 
 @pytest.fixture
+def repo_with_candidate(repo):
+    """A repo whose writing/ dir holds one fresh file — exercises Pass 1."""
+    writing = repo / "writing"
+    writing.mkdir(exist_ok=True)
+    (writing / "fresh.md").write_text("# fresh\nbody\n")
+    return repo
+
+
+@pytest.fixture
 def config(repo):
     c = PratyabhijnaConfig()
     c.subject_name = "TestSubject"
     c.resources.repo_path = str(repo)
-    # Make the loop terminate quickly in failure modes
     c.synthesis.max_iterations = 5
-    # Don't hit thinking in tests — smaller max_tokens, no thinking param
     c.synthesis.thinking.enabled = False
     return c
 
@@ -114,14 +134,18 @@ def _tool_use_block(tool_use_id: str, name: str, inp: dict | None = None) -> _Bl
     return _Block(type="tool_use", id=tool_use_id, name=name, input=inp or {})
 
 
-class FakeClient:
-    """Returns scripted responses via a streaming-shaped API.
+def _finish_call(use_id: str = "fin", summary: str = "ok") -> list[_Block]:
+    """One scripted iteration whose only block is a `finish` tool call."""
+    return [_tool_use_block(use_id, "finish", {"summary": summary})]
 
-    ``messages.stream(**kwargs)`` returns an async context manager; on
-    entry it yields a stream object whose ``get_final_message()`` returns
-    the next scripted response. Matches Anthropic's streaming shape
-    since ``run_synthesis`` uses ``messages.stream`` (required by the
-    SDK when ``max_tokens`` would exceed the non-streaming timeout).
+
+class FakeClient:
+    """Returns scripted responses via the streaming-shaped API.
+
+    ``script`` is a flat list of iterations across the entire run — each
+    iteration is the content blocks of one Anthropic streaming response.
+    The orchestrator runs multiple passes; consume one iteration per
+    ``messages.stream`` call regardless of pass boundary.
     """
 
     def __init__(self, script: list[list[_Block]]):
@@ -157,6 +181,26 @@ class FakeClient:
         self.messages = _Messages()
 
 
+def _four_pass_finish_script() -> list[list[_Block]]:
+    """Script four back-to-back finish calls — one per pass."""
+    return [_finish_call("p1"), _finish_call("p2"),
+            _finish_call("p3"), _finish_call("p4")]
+
+
+@pytest.fixture
+def no_candidates(monkeypatch):
+    """Force the candidate scan to return an empty list, exercising
+    Pass 1's fast-path skip."""
+    async def _empty(*args, **kwargs):
+        return []
+    monkeypatch.setattr(agent_mod, "scan_repo_for_ingestion_candidates", _empty)
+    # Also patch the import in pratyabhijna.synthesis_agent's namespace
+    # for the call inside run_synthesis (deferred import target).
+    from pratyabhijna import synthesis as synthesis_mod
+    monkeypatch.setattr(synthesis_mod, "scan_repo_for_ingestion_candidates", _empty)
+    return _empty
+
+
 # --- _build_system_prompt ---
 
 
@@ -167,54 +211,10 @@ def test_build_system_prompt_includes_subject_and_subskill():
     assert "synthesis run" in prompt
 
 
-# --- _build_initial_user_message ---
+# --- per-pass message builders ---
 
 
-def test_initial_message_has_all_sections():
-    msg = _build_initial_user_message(
-        subject_name="TestSubject",
-        now=datetime(2026, 4, 13, 12, 0, tzinfo=timezone.utc),
-        git_branch="main",
-        git_dirty=False,
-        identity_files={"soul": "S", "identity": "I", "user": "U",
-                        "threads": "T", "chronicle": "C"},
-        synthesis_file=None,
-        atoms=[],
-        delta=[],
-        candidates=[],
-        last_context_rebuilt_at=None,
-        last_ingestion_scan=None,
-    )
-    assert "TestSubject" in msg
-    assert "Ingestion candidates" in msg
-    assert "Identity atoms" in msg
-    assert "Delta since last context rebuild" in msg
-    assert "SOUL.md" in msg
-    assert "IDENTITY.md" in msg
-    assert "USER.md" in msg
-    assert "THREADS.md" in msg
-    assert "CHRONICLE.md" in msg
-
-
-def test_initial_message_shows_synthesis_file():
-    msg = _build_initial_user_message(
-        subject_name="X",
-        now=datetime(2026, 4, 13, tzinfo=timezone.utc),
-        git_branch="main",
-        git_dirty=False,
-        identity_files={},
-        synthesis_file="## Run Log\n\n### 2026-04-13\nFirst run.",
-        atoms=[],
-        delta=[],
-        candidates=[],
-        last_context_rebuilt_at=None,
-        last_ingestion_scan=None,
-    )
-    assert "SYNTHESIS.md" in msg
-    assert "First run." in msg
-
-
-def test_initial_message_renders_candidates_and_atoms():
+def test_pass1_message_lists_candidates():
     from pratyabhijna.synthesis import IngestionCandidate
 
     candidate = IngestionCandidate(
@@ -224,6 +224,36 @@ def test_initial_message_renders_candidates_and_atoms():
         reason="new",
         latest_episode_at=None,
     )
+    msg = _build_pass1_message(
+        subject_name="X",
+        now=datetime(2026, 4, 13, tzinfo=timezone.utc),
+        git_branch="main",
+        git_dirty=False,
+        candidates=[candidate],
+        last_ingestion_scan=None,
+    )
+    assert "Pass 1" in msg
+    assert "writing/p.md" in msg
+    assert "Identity atoms" not in msg  # Pass 1 doesn't carry atoms
+
+
+def test_pass2_message_includes_chronicle_and_threads_only():
+    msg = _build_pass2_message(
+        subject_name="X",
+        now=datetime(2026, 4, 13, tzinfo=timezone.utc),
+        git_branch="main",
+        git_dirty=False,
+        chronicle_text="## April 1, 2026 — entry\nbody",
+        threads_text="### thread A\nbody",
+    )
+    assert "Pass 2" in msg
+    assert "April 1, 2026" in msg
+    assert "thread A" in msg
+    assert "Identity atoms" not in msg
+    assert "SOUL.md" not in msg
+
+
+def test_pass3_message_has_full_identity_set():
     atom = {
         "fact": "X holds view Y",
         "edge_uuid": "abcdef12-3456-7890-1234-567890abcdef",
@@ -231,23 +261,56 @@ def test_initial_message_renders_candidates_and_atoms():
         "node_type": "Observation",
         "created_at": datetime(2026, 4, 1, tzinfo=timezone.utc),
     }
+    msg = _build_pass3_message(
+        subject_name="X",
+        now=datetime(2026, 4, 13, tzinfo=timezone.utc),
+        git_branch="main",
+        git_dirty=False,
+        identity_files={"soul": "S", "identity": "I", "user": "U",
+                        "threads": "T", "chronicle": "C"},
+        synthesis_file="## Run Log",
+        atoms=[atom],
+        delta=[atom],
+        last_context_rebuilt_at=None,
+    )
+    assert "Pass 3" in msg
+    assert "Identity atoms" in msg
+    assert "Delta since last context rebuild" in msg
+    assert "SOUL.md" in msg
+    assert "IDENTITY.md" in msg
+    assert "X holds view Y" in msg
+
+
+def test_pass4_message_focuses_on_synthesis_state():
+    msg = _build_pass4_message(
+        subject_name="X",
+        now=datetime(2026, 4, 13, tzinfo=timezone.utc),
+        git_branch="main",
+        git_dirty=False,
+        synthesis_file="## Run Log\n\n### 2026-04-13\nFirst run.",
+    )
+    assert "Pass 4" in msg
+    assert "First run." in msg
+    assert "Identity atoms" not in msg
+
+
+def test_legacy_initial_message_still_renders():
+    """Legacy union builder is preserved as a single-shot helper for
+    callers that want everything in one message (used by some tests)."""
     msg = _build_initial_user_message(
         subject_name="X",
         now=datetime(2026, 4, 13, tzinfo=timezone.utc),
         git_branch="main",
         git_dirty=False,
-        identity_files={},
+        identity_files={"soul": "S"},
         synthesis_file=None,
-        atoms=[atom],
-        delta=[atom],
-        candidates=[candidate],
+        atoms=[],
+        delta=[],
+        candidates=[],
         last_context_rebuilt_at=None,
         last_ingestion_scan=None,
     )
-    assert "writing/p.md" in msg
-    assert "[new]" in msg
-    assert "X holds view Y" in msg
-    assert "[Observation]" in msg
+    assert "Identity atoms" in msg
 
 
 # --- _dispatch_tool_call ---
@@ -306,7 +369,7 @@ async def test_dispatch_unexpected_exception_caught(service, config):
 
 
 @pytest.mark.asyncio
-async def test_run_synthesis_no_subject_noop(service, config, monkeypatch):
+async def test_run_synthesis_no_subject_noop(service, config):
     service.get_entity_by_name = AsyncMock(return_value=None)
     client = FakeClient(script=[])
 
@@ -318,150 +381,185 @@ async def test_run_synthesis_no_subject_noop(service, config, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_synthesis_finishes_on_first_call(service, config):
+async def test_run_synthesis_skips_pass1_when_no_candidates(
+    service, config, no_candidates
+):
+    """No ingestion candidates → Pass 1 is fast-path skipped."""
     client = FakeClient(script=[
-        [_tool_use_block("t1", "finish", {"summary": "nothing to do"})],
+        _finish_call("p2"), _finish_call("p3"), _finish_call("p4"),
     ])
 
     result = await run_synthesis(service, config, client=client)
 
     assert result["status"] == "completed"
-    assert result["summary"] == "nothing to do"
-    assert result["iterations"] == 1
-    assert len(client.calls) == 1
+    pass1 = next(p for p in result["passes"] if p["pass"] == "pass1_ingestion")
+    assert pass1["status"] == "skipped"
+    # Three Anthropic calls — one per non-skipped pass.
+    assert len(client.calls) == 3
 
 
 @pytest.mark.asyncio
-async def test_run_synthesis_dispatches_tool_then_finishes(service, config):
+async def test_run_synthesis_dispatches_pass1_when_candidate_present(
+    service, config, repo_with_candidate
+):
+    config.resources.repo_path = str(repo_with_candidate)
     client = FakeClient(script=[
-        [_tool_use_block("t1", "git_status", {})],
-        [_tool_use_block("t2", "finish", {"summary": "ok"})],
+        _finish_call("p1"),
+        _finish_call("p2"),
+        _finish_call("p3"),
+        _finish_call("p4"),
     ])
 
     result = await run_synthesis(service, config, client=client)
 
     assert result["status"] == "completed"
-    assert result["iterations"] == 2
-
-    # Second call should include the tool_result in messages
-    second_messages = client.calls[1]["messages"]
-    last_user_turn = [m for m in second_messages if m["role"] == "user"][-1]
-    # Tool results come back as a list of dicts under "content"
-    assert isinstance(last_user_turn["content"], list)
-    assert any(
-        isinstance(block, dict) and block.get("type") == "tool_result"
-        for block in last_user_turn["content"]
-    )
+    labels = [p["pass"] for p in result["passes"]]
+    assert labels == ["pass1_ingestion", "pass2_maturation",
+                      "pass3_bootstrap", "pass4_maintenance"]
+    assert all(p["status"] == "completed" for p in result["passes"])
 
 
 @pytest.mark.asyncio
-async def test_run_synthesis_max_iterations(service, config):
-    # Agent keeps calling a tool forever, never calling finish
-    script = [[_tool_use_block(f"t{i}", "git_status", {})]
-              for i in range(config.synthesis.max_iterations + 5)]
+async def test_run_synthesis_dispatches_tool_then_finishes_in_pass2(
+    service, config, no_candidates
+):
+    """Pass 2 uses one tool call before finishing; Pass 1 skips, Passes 3/4 finish."""
+    client = FakeClient(script=[
+        # Pass 2 takes two iterations
+        [_tool_use_block("p2-1", "git_status", {})],
+        _finish_call("p2"),
+        # Pass 3 + Pass 4
+        _finish_call("p3"),
+        _finish_call("p4"),
+    ])
+
+    result = await run_synthesis(service, config, client=client)
+
+    assert result["status"] == "completed"
+    assert result["iterations"] == 4  # 2 (Pass 2) + 1 (Pass 3) + 1 (Pass 4)
+
+
+@pytest.mark.asyncio
+async def test_run_synthesis_aborts_on_pass_max_iterations(
+    service, config, no_candidates
+):
+    """A pass hitting max_iterations aborts the run; later passes don't dispatch."""
+    # Pass 2 keeps calling git_status forever — never finishes (Pass 1 skipped).
+    over_limit = config.synthesis.max_iterations + 1
+    script = [[_tool_use_block(f"t{i}", "git_status", {})] for i in range(over_limit)]
     client = FakeClient(script=script)
 
     result = await run_synthesis(service, config, client=client)
 
-    assert result["status"] == "max_iterations"
-    assert result["iterations"] == config.synthesis.max_iterations
+    assert result["status"] == "aborted"
+    pass2 = next(p for p in result["passes"] if p["pass"] == "pass2_maturation")
+    assert pass2["status"] == "max_iterations"
+    assert pass2["iterations"] == config.synthesis.max_iterations
+    labels = [p["pass"] for p in result["passes"]]
+    assert "pass3_bootstrap" not in labels
+    assert "pass4_maintenance" not in labels
 
 
 @pytest.mark.asyncio
-async def test_run_synthesis_stops_on_no_tools_no_finish(service, config):
+async def test_run_synthesis_stops_on_no_tools_no_finish(
+    service, config, no_candidates
+):
+    """A pass that produces text only with no tool_use stops 'no_finish' and aborts."""
     client = FakeClient(script=[
-        [_text_block("I'm just going to sit here and think out loud.")],
+        [_text_block("just thinking")],
     ])
 
     result = await run_synthesis(service, config, client=client)
 
-    assert result["status"] == "no_finish"
-    assert result["iterations"] == 1
+    assert result["status"] == "aborted"
+    pass2 = next(p for p in result["passes"] if p["pass"] == "pass2_maturation")
+    assert pass2["status"] == "no_finish"
+
+
+# --- run_synthesis: per-pass model + thinking selection ---
 
 
 @pytest.mark.asyncio
-async def test_run_synthesis_uses_adaptive_thinking_when_enabled(service, config):
+async def test_pass3_alone_uses_synthesis_model(service, config):
+    config.llm.synthesis_model = "claude-opus-4-7"
+    config.llm.community_model = "claude-sonnet-4-6"
+    client = FakeClient(script=_four_pass_finish_script())
+
+    await run_synthesis(service, config, client=client)
+
+    # 4 calls in pass order: 1, 2, 3, 4 → Sonnet, Sonnet, Opus, Sonnet
+    models = [c["model"] for c in client.calls]
+    assert models == [
+        "claude-sonnet-4-6", "claude-sonnet-4-6",
+        "claude-opus-4-7", "claude-sonnet-4-6",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pass3_alone_gets_adaptive_thinking(service, config):
     config.synthesis.thinking.enabled = True
     config.synthesis.thinking.effort = "high"
-    client = FakeClient(script=[
-        [_tool_use_block("t1", "finish", {"summary": "x"})],
-    ])
+    client = FakeClient(script=_four_pass_finish_script())
 
     await run_synthesis(service, config, client=client)
 
-    assert client.calls[0].get("thinking") == {"type": "adaptive"}
-    assert client.calls[0].get("output_config") == {"effort": "high"}
+    # Pass 1 (idx 0), Pass 2 (idx 1), Pass 3 (idx 2), Pass 4 (idx 3)
+    for i in (0, 1, 3):
+        assert "thinking" not in client.calls[i]
+    assert client.calls[2]["thinking"] == {"type": "adaptive"}
+    assert client.calls[2]["output_config"] == {"effort": "high"}
 
 
 @pytest.mark.asyncio
-async def test_run_synthesis_passes_configured_effort(service, config):
-    config.synthesis.thinking.enabled = True
-    config.synthesis.thinking.effort = "medium"
-    client = FakeClient(script=[
-        [_tool_use_block("t1", "finish", {"summary": "x"})],
-    ])
-
-    await run_synthesis(service, config, client=client)
-
-    assert client.calls[0]["output_config"] == {"effort": "medium"}
-
-
-@pytest.mark.asyncio
-async def test_run_synthesis_omits_thinking_when_disabled(service, config):
+async def test_thinking_disabled_omits_for_all_passes(service, config):
     config.synthesis.thinking.enabled = False
-    client = FakeClient(script=[
-        [_tool_use_block("t1", "finish", {"summary": "x"})],
-    ])
+    client = FakeClient(script=_four_pass_finish_script())
 
     await run_synthesis(service, config, client=client)
 
-    assert "thinking" not in client.calls[0]
-    assert "output_config" not in client.calls[0]
+    for call in client.calls:
+        assert "thinking" not in call
+        assert "output_config" not in call
 
 
 @pytest.mark.asyncio
-async def test_run_synthesis_uses_configured_model(service, config):
-    config.llm.synthesis_model = "claude-opus-4-6"
-    client = FakeClient(script=[
-        [_tool_use_block("t1", "finish", {"summary": "x"})],
-    ])
+async def test_per_pass_tool_schemas_are_sliced(service, config):
+    """Each pass should send only its slice of TOOL_SCHEMAS."""
+    client = FakeClient(script=_four_pass_finish_script())
 
     await run_synthesis(service, config, client=client)
 
-    assert client.calls[0]["model"] == "claude-opus-4-6"
+    # Calls in order: Pass 1, Pass 2, Pass 3, Pass 4
+    p1_names = {t["name"] for t in client.calls[0]["tools"]}
+    p2_names = {t["name"] for t in client.calls[1]["tools"]}
+    p3_names = {t["name"] for t in client.calls[2]["tools"]}
+    p4_names = {t["name"] for t in client.calls[3]["tools"]}
+
+    assert p1_names == set(PASS1_TOOL_NAMES)
+    assert p2_names == set(PASS2_TOOL_NAMES)
+    assert p3_names == set(PASS3_TOOL_NAMES)
+    assert p4_names == set(PASS4_TOOL_NAMES)
+    # Cross-checks: ingest_file only in Pass 1; remember only in Pass 2;
+    # recall only in Pass 3; status only in Pass 4.
+    assert "ingest_file" in p1_names and "ingest_file" not in p2_names
+    assert "remember" in p2_names and "remember" not in p3_names
+    assert "recall" in p3_names and "recall" not in p2_names
+    assert "status" in p4_names and "status" not in p3_names
 
 
 @pytest.mark.asyncio
-async def test_run_synthesis_system_prompt_includes_subskill(service, config):
-    client = FakeClient(script=[
-        [_tool_use_block("t1", "finish", {"summary": "x"})],
-    ])
+async def test_pass3_opening_message_has_identity_files(service, config):
+    client = FakeClient(script=_four_pass_finish_script())
 
     await run_synthesis(service, config, client=client)
 
-    system = " ".join(
-        block["text"] for block in client.calls[0]["system"] if block.get("type") == "text"
-    )
-    assert "TestSubject" in system
-    # Subskill content markers
-    assert "synthesizer" in system.lower()
-
-
-@pytest.mark.asyncio
-async def test_run_synthesis_opening_message_has_identity_files(
-    service, config, repo
-):
-    client = FakeClient(script=[
-        [_tool_use_block("t1", "finish", {"summary": "x"})],
-    ])
-
-    await run_synthesis(service, config, client=client)
-
+    # client.calls[2] is Pass 3 (idx 0=Pass 1, 1=Pass 2, 2=Pass 3, 3=Pass 4)
     opening = " ".join(
         block["text"]
-        for block in client.calls[0]["messages"][0]["content"]
+        for block in client.calls[2]["messages"][0]["content"]
         if block.get("type") == "text"
     )
+    assert "Pass 3" in opening
     assert "SOUL.md" in opening
     assert "IDENTITY.md" in opening
 
@@ -470,10 +568,7 @@ async def test_run_synthesis_opening_message_has_identity_files(
 
 
 @pytest.mark.asyncio
-async def test_run_synthesis_no_op_sync_when_no_remote(
-    service, config, repo, monkeypatch
-):
-    """Without a remote, sync steps should be silent no-ops."""
+async def test_run_synthesis_no_op_sync_when_no_remote(service, config, monkeypatch):
     from pratyabhijna import git_ops
 
     fetch_calls = []
@@ -483,9 +578,7 @@ async def test_run_synthesis_no_op_sync_when_no_remote(
 
     monkeypatch.setattr(git_ops, "fetch", record_fetch)
 
-    client = FakeClient(script=[
-        [_tool_use_block("t1", "finish", {"summary": "x"})],
-    ])
+    client = FakeClient(script=_four_pass_finish_script())
 
     result = await run_synthesis(service, config, client=client)
 
@@ -497,10 +590,8 @@ async def test_run_synthesis_no_op_sync_when_no_remote(
 async def test_run_synthesis_syncs_and_pushes_with_remote(
     service, config, repo, monkeypatch, tmp_path
 ):
-    """With a remote: fetch at start, push at end."""
     from pratyabhijna import git_ops
 
-    # Add a bare remote so has_remote() returns True
     remote = tmp_path / "bare.git"
     remote.mkdir()
     subprocess.run(
@@ -533,36 +624,25 @@ async def test_run_synthesis_syncs_and_pushes_with_remote(
     monkeypatch.setattr(git_ops, "fetch", recording_fetch)
     monkeypatch.setattr(git_ops, "push", recording_push)
 
-    client = FakeClient(script=[
-        [_tool_use_block("t1", "finish", {"summary": "done"})],
-    ])
+    client = FakeClient(script=_four_pass_finish_script())
 
     await run_synthesis(service, config, client=client)
 
-    assert fetch_called  # sync_from_remote fetched
-    # push was called for main at end (draft branch doesn't exist)
+    assert fetch_called
     pushed_branches = {args[1] for args, _ in push_calls}
     assert "main" in pushed_branches
 
 
 @pytest.mark.asyncio
-async def test_sync_failure_does_not_block_run(
-    service, config, repo, monkeypatch, tmp_path
-):
-    """If the fetch raises, the run should still proceed with local state."""
-    from pratyabhijna import git_ops
-
-    # Add a broken remote so has_remote returns True but fetch fails
+async def test_sync_failure_does_not_block_run(service, config, repo):
+    """Broken remote: sync logs but doesn't block; passes still run."""
     subprocess.run(
         ["git", "remote", "add", "origin", "/nonexistent/remote.git"],
         cwd=str(repo), check=True, capture_output=True,
     )
 
-    client = FakeClient(script=[
-        [_tool_use_block("t1", "finish", {"summary": "ok"})],
-    ])
+    client = FakeClient(script=_four_pass_finish_script())
 
     result = await run_synthesis(service, config, client=client)
 
-    # Broken remote shouldn't have prevented the run from completing.
     assert result["status"] == "completed"
