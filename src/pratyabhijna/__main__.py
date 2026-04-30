@@ -80,7 +80,7 @@ def register_queue_handlers(
     call ``reschedule_or_enqueue("synthesize", ...)`` and that method
     validates the handler exists before inserting.
     """
-    queue.register("synthesize", make_synthesize_handler(service, service.config))
+    queue.register("synthesize", make_synthesize_handler(service, service.config, queue=queue))
     queue.register("add_episode", remember_make_handler(service, queue=queue))
     queue.register("correct_memory", correct_make_handler(service, queue=queue))
 

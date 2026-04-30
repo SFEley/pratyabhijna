@@ -99,7 +99,14 @@ class SynthesisConfig(BaseModel):
     # merged into their best-connected large cluster before community nodes are built.
     min_community_size: int = 4
     # Upper bound on tool-use loop iterations, as a circuit breaker.
-    max_iterations: int = 40
+    # Applies per pass after the subagent split (each pass runs its own
+    # loop; the orchestrator runs them sequentially).
+    max_iterations: int = 24
+    # Per-pass max_tokens cap on the Anthropic Messages API call. Bounds
+    # total output (thinking + text + tool use) for one streaming response.
+    # 24K accommodates Pass 3's adaptive thinking on Opus; the lighter
+    # Sonnet passes typically consume far less.
+    max_tokens: int = 24000
     # Bound on how far back the ingestion scan looks.
     ingestion_lookback_days: int | None = 14
 

@@ -15,7 +15,16 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from pratyabhijna.synthesis_agent import (
+    PASS1_TOOL_NAMES,
+    PASS1_TOOL_SCHEMAS,
+    PASS2_TOOL_NAMES,
+    PASS2_TOOL_SCHEMAS,
+    PASS3_TOOL_NAMES,
+    PASS3_TOOL_SCHEMAS,
+    PASS4_TOOL_NAMES,
+    PASS4_TOOL_SCHEMAS,
     TOOL_SCHEMAS,
+    build_pass_handlers,
     AgentTools,
     ToolError,
     build_handler_map,
@@ -91,6 +100,62 @@ def test_all_schemas_have_required_fields():
         assert "description" in schema
         assert "input_schema" in schema
         assert schema["input_schema"].get("type") == "object"
+
+
+# --- Per-pass slice consistency ---
+#
+# Each pass exposes only the tools it needs. The schema slice and the
+# handler slice must agree, and every name in the slice must exist in the
+# union TOOL_SCHEMAS / build_handler_map. Tested per pass below.
+
+
+@pytest.mark.parametrize(
+    ("names", "schemas", "label"),
+    [
+        (PASS1_TOOL_NAMES, PASS1_TOOL_SCHEMAS, "pass1_ingestion"),
+        (PASS2_TOOL_NAMES, PASS2_TOOL_SCHEMAS, "pass2_maturation"),
+        (PASS3_TOOL_NAMES, PASS3_TOOL_SCHEMAS, "pass3_bootstrap"),
+        (PASS4_TOOL_NAMES, PASS4_TOOL_SCHEMAS, "pass4_maintenance"),
+    ],
+)
+def test_pass_schemas_match_pass_names(names, schemas, label):
+    assert {s["name"] for s in schemas} == set(names), label
+
+
+@pytest.mark.parametrize(
+    "names",
+    [PASS1_TOOL_NAMES, PASS2_TOOL_NAMES, PASS3_TOOL_NAMES, PASS4_TOOL_NAMES],
+)
+def test_pass_handler_slice_matches_names(tools, names):
+    handlers = build_pass_handlers(tools, names)
+    assert set(handlers.keys()) == set(names)
+
+
+def test_pass_names_subset_of_union():
+    """No per-pass name should reference a tool not in TOOL_SCHEMAS."""
+    union = {t["name"] for t in TOOL_SCHEMAS}
+    for names in (PASS1_TOOL_NAMES, PASS2_TOOL_NAMES,
+                  PASS3_TOOL_NAMES, PASS4_TOOL_NAMES):
+        assert names <= union
+
+
+def test_finish_present_in_every_pass():
+    """`finish` is the termination signal — every subagent must have it."""
+    for names in (PASS1_TOOL_NAMES, PASS2_TOOL_NAMES,
+                  PASS3_TOOL_NAMES, PASS4_TOOL_NAMES):
+        assert "finish" in names
+
+
+def test_pass1_has_ingestion_pass2_has_remember_pass3_has_recall_pass4_has_status():
+    """Anchor each pass's distinguishing tool (regression guard)."""
+    assert "ingest_file" in PASS1_TOOL_NAMES
+    assert "ingest_file" not in PASS2_TOOL_NAMES
+    assert "remember" in PASS2_TOOL_NAMES
+    assert "remember" not in PASS3_TOOL_NAMES
+    assert "recall" in PASS3_TOOL_NAMES
+    assert "recall" not in PASS4_TOOL_NAMES
+    assert "status" in PASS4_TOOL_NAMES
+    assert "status" not in PASS3_TOOL_NAMES
 
 
 # --- Path resolution / security ---
