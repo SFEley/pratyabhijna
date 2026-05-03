@@ -78,6 +78,8 @@ For each `## ` heading in CHRONICLE.md, parse the date from the heading and chec
 
 **Procedure for each eligible entry, in chronological order:**
 
+Complete the full sequence — `remember()` → `write_file` → `git_add_and_commit` — for one entry before starting the next. Do not batch any step across entries. The iteration cap (`synthesis.max_iterations`, currently 24) is intentionally stride-shaped: it's fine to leave entries for the next run, but only if the entries you *did* process are committed to disk. Per-entry commits are how partial progress survives.
+
 1. Ingest the full entry (heading + body, in current form) via `remember()`:
 
    ```python
@@ -102,7 +104,9 @@ For each `## ` heading in CHRONICLE.md, parse the date from the heading and chec
    architectural tendency is open.  [Ingested: 2026-04-25]
    ```
 
-3. Commit CHRONICLE.md changes when the pass completes (single commit covering all entries matured this run).
+3. Commit the CHRONICLE.md change for *this entry* via `git_add_and_commit` before starting the next entry. Title: `Synthesize: mature chronicle entry [date] — [title]`. Body optional, but the episode UUID returned by `remember()` is a useful back-pointer.
+
+**Why per-entry persistence matters.** The iteration cap exists to catch runaway loops, not to bound the size of a backlog. With a long backlog, you may legitimately exhaust the cap before clearing every entry — that's fine. What is not fine is doing 24 entries' worth of `remember()` calls and leaving CHRONICLE.md untouched: the next run starts from the same un-marked file and reprocesses the same first 24 entries indefinitely, doubling them in the graph each time. Per-entry commits convert the cap from a wall into a stride length — the backlog drains across runs.
 
 **Why `remember()` and not `ingest_file`:** `ingest_file` reads from disk paths, so it can't ingest a heading-bounded *slice* of CHRONICLE.md as a single episode. `remember()` takes the text directly, threads it through the same `add_episode` worker, and handles saga + occurred_at + source as parameters. This is exactly the use case `remember()` was built for. (See "What not to do" below for the carve-out the prohibition makes for this case.)
 
@@ -126,7 +130,7 @@ await remember(
 
 Same auto-discovery rule applies — don't pass `saga_previous_episode_uuid`. Episode is named through the `name` parameter on `add_episode` server-side; `remember()` doesn't take a name parameter, so the episode's `name` will be auto-derived. If naming-by-pattern matters for later queries (`thread:YYYY-MM-DD-resolved:slug`), do the renaming via Cypher after the ingestion lands rather than blocking on it here.
 
-After ingestion, the thread can either move to "Recently Resolved" with a brief note of how it closed, or disappear from the file entirely. The full prose is in the graph; the file no longer needs to carry it.
+After ingestion, reduce the in-file thread — either move it to "Recently Resolved" with a brief close-note, or delete it entirely — and commit THREADS.md for *this thread* via `git_add_and_commit` before starting the next. Title: `Synthesize: resolve thread — [slug]`. Same stride logic as chronicle: per-thread commits are what let partial progress survive the iteration cap. Don't batch the file edits across threads. The full prose lives in the graph now; the file no longer needs to carry it.
 
 **For active (unresolved) threads** that are getting too long: aim to reduce thread entries by 50–75% with redundancy stripping, simplification of prose, and other summarization. There is no strict per-thread length cap. Don't compress a thread that's actively in motion (recent updates within the last few days); compress threads that have stabilized into a settled status with stale prose around them.
 
@@ -268,7 +272,9 @@ The subject's files tend to be:
 - Title format: `Ratify: <concise what> (<file>)`
 - Body: note that this was ratified across N runs, brief summary of the case.
 
-**Ingestion commits:** none — ingestion doesn't touch files, it goes through `add_episode`.
+**Pass 1 ingestion commits:** none — Pass 1 doesn't touch files; episodes go through `add_episode`.
+
+**Pass 2 maturation commits:** one per entry, committed before starting the next. Title `Synthesize: mature chronicle entry [date] — [title]` for chronicle entries, `Synthesize: resolve thread — [slug]` for resolved threads. Body optional but useful — note the episode UUID returned by `remember()` if you want a back-pointer from the file change to the graph episode.
 
 ## The remember-the-decision habit
 
