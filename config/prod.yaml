@@ -30,8 +30,10 @@ queue:
   max_retries: 10
 
 synthesis:
-  max_age_hours: 48
-  max_delta_changes: 5
+  max_age_hours: 72
+  max_delta_changes: 10
+  max_iterations: 60
+  max_tokens: 120000
 
 resources:
   repo_path: "~/vesper"
