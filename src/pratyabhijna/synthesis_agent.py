@@ -984,7 +984,7 @@ def _format_pass_results(pass_results: list[dict[str, Any]]) -> str:
             line += f" — {p['reason']}"
         elif p["status"] == "raised" and p.get("error"):
             line += f" — {p['error']}"
-        elif p["status"] in ("max_iterations", "no_finish"):
+        elif p["status"] in ("max_iterations", "no_finish", "max_tokens_per_turn"):
             line += f" (iterations={p.get('iterations', 0)})"
         elif p["status"] == "completed" and p.get("iterations"):
             line += f" (iterations={p['iterations']})"
@@ -1207,9 +1207,19 @@ async def _run_pass(
 ) -> dict[str, Any]:
     """Run one pass's tool-use loop.
 
-    Returns ``{status, iterations, summary}``. ``status`` is one of
-    ``"completed"`` (agent called ``finish``), ``"no_finish"`` (loop ended
-    without explicit termination), or ``"max_iterations"`` (circuit broken).
+    Returns ``{status, iterations, summary}``. ``status`` is one of:
+
+    - ``"completed"`` — agent called ``finish``.
+    - ``"no_finish"`` — loop ended (no tool calls) without explicit
+      termination.
+    - ``"max_iterations"`` — iteration cap fired.
+    - ``"max_tokens_per_turn"`` — a single response hit the per-call
+      ``max_tokens`` budget mid-generation (``stop_reason="max_tokens"``).
+      Continuing past this would feed a truncated assistant turn — and
+      possibly a partial ``tool_use`` block — back into the loop and
+      corrupt downstream state, so the pass bails immediately. Per-pass
+      independent dispatch in ``run_synthesis`` then continues to the
+      next pass.
 
     The caller is responsible for resetting ``tools.finished`` /
     ``tools.summary`` before invocation if running multiple passes against
@@ -1254,6 +1264,23 @@ async def _run_pass(
         # 10-minute non-streaming timeout.
         async with client.messages.stream(**create_kwargs) as stream:
             response = await stream.get_final_message()
+
+        # Truncation circuit-break: if the response hit max_tokens
+        # mid-generation, any tool_use block in it may be malformed
+        # (incomplete `input` JSON), and the assistant turn is
+        # mid-thought. Don't append, don't dispatch — bail this pass and
+        # let independent dispatch continue with the others.
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            _log.warning(
+                "synthesis: %s hit max_tokens (%d) mid-generation at iteration %d — "
+                "discarding truncated turn and bailing this pass",
+                pass_label, max_tokens, iterations,
+            )
+            return {
+                "status": "max_tokens_per_turn",
+                "iterations": iterations,
+                "summary": tools.summary,
+            }
 
         messages.append({"role": "assistant", "content": response.content})
 

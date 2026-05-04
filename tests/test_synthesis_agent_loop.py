@@ -564,6 +564,58 @@ async def test_run_synthesis_continues_when_pass1_raises(
 
 
 @pytest.mark.asyncio
+async def test_run_synthesis_records_max_tokens_per_turn_without_aborting(
+    service, config, no_candidates
+):
+    """A response truncated by max_tokens is recorded; later passes still dispatch.
+
+    The truncated assistant turn is *not* appended to message history, since
+    a partial tool_use block would corrupt downstream dispatch.
+    """
+    inner = FakeClient(script=[
+        # Pass 2 — content irrelevant; the wrapper will mark this stop_reason="max_tokens"
+        [_tool_use_block("t1", "remember", {"content": "partial..."})],
+        # Pass 3
+        _finish_call("p3"),
+        # Pass 4
+        _finish_call("p4"),
+    ])
+
+    class TruncateFirstClient:
+        """Wraps FakeClient; forces stop_reason='max_tokens' on the first call only."""
+        def __init__(self, wrapped):
+            self._wrapped = wrapped
+            self._calls_made = 0
+            outer = self
+            class _Messages:
+                def stream(self, **kwargs):
+                    ctx = outer._wrapped.messages.stream(**kwargs)
+                    if outer._calls_made == 0:
+                        outer._calls_made += 1
+                        # Patch the response that ctx.get_final_message() will return.
+                        original_get = ctx.get_final_message
+                        async def _truncated_get():
+                            response = await original_get()
+                            response.stop_reason = "max_tokens"
+                            return response
+                        ctx.get_final_message = _truncated_get
+                    else:
+                        outer._calls_made += 1
+                    return ctx
+            self.messages = _Messages()
+
+    result = await run_synthesis(service, config, client=TruncateFirstClient(inner))
+
+    assert result["status"] == "partial"
+    by_label = {p["pass"]: p for p in result["passes"]}
+    assert by_label["pass2_maturation"]["status"] == "max_tokens_per_turn"
+    assert by_label["pass2_maturation"]["iterations"] == 1
+    # Pass 3 + Pass 4 still run.
+    assert by_label["pass3_bootstrap"]["status"] == "completed"
+    assert by_label["pass4_maintenance"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_pass4_skipped_when_checkout_to_main_fails(
     service, config, no_candidates, monkeypatch
 ):
