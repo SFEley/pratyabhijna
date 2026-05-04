@@ -215,7 +215,7 @@ class TestLiveSynthesisRun:
     ):
         result = await run_synthesis(live_service, live_config)
 
-        assert result["status"] in {"completed", "aborted"}, (
+        assert result["status"] in {"completed", "partial"}, (
             f"unexpected status: {result}"
         )
         # The orchestrator runs four passes; each emits a result entry
@@ -255,7 +255,10 @@ class TestLiveSynthesisRun:
         )
 
         for entry in passes:
-            if entry["status"] == "completed":
+            if entry["status"] == "completed" and entry["pass"] != "pass2_maturation":
+                # Pass 2 is a Python driver — can complete with iterations=0
+                # if nothing was eligible. The agent-loop passes need ≥1 to
+                # have called `finish`.
                 assert entry["iterations"] >= 1, entry
             elif entry["status"] == "skipped":
                 assert entry["iterations"] == 0, entry
