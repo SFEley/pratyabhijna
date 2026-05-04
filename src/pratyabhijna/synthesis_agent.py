@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -123,59 +123,36 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "remember",
+        "name": "edit_file",
         "description": (
-            "Queue a memory for background processing. Use in Pass 2 to "
-            "ingest chronicle entries and resolved threads as saga-chained "
-            "episodes — pass `saga='chronicle'` (or `'threads'`), an "
-            "`occurred_at` matching the entry's date, and the slice text "
-            "as `content`. Returns immediately with a task_id; the "
-            "background worker calls add_episode. Do not use for clerical "
-            "scratch — only for legitimate content the subject would want "
-            "in the graph."
+            "Surgical find-and-replace edit on a file in the subject's "
+            "repo. `old_string` must appear *exactly once* in the file — "
+            "the call fails otherwise. Use this for any change to an "
+            "existing file where you want to preserve everything else "
+            "verbatim (the typical case). Use `write_file` only when you "
+            "need to create a new file or genuinely replace its entire "
+            "contents. Does NOT commit — follow with `git_add_and_commit`."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "content": {"type": "string"},
-                "memory_type": {
+                "path": {
                     "type": "string",
-                    "default": "observation",
+                    "description": "Repo-relative path (forward slashes).",
+                },
+                "old_string": {
+                    "type": "string",
                     "description": (
-                        "Optional entity-label hint for the extractor "
-                        "(e.g. 'Event' for chronicle entries, 'Thread' "
-                        "for resolved threads, 'Observation' for general "
-                        "items)."
+                        "Exact text to replace (including indentation and "
+                        "any surrounding context needed for uniqueness)."
                     ),
                 },
-                "source": {
+                "new_string": {
                     "type": "string",
-                    "default": "self",
-                    "description": (
-                        "Where the memory came from. Defaults to 'self' — "
-                        "the subject remembering. Use 'synthesis' for "
-                        "Pass 2 ingestion of subject-authored material."
-                    ),
-                },
-                "occurred_at": {
-                    "type": "string",
-                    "description": (
-                        "ISO-8601 timestamp for when the fact was true "
-                        "in the world. Set this to the chronicle entry's "
-                        "date; defaults to now if omitted."
-                    ),
-                },
-                "saga": {
-                    "type": "string",
-                    "description": (
-                        "Saga name to group this episode into an ordered "
-                        "sequence. For Pass 2 use 'chronicle' or 'threads'. "
-                        "Graphiti auto-discovers the prior episode in the "
-                        "same saga; sequential calls chain automatically."
-                    ),
+                    "description": "Replacement text.",
                 },
             },
-            "required": ["content"],
+            "required": ["path", "old_string", "new_string"],
         },
     },
     {
@@ -443,33 +420,40 @@ class AgentTools:
         _log.info("synthesis: wrote %s (%d bytes)", path, bytes_written)
         return {"path": path, "bytes_written": bytes_written}
 
+    async def edit_file(self, path: str, old_string: str, new_string: str) -> dict:
+        """Surgical find-and-replace. ``old_string`` must appear exactly once."""
+        abs_path = self._resolve_in_repo(path)
+        if not abs_path.is_file():
+            raise ToolError(f"not a regular file: {path}")
+        content = abs_path.read_text(encoding="utf-8")
+        count = content.count(old_string)
+        if count == 0:
+            raise ToolError(
+                f"edit_file: old_string not found in {path} — "
+                "include enough surrounding context for an exact match"
+            )
+        if count > 1:
+            raise ToolError(
+                f"edit_file: old_string matches {count} places in {path} — "
+                "expand the snippet until it's unique"
+            )
+        new_content = content.replace(old_string, new_string, 1)
+        abs_path.write_text(new_content, encoding="utf-8")
+        delta = len(new_content.encode("utf-8")) - len(content.encode("utf-8"))
+        _log.info(
+            "synthesis: edited %s (delta %+d bytes)", path, delta,
+        )
+        return {
+            "path": path,
+            "bytes_delta": delta,
+            "matched_one": True,
+        }
+
     # --- Graph ---
 
     async def recall(self, query: str, memory_type: str | None = None, **_) -> dict:
         from pratyabhijna.tools.recall import recall as recall_tool
         return await recall_tool(self.service, query=query, memory_type=memory_type)
-
-    async def remember(
-        self,
-        content: str,
-        memory_type: str = "observation",
-        source: str = "self",
-        occurred_at: str | None = None,
-        saga: str | None = None,
-    ) -> dict:
-        if self.queue is None:
-            raise ToolError(
-                "remember requires the work queue; synthesis was invoked without one"
-            )
-        from pratyabhijna.tools.remember import remember as remember_tool
-        return await remember_tool(
-            queue=self.queue,
-            content=content,
-            memory_type=memory_type,
-            source=source,
-            occurred_at=occurred_at,
-            saga=saga,
-        )
 
     async def status(self) -> dict:
         from pratyabhijna.tools.status import status as status_tool
@@ -644,18 +628,16 @@ PASS1_TOOL_NAMES: frozenset[str] = frozenset({
     "finish",
 })
 
-PASS2_TOOL_NAMES: frozenset[str] = frozenset({
-    "read_file",
-    "write_file",
-    "remember",
-    "git_status",
-    "git_add_and_commit",
-    "finish",
-})
+# Pass 2 has no tool slice — it's a deterministic Python driver
+# (`_drive_pass2`), not an agent loop. The driver calls remember_tool
+# directly and uses local file ops. The only LLM call is the per-entry
+# summarization, made via `summarize_entry` without tool use. See
+# `references/synthesis.md` Pass 2 section.
 
 PASS3_TOOL_NAMES: frozenset[str] = frozenset({
     "read_file",
     "write_file",
+    "edit_file",
     "recall",
     "git_status",
     "git_branch_exists",
@@ -672,6 +654,7 @@ PASS3_TOOL_NAMES: frozenset[str] = frozenset({
 PASS4_TOOL_NAMES: frozenset[str] = frozenset({
     "read_file",
     "write_file",
+    "edit_file",
     "recall",
     "status",
     "build_communities",
@@ -694,7 +677,7 @@ def _schemas_for(names: frozenset[str]) -> list[dict[str, Any]]:
 
 
 PASS1_TOOL_SCHEMAS: list[dict[str, Any]] = _schemas_for(PASS1_TOOL_NAMES)
-PASS2_TOOL_SCHEMAS: list[dict[str, Any]] = _schemas_for(PASS2_TOOL_NAMES)
+# PASS2 has no tool slice — see PASS2_TOOL_NAMES note above.
 PASS3_TOOL_SCHEMAS: list[dict[str, Any]] = _schemas_for(PASS3_TOOL_NAMES)
 PASS4_TOOL_SCHEMAS: list[dict[str, Any]] = _schemas_for(PASS4_TOOL_NAMES)
 
@@ -712,8 +695,8 @@ def build_handler_map(tools: AgentTools) -> dict[str, Any]:
     return {
         "read_file": tools.read_file,
         "write_file": tools.write_file,
+        "edit_file": tools.edit_file,
         "recall": tools.recall,
-        "remember": tools.remember,
         "status": tools.status,
         "git_status": tools.git_status,
         "git_branch_exists": tools.git_branch_exists,
@@ -901,34 +884,8 @@ def _build_pass1_message(
     return "\n".join(parts)
 
 
-def _build_pass2_message(
-    subject_name: str,
-    now: datetime,
-    git_branch: str,
-    git_dirty: bool,
-    chronicle_text: str | None,
-    threads_text: str | None,
-) -> str:
-    """Pass 2 — maturation. Bundles CHRONICLE + THREADS in full."""
-    parts = _format_run_header(
-        subject_name, now, git_branch, git_dirty, pass_label="Pass 2 / maturation"
-    )
-    parts.extend([
-        "## CHRONICLE.md",
-        "",
-        chronicle_text.strip() if chronicle_text else "(file missing)",
-        "",
-        "## THREADS.md",
-        "",
-        threads_text.strip() if threads_text else "(file missing)",
-        "",
-        "---",
-        "",
-        "Pass 2 of 4. Identify eligible entries per the subskill, ingest each via "
-        "`remember()` with the appropriate saga, then compress the in-file entry. "
-        "Call `finish` when done.",
-    ])
-    return "\n".join(parts)
+# Pass 2 has no agent-loop opening message — it's a deterministic
+# Python driver. See `_drive_pass2` and `summarize_entry` further down.
 
 
 def _build_pass3_message(
@@ -1161,22 +1118,28 @@ async def _dispatch_tool_call(
     ``is_error=True`` so the model can see the failure and adapt rather
     than the loop aborting.
     """
-    handler = handlers.get(tool_use.name)
+    name = tool_use.name
+    args = tool_use.input or {}
+    _log.debug("synthesis: tool dispatch %s(%s)", name, _summarize_tool_args(args))
+    handler = handlers.get(name)
     if handler is None:
+        _log.warning("synthesis: tool dispatch — unknown tool %r", name)
         return {
             "type": "tool_result",
             "tool_use_id": tool_use.id,
-            "content": f"Unknown tool: {tool_use.name}",
+            "content": f"Unknown tool: {name}",
             "is_error": True,
         }
     try:
-        result = await handler(**(tool_use.input or {}))
+        result = await handler(**args)
+        _log.debug("synthesis: tool result %s → %s", name, _summarize_tool_result(result))
         return {
             "type": "tool_result",
             "tool_use_id": tool_use.id,
             "content": json_serializable(result),
         }
     except ToolError as e:
+        _log.info("synthesis: tool %s raised ToolError: %s", name, e)
         return {
             "type": "tool_result",
             "tool_use_id": tool_use.id,
@@ -1184,12 +1147,130 @@ async def _dispatch_tool_call(
             "is_error": True,
         }
     except Exception as e:  # noqa: BLE001 — surface any tool failure to the model
+        _log.warning(
+            "synthesis: tool %s raised unexpected %s: %s",
+            name, type(e).__name__, e, exc_info=True,
+        )
         return {
             "type": "tool_result",
             "tool_use_id": tool_use.id,
             "content": f"Unexpected {type(e).__name__}: {e}",
             "is_error": True,
         }
+
+
+def _summarize_tool_args(args: dict[str, Any]) -> str:
+    """Compact arg summary — long string values shown as length, not contents."""
+    parts = []
+    for k, v in args.items():
+        if isinstance(v, str) and len(v) > 80:
+            parts.append(f"{k}=<str len={len(v)}>")
+        elif isinstance(v, list) and len(v) > 5:
+            parts.append(f"{k}=<list len={len(v)}>")
+        else:
+            parts.append(f"{k}={v!r}")
+    return ", ".join(parts)
+
+
+def _summarize_tool_result(result: Any) -> str:
+    """Compact result summary."""
+    if isinstance(result, dict):
+        return _summarize_tool_args(result)
+    return repr(result)[:200]
+
+
+def _summarize_create_kwargs(kwargs: dict[str, Any]) -> str:
+    """One-line DEBUG-friendly description of the Anthropic create kwargs."""
+    msgs = kwargs.get("messages", [])
+    return (
+        f"model={kwargs.get('model')}, max_tokens={kwargs.get('max_tokens')}, "
+        f"messages={len(msgs)}, tools={len(kwargs.get('tools', []))}, "
+        f"thinking={kwargs.get('thinking')}"
+    )
+
+
+def _format_request_payload(kwargs: dict[str, Any]) -> str:
+    """Multi-line DEBUG dump of the full request payload.
+
+    Logged at DEBUG level — verbose by design. Sensitive content (system
+    prompt, full message chain, tool schemas) is included so log output
+    is the complete picture of what was sent.
+    """
+    lines = ["--- REQUEST ---"]
+    lines.append(f"model: {kwargs.get('model')}")
+    lines.append(f"max_tokens: {kwargs.get('max_tokens')}")
+    if "thinking" in kwargs:
+        lines.append(f"thinking: {kwargs['thinking']}")
+    if "output_config" in kwargs:
+        lines.append(f"output_config: {kwargs['output_config']}")
+    sys = kwargs.get("system") or []
+    for i, b in enumerate(sys):
+        text = b.get("text", "") if isinstance(b, dict) else str(b)
+        lines.append(f"system[{i}] ({len(text)}c):\n{text}")
+    tools = kwargs.get("tools") or []
+    if tools:
+        lines.append(f"tools ({len(tools)}): " + ", ".join(t.get("name", "?") for t in tools))
+    for i, msg in enumerate(kwargs.get("messages", [])):
+        role = msg.get("role")
+        content = msg.get("content")
+        if isinstance(content, str):
+            lines.append(f"messages[{i}] role={role}:\n{content}")
+        elif isinstance(content, list):
+            for j, block in enumerate(content):
+                lines.append(f"messages[{i}][{j}] role={role}: {_format_block(block)}")
+    return "\n".join(lines)
+
+
+def _format_block(block: Any) -> str:
+    """Render a single content block (dict or object) for DEBUG output."""
+    if isinstance(block, dict):
+        t = block.get("type")
+        if t == "text":
+            return f"text:\n{block.get('text', '')}"
+        if t == "tool_result":
+            return (
+                f"tool_result tool_use_id={block.get('tool_use_id')} "
+                f"is_error={block.get('is_error', False)}:\n{block.get('content', '')}"
+            )
+        return f"{t}: {block!r}"
+    t = getattr(block, "type", None)
+    if t == "text":
+        return f"text:\n{getattr(block, 'text', '')}"
+    if t == "tool_use":
+        return (
+            f"tool_use name={getattr(block, 'name', '?')} "
+            f"id={getattr(block, 'id', '?')}:\n"
+            f"{json.dumps(getattr(block, 'input', {}), indent=2, default=str)}"
+        )
+    if t == "thinking":
+        return f"thinking:\n{getattr(block, 'thinking', '')}"
+    return f"{t}: {block!r}"
+
+
+def _summarize_response_blocks(content: list[Any]) -> str:
+    """One-line DEBUG-friendly description of the response content blocks."""
+    parts = []
+    for b in content:
+        t = getattr(b, "type", None)
+        if t == "tool_use":
+            parts.append(f"tool_use:{getattr(b, 'name', '?')}")
+        elif t == "thinking":
+            tx = getattr(b, "thinking", "") or ""
+            parts.append(f"thinking({len(tx)}c)")
+        elif t == "text":
+            tx = getattr(b, "text", "") or ""
+            parts.append(f"text({len(tx)}c)")
+        else:
+            parts.append(str(t))
+    return "[" + ", ".join(parts) + "]"
+
+
+def _format_response_payload(content: list[Any], stop_reason: str | None) -> str:
+    """Multi-line DEBUG dump of the full response content."""
+    lines = ["--- RESPONSE ---", f"stop_reason: {stop_reason}"]
+    for i, block in enumerate(content):
+        lines.append(f"content[{i}] {_format_block(block)}")
+    return "\n".join(lines)
 
 
 async def _run_pass(
@@ -1244,6 +1325,13 @@ async def _run_pass(
     messages: list[dict[str, Any]] = [cached_opening]
     iterations = 0
 
+    _log.info(
+        "synthesis: %s starting (model=%s, tools=%d, opening_chars=%d, "
+        "thinking=%s, max_tokens=%d, max_iterations=%d)",
+        pass_label, model_id, len(tool_schemas), len(opening_message),
+        use_thinking, max_tokens, config.synthesis.max_iterations,
+    )
+
     while iterations < config.synthesis.max_iterations:
         iterations += 1
         create_kwargs: dict[str, Any] = dict(
@@ -1258,12 +1346,33 @@ async def _run_pass(
             create_kwargs["output_config"] = {
                 "effort": config.synthesis.thinking.effort
             }
+        _log.debug(
+            "synthesis: %s iter=%d request — %s",
+            pass_label, iterations, _summarize_create_kwargs(create_kwargs),
+        )
+        _log.debug(
+            "synthesis: %s iter=%d request payload\n%s",
+            pass_label, iterations, _format_request_payload(create_kwargs),
+        )
 
         # Stream the response — at max_tokens (24k default) the SDK
         # rejects non-streaming requests because they could exceed the
         # 10-minute non-streaming timeout.
         async with client.messages.stream(**create_kwargs) as stream:
             response = await stream.get_final_message()
+        _log.debug(
+            "synthesis: %s iter=%d response — stop_reason=%s, blocks=%s",
+            pass_label, iterations,
+            getattr(response, "stop_reason", None),
+            _summarize_response_blocks(response.content),
+        )
+        _log.debug(
+            "synthesis: %s iter=%d response payload\n%s",
+            pass_label, iterations,
+            _format_response_payload(
+                response.content, getattr(response, "stop_reason", None),
+            ),
+        )
 
         # Truncation circuit-break: if the response hit max_tokens
         # mid-generation, any tool_use block in it may be malformed
@@ -1322,6 +1431,335 @@ def _reset_pass_state(tools: AgentTools) -> None:
     """Reset per-pass finish state on a shared AgentTools instance."""
     tools.finished = False
     tools.summary = ""
+
+
+# --- Pass 2: deterministic Python driver -----------------------------
+#
+# Pass 2 stopped being an agent loop in v0.14.4. The agent-loop version
+# was paying ~25k output tokens per chronicle entry to regenerate the
+# entire CHRONICLE.md via `write_file` — for what's structurally a
+# string-substitution edit. The driver below splits the work: Python
+# does the parsing/eligibility/edit/commit (all mechanical), and the
+# model is called only for the per-entry summary text (the only piece
+# that actually needs judgment).
+
+_SUMMARIZE_SYSTEM_PROMPT = (
+    "You are the subject's synthesizer, helping mature an old chronicle "
+    "entry by writing a compressed summary that will replace the entry's "
+    "full body in CHRONICLE.md. The full text has already been preserved "
+    "as a graph episode; the file just needs a short stub.\n\n"
+    "Write in the subject's voice: first person, direct, no flourish. "
+    "Capture *what happened, when, and why it mattered* in at most two "
+    "sentences. Do not add a heading — that stays as-is. Do not add the "
+    "[Ingested] marker — Python adds it. Output only the summary text, "
+    "no preamble, no commentary, no quote marks."
+)
+
+
+async def summarize_entry(
+    *,
+    client,
+    model: str,
+    full_text: str,
+    max_tokens: int = 400,
+) -> str:
+    """Ask the model for a ≤2-sentence summary of a chronicle entry.
+
+    Pure text-in / text-out — no tools. Cached system prompt (so a
+    cohort of entries shares the prefix). Returns the model's output
+    text stripped of surrounding whitespace.
+    """
+    cached_system: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": _SUMMARIZE_SYSTEM_PROMPT,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    user_message = (
+        "Compress the following chronicle entry to at most two sentences "
+        "capturing what happened, when, and why it mattered. Output only "
+        "the summary text:\n\n"
+        f"{full_text.strip()}"
+    )
+    _log.debug(
+        "synthesis: summarize request (model=%s, content_len=%d, max_tokens=%d)",
+        model, len(full_text), max_tokens,
+    )
+    create_kwargs = dict(
+        model=model,
+        max_tokens=max_tokens,
+        system=cached_system,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    _log.debug(
+        "synthesis: summarize request payload\n%s",
+        _format_request_payload(create_kwargs),
+    )
+    async with client.messages.stream(**create_kwargs) as stream:
+        response = await stream.get_final_message()
+    _log.debug(
+        "synthesis: summarize response payload\n%s",
+        _format_response_payload(
+            response.content, getattr(response, "stop_reason", None),
+        ),
+    )
+
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        raise RuntimeError(
+            "summarize_entry hit max_tokens — entry summary was truncated; "
+            "the cap is intentionally low for summaries, raise it if entries "
+            "legitimately need more"
+        )
+    parts = [
+        getattr(b, "text", "") for b in response.content
+        if getattr(b, "type", None) == "text"
+    ]
+    summary = "".join(parts).strip()
+    _log.debug("synthesis: summarize response (len=%d): %s", len(summary), summary)
+    if not summary:
+        raise RuntimeError("summarize_entry returned empty text")
+    return summary
+
+
+async def _drive_pass2(
+    *,
+    client,
+    model: str,
+    config: PratyabhijnaConfig,
+    queue: "WorkQueue",
+    repo_path: str,
+    chronicle_text: str | None,
+    threads_text: str | None,
+    today: date | None = None,
+) -> dict[str, Any]:
+    """Pass 2's Python driver — chronicle and resolved-thread maturation.
+
+    For each eligible chronicle entry, in chronological order:
+      1. Enqueue the full text via `remember_tool` (saga="chronicle").
+      2. Ask the model for a ≤2-sentence summary.
+      3. Edit CHRONICLE.md in place: heading + summary + [Ingested] marker.
+      4. Commit CHRONICLE.md.
+
+    Resolved threads (THREADS.md `## Recently Resolved` section) are
+    handled the same way but without the summarize call — the resolution
+    note already in the file is the compressed form; the driver just
+    appends the [Ingested] marker, ingests, and commits.
+
+    Per-entry failures are recorded but do not stop subsequent entries.
+    Returns a result dict in the same shape as `_run_pass` so the
+    orchestrator's per-pass-results plumbing handles it uniformly.
+    """
+    from pratyabhijna.synthesis import (
+        eligible_chronicle_entries,
+        eligible_resolved_threads,
+    )
+    from pratyabhijna.tools.remember import remember as remember_tool
+
+    today = today or date.today()
+    today_str = today.isoformat()
+
+    chronicle_entries = (
+        eligible_chronicle_entries(
+            chronicle_text or "",
+            today=today,
+            max_age_days=14,
+        )
+    )
+    resolved_threads = eligible_resolved_threads(threads_text or "")
+
+    _log.info(
+        "synthesis: pass2_maturation starting "
+        "(chronicle_eligible=%d, threads_eligible=%d)",
+        len(chronicle_entries), len(resolved_threads),
+    )
+
+    if not chronicle_entries and not resolved_threads:
+        _log.info("synthesis: pass2_maturation — nothing eligible, nothing to do")
+        return {
+            "status": "completed",
+            "iterations": 0,
+            "summary": "Nothing eligible for maturation.",
+        }
+
+    chronicle_path = "memory/CHRONICLE.md"
+    threads_path = "memory/THREADS.md"
+    matured_chronicle: list[str] = []   # for the summary string
+    matured_threads: list[str] = []
+    failures: list[dict[str, str]] = []
+
+    # --- Chronicle entries ---
+    for entry in chronicle_entries:
+        date_str = entry.parsed_date.isoformat() if entry.parsed_date else "(unknown)"
+        label = f"{date_str} — {entry.title}"
+        _log.info("synthesis: pass2 maturing chronicle entry: %s", label)
+        try:
+            # 1. Enqueue full text.
+            queue_result = await remember_tool(
+                queue=queue,
+                content=entry.full_block,
+                memory_type="Event",
+                source="synthesis",
+                occurred_at=date_str if entry.parsed_date else None,
+                saga="chronicle",
+            )
+            _log.info(
+                "synthesis: pass2 chronicle enqueued (task_id=%s) — %s",
+                queue_result.get("task_id", "?"), label,
+            )
+            # 2. Summary.
+            summary_text = await summarize_entry(
+                client=client, model=model, full_text=entry.full_block,
+            )
+            # 3. Build the new in-file block: heading line + summary + marker.
+            heading_line = f"## {entry.heading}"
+            new_block = (
+                f"{heading_line}\n\n{summary_text}  [Ingested: {today_str}]\n\n"
+            )
+            # 4. Edit + commit. Read fresh each time — prior loop iterations
+            #    have changed the file already.
+            abs_chronicle = (Path(repo_path) / chronicle_path).resolve()
+            current = abs_chronicle.read_text(encoding="utf-8")
+            if entry.full_block not in current:
+                raise RuntimeError(
+                    f"chronicle entry block no longer found in file — "
+                    f"{label}; cannot do exact replacement"
+                )
+            new_text = current.replace(entry.full_block, new_block, 1)
+            abs_chronicle.write_text(new_text, encoding="utf-8")
+            _log.info(
+                "synthesis: pass2 wrote %s (delta %+d bytes) — %s",
+                chronicle_path,
+                len(new_text.encode("utf-8")) - len(current.encode("utf-8")),
+                label,
+            )
+            await git_ops.add(repo_path, chronicle_path)
+            sha = await git_ops.commit(
+                repo_path,
+                f"Synthesize: mature chronicle entry {date_str} — {entry.title}\n\n"
+                f"Episode task_id: {queue_result.get('task_id', '?')}",
+            )
+            _log.info(
+                "synthesis: pass2 committed %s (%s) — %s", sha[:8], label, label,
+            )
+            matured_chronicle.append(label)
+        except Exception as e:  # noqa: BLE001 — per-entry isolation
+            _log.warning(
+                "synthesis: pass2 chronicle maturation failed for %s (%s)",
+                label, type(e).__name__, exc_info=True,
+            )
+            failures.append({
+                "kind": "chronicle",
+                "label": label,
+                "error": f"{type(e).__name__}: {e}",
+            })
+
+    # --- Resolved threads ---
+    for thread in resolved_threads:
+        label = thread.title or thread.heading
+        _log.info("synthesis: pass2 maturing resolved thread: %s", label)
+        try:
+            occurred = (
+                thread.resolution_date.isoformat()
+                if thread.resolution_date else None
+            )
+            queue_result = await remember_tool(
+                queue=queue,
+                content=thread.full_block,
+                memory_type="Thread",
+                source="synthesis",
+                occurred_at=occurred,
+                saga="threads-resolved",
+            )
+            _log.info(
+                "synthesis: pass2 thread enqueued (task_id=%s) — %s",
+                queue_result.get("task_id", "?"), label,
+            )
+            # Append the [Ingested] marker to the thread block. Find the
+            # last non-blank line in the body and append the marker to it.
+            marker = f"  [Ingested: {today_str}]"
+            new_block = thread.full_block.rstrip("\n") + marker + "\n\n"
+            abs_threads = (Path(repo_path) / threads_path).resolve()
+            current = abs_threads.read_text(encoding="utf-8")
+            if thread.full_block not in current:
+                raise RuntimeError(
+                    f"thread block no longer found in file — {label}; "
+                    "cannot do exact replacement"
+                )
+            new_text = current.replace(thread.full_block, new_block, 1)
+            abs_threads.write_text(new_text, encoding="utf-8")
+            _log.info(
+                "synthesis: pass2 wrote %s (delta %+d bytes) — %s",
+                threads_path,
+                len(new_text.encode("utf-8")) - len(current.encode("utf-8")),
+                label,
+            )
+            await git_ops.add(repo_path, threads_path)
+            sha = await git_ops.commit(
+                repo_path,
+                f"Synthesize: resolve thread — {label}\n\n"
+                f"Episode task_id: {queue_result.get('task_id', '?')}",
+            )
+            _log.info(
+                "synthesis: pass2 committed %s — %s", sha[:8], label,
+            )
+            matured_threads.append(label)
+        except Exception as e:  # noqa: BLE001
+            _log.warning(
+                "synthesis: pass2 thread maturation failed for %s (%s)",
+                label, type(e).__name__, exc_info=True,
+            )
+            failures.append({
+                "kind": "thread",
+                "label": label,
+                "error": f"{type(e).__name__}: {e}",
+            })
+
+    # --- Result ---
+    iterations = len(matured_chronicle) + len(matured_threads) + len(failures)
+    summary_lines = []
+    if matured_chronicle:
+        summary_lines.append(
+            f"Matured {len(matured_chronicle)} chronicle "
+            f"{'entry' if len(matured_chronicle) == 1 else 'entries'}: "
+            + ", ".join(matured_chronicle)
+        )
+    if matured_threads:
+        summary_lines.append(
+            f"Matured {len(matured_threads)} resolved "
+            f"{'thread' if len(matured_threads) == 1 else 'threads'}: "
+            + ", ".join(matured_threads)
+        )
+    if failures:
+        summary_lines.append(
+            f"{len(failures)} failures: " + "; ".join(
+                f"{f['kind']}/{f['label']} ({f['error']})" for f in failures
+            )
+        )
+    summary = " | ".join(summary_lines) or "Nothing matured."
+
+    if failures and not (matured_chronicle or matured_threads):
+        status = "raised"
+    elif failures:
+        status = "partial"
+    else:
+        status = "completed"
+
+    _log.info(
+        "synthesis: pass2_maturation ended (status=%s, iterations=%d, "
+        "matured_chronicle=%d, matured_threads=%d, failures=%d)",
+        status, iterations,
+        len(matured_chronicle), len(matured_threads), len(failures),
+    )
+    return {
+        "status": status,
+        "iterations": iterations,
+        "summary": summary,
+        **({"failures": failures} if failures else {}),
+    }
+
+
+# --- end Pass 2 driver ----------------------------------------------
 
 
 async def run_synthesis(
@@ -1508,22 +1946,40 @@ async def run_synthesis(
             thinking=False,
         )
 
-    # Pass 2 — Maturation. Independent of Pass 1 — chronicle/thread
-    # eligibility doesn't depend on whether new writing was ingested.
-    await _try_pass(
-        "pass2_maturation",
-        workhorse_model,
-        PASS2_TOOL_NAMES,
-        _build_pass2_message(
-            subject_name=config.subject_name,
-            now=now,
-            git_branch=await git_ops.current_branch(repo_path),
-            git_dirty=await git_ops.is_dirty(repo_path),
-            chronicle_text=identity_files.get("chronicle"),
-            threads_text=identity_files.get("threads"),
-        ),
-        thinking=False,
-    )
+    # Pass 2 — Maturation. Deterministic Python driver, not an agent
+    # loop. Independent of Pass 1 (chronicle/thread eligibility doesn't
+    # depend on whether new writing was ingested). Per-entry failures
+    # are isolated inside the driver.
+    if queue is None:
+        _skip("pass2_maturation", "no work queue (synthesis invoked without one)")
+    else:
+        try:
+            pass2_result = await _drive_pass2(
+                client=client,
+                model=workhorse_model,
+                config=config,
+                queue=queue,
+                repo_path=repo_path,
+                chronicle_text=identity_files.get("chronicle"),
+                threads_text=identity_files.get("threads"),
+            )
+            pass2_result["pass"] = "pass2_maturation"
+            passes.append(pass2_result)
+            total_iterations += pass2_result["iterations"]
+            if pass2_result["summary"]:
+                last_summary = pass2_result["summary"]
+        except Exception as e:  # noqa: BLE001 — per-pass isolation
+            _log.warning(
+                "synthesis: pass2_maturation driver raised (%s)",
+                type(e).__name__, exc_info=True,
+            )
+            passes.append({
+                "pass": "pass2_maturation",
+                "status": "raised",
+                "iterations": 0,
+                "summary": "",
+                "error": f"{type(e).__name__}: {e}",
+            })
 
     # Pass 3 — Bootstrap update. Independent of Passes 1 and 2 in principle;
     # rereads identity files and atoms in case earlier passes edited them.

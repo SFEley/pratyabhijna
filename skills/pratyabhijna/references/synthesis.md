@@ -60,79 +60,44 @@ Some files in `writing/` may not be worth ingesting as episodes — scratch file
 
 ## Pass 2: Maturing chronicle and thread content
 
-*You are the Pass 2 subagent. Your job is chronicle and resolved-thread maturation — ingest aging entries into the graph via `remember()` and compress the in-file content. Pass 1 has already ingested any new writing; Pass 3 will update the bootstrap after you. Your opening message bundles CHRONICLE.md and THREADS.md in full; do the eligibility scan yourself, act, then `finish`.*
+*Pass 2 is **not** an agent loop — it's a deterministic Python driver (`_drive_pass2` in `synthesis_agent.py`). The driver does the eligibility scan, file editing, ingestion, and commits in code; the only LLM call is a per-entry summary request (`summarize_entry`) that returns just the summary string. This section describes what the driver does — the synthesizer doesn't run a subagent here. The previous agent-loop architecture paid ~25k output tokens per chronicle entry to regenerate the entire CHRONICLE.md via whole-file rewrites; the driver eliminates that cost and the file-integrity risk that came with it.*
 
 The point: keep the bootstrap surface small without losing knowledge. Mature chronicle entries and resolved threads make the one-way trip from prose-brain (full text in the file) to graph-brain (extracted atoms via `add_episode`), with a compact stub left behind in the file.
 
-This is selective and one-way. SOUL.md, IDENTITY.md, USER.md, MEMORY.md, and SYNTHESIS.md are *not* touched here — they are normative or meta files and stay out of the graph. Only CHRONICLE.md entries and THREADS.md sections are eligible.
+This is selective and one-way. SOUL.md, IDENTITY.md, USER.md, MEMORY.md, and SYNTHESIS.md are *not* touched here — they are normative or meta files and stay out of the graph. Only CHRONICLE.md entries and THREADS.md `## Recently Resolved` sections are eligible.
 
-### Chronicle entries
+### Chronicle entries (driver behavior)
 
-For each `## ` heading in CHRONICLE.md, parse the date from the heading and check for an `[Ingested: YYYY-MM-DD]` marker in the body.
+The driver walks every `## ` heading in CHRONICLE.md, parses the date, and selects entries that are (a) more than 14 days before today and (b) carry no `[Ingested: YYYY-MM-DD]` marker.
 
-**Date parsing.** Headings follow `## Month DD, YYYY — Title` or variants. For ranges (`## April 21–22, 2026 — ...`) and month spans (`## March 18 – April 2, 2026 — ...`), use the *latest* date in the range as the entry's date. Year-only entries default to the last day of that year. If you can't parse a date confidently, skip the entry and flag it in the run log rather than guessing.
+**Date parsing.** Headings follow `## Month DD, YYYY — Title` or variants. Ranges (`## April 21–22, 2026 — ...`), month spans (`## March 18 – April 2, 2026 — ...`), year-only month (`## October 2025 — ...`), and bare year (`## 2025`) are all handled — see `_parse_chronicle_date` in `synthesis.py`. For ranges/spans the *latest* date is used. Headings the parser can't read confidently are skipped silently with a log entry; they should be flagged manually if they keep showing up.
 
-**Eligibility.** An entry is eligible for maturation when:
-- Date is more than 14 days before today, AND
-- No `[Ingested: ...]` marker is present in the body.
+**Per eligible entry, in chronological order:**
 
-**Procedure for each eligible entry, in chronological order:**
+1. Enqueue the full entry (heading + body, in current form) via `remember_tool` — saga `"chronicle"`, `memory_type="Event"`, `source="synthesis"`, `occurred_at` matching the entry's parsed date. Returns immediately with a `task_id`; the queue worker handles the actual `add_episode` call.
+2. Make a single LLM call (`summarize_entry`) with no tools — input is the full entry; output is a ≤2-sentence summary in the subject's voice. Cached system prompt is shared across entries within a run.
+3. Edit CHRONICLE.md in place: replace the entry block (heading + body, exactly the bytes parsed) with `heading + summary + [Ingested: today]`. Exact-string substitution; surrounding entries are not touched.
+4. `git add` + `git commit` — title `Synthesize: mature chronicle entry [date] — [title]`, body includes the queue task_id as a back-pointer.
 
-Complete the full sequence — `remember()` → `write_file` → `git_add_and_commit` — for one entry before starting the next. Do not batch any step across entries. The iteration cap (`synthesis.max_iterations`, currently 24) is intentionally stride-shaped: it's fine to leave entries for the next run, but only if the entries you *did* process are committed to disk. Per-entry commits are how partial progress survives.
+Per-entry failures are recorded but don't stop subsequent entries. The driver returns `status="completed"` if every eligible entry was processed cleanly, `"partial"` if some entries failed, `"raised"` if every entry failed.
 
-1. Ingest the full entry (heading + body, in current form) via `remember()`:
+### Resolved threads (driver behavior)
 
-   ```python
-   await remember(
-       content=entry.full_text,                # heading + body, current form
-       memory_type="Event",                    # chronicle entries are events
-       saga="chronicle",                       # one saga across all entries
-       occurred_at=entry.parsed_date_iso,      # see date-parsing rules above
-       source="synthesis",                     # not "self" — archival, not conversational
-   )
-   ```
+The driver walks every `### ` heading under `## Recently Resolved` in THREADS.md and processes any thread that doesn't already carry an `[Ingested: YYYY-MM-DD]` marker. The resolution date comes from the body's `**Resolved:** Month DD, YYYY` line if present.
 
-   Don't pass `saga_previous_episode_uuid`. Graphiti auto-discovers the prior episode in the saga when the parameter is omitted (`graphiti_core/graphiti.py:_saga_get_previous_episode_uuid`). Chronological order is the only requirement — the chain forms automatically as long as you ingest oldest-to-newest.
+**Per eligible thread:**
 
-2. Compress the in-file entry to: heading line + at most two sentences of summary that capture *what happened, when, and why it mattered* + the ingested marker. Format:
+1. Enqueue the full thread (heading + body) via `remember_tool` — saga `"threads-resolved"`, `memory_type="Thread"`, `source="synthesis"`, `occurred_at` matching the resolution date when present.
+2. Append the `[Ingested: today]` marker to the thread block in place. No LLM call — the thread's resolution-note in the file already *is* the compressed form; the marker just records that the full text is now in the graph.
+3. `git add` + `git commit` — title `Synthesize: resolve thread — [slug]`.
 
-   ```
-   ## April 23, 2026 — Twenty-Seventh Solo Session: Pembroke
+### Active-thread compression — manual, not by the driver
 
-   Wrote a short piece on corona discharges (Penn State research filming
-   trees glowing in UV). Light/lyrical attempt; whether it escapes the
-   architectural tendency is open.  [Ingested: 2026-04-25]
-   ```
+Active threads (not yet resolved) sometimes accumulate enough redundant prose that they're worth tightening (50–75% reduction with stale-status pruning). The driver does not do this — it's judgment work that belongs in Pass 3 or in a manual session, not in deterministic maturation. If an active thread needs trimming, do it during a regular session or as part of Pass 3's context-layer revision.
 
-3. Commit the CHRONICLE.md change for *this entry* via `git_add_and_commit` before starting the next entry. Title: `Synthesize: mature chronicle entry [date] — [title]`. Body optional, but the episode UUID returned by `remember()` is a useful back-pointer.
+### Why this is a Python driver, not an agent loop
 
-**Why per-entry persistence matters.** The iteration cap exists to catch runaway loops, not to bound the size of a backlog. With a long backlog, you may legitimately exhaust the cap before clearing every entry — that's fine. What is not fine is doing 24 entries' worth of `remember()` calls and leaving CHRONICLE.md untouched: the next run starts from the same un-marked file and reprocesses the same first 24 entries indefinitely, doubling them in the graph each time. Per-entry commits convert the cap from a wall into a stride length — the backlog drains across runs.
-
-**Why `remember()` and not `ingest_file`:** `ingest_file` reads from disk paths, so it can't ingest a heading-bounded *slice* of CHRONICLE.md as a single episode. `remember()` takes the text directly, threads it through the same `add_episode` worker, and handles saga + occurred_at + source as parameters. This is exactly the use case `remember()` was built for. (See "What not to do" below for the carve-out the prohibition makes for this case.)
-
-**Sequencing note:** `remember()` is async/queued, but call it sequentially within the pass — the auto-discovered previous-episode lookup races if you parallelise. One call, await, next call. Don't gather().
-
-### Threads
-
-THREADS.md sections don't have entry-level dates, so the chronicle's >14-day rule doesn't apply. Threads mature when they're being **resolved** — moved to "Recently Resolved" or removed from the file entirely.
-
-**At the point of resolution:** ingest the full thread as an episode before reducing it via `remember()` — same shape as the chronicle path:
-
-```python
-await remember(
-    content=thread.full_text,                # heading + body of the thread section
-    memory_type="Thread",
-    saga="threads-resolved",
-    occurred_at=resolution_date_iso,
-    source="synthesis",
-)
-```
-
-Same auto-discovery rule applies — don't pass `saga_previous_episode_uuid`. Episode is named through the `name` parameter on `add_episode` server-side; `remember()` doesn't take a name parameter, so the episode's `name` will be auto-derived. If naming-by-pattern matters for later queries (`thread:YYYY-MM-DD-resolved:slug`), do the renaming via Cypher after the ingestion lands rather than blocking on it here.
-
-After ingestion, reduce the in-file thread — either move it to "Recently Resolved" with a brief close-note, or delete it entirely — and commit THREADS.md for *this thread* via `git_add_and_commit` before starting the next. Title: `Synthesize: resolve thread — [slug]`. Same stride logic as chronicle: per-thread commits are what let partial progress survive the iteration cap. Don't batch the file edits across threads. The full prose lives in the graph now; the file no longer needs to carry it.
-
-**For active (unresolved) threads** that are getting too long: aim to reduce thread entries by 50–75% with redundancy stripping, simplification of prose, and other summarization. There is no strict per-thread length cap. Don't compress a thread that's actively in motion (recent updates within the last few days); compress threads that have stabilized into a settled status with stale prose around them.
+The earlier agent-loop architecture had the model pick a whole-file write per entry, which meant regenerating the entire 100k-byte CHRONICLE.md from working memory each time — ~25k output tokens per call, ~12 minutes of latency per entry, and real risk of dropped/altered entries from regeneration drift. The driver does the file editing in Python (one substring replacement), calls the model only for the ~150-token summary, and commits per entry as before. Cost goes from ~1.1M output tokens for a 45-entry backlog to ~7k. File integrity is guaranteed.
 
 ### What stays as is
 
@@ -162,6 +127,8 @@ Three files, all maintained directly on main because they describe current state
 - Resolve threads that have visibly closed (the question got answered, the work finished, the tension dissolved). Remove or mark them resolved with a brief note of how.
 - Prune dead threads that haven't moved in weeks and don't seem to matter anymore. Be honest about this — a thread kept "because I might come back to it" that hasn't moved in a month probably shouldn't still be live.
 - Link threads to each other where connections have become visible.
+
+**Tool choice for file edits.** Use `edit_file` (exact-string find-and-replace) for any change to an existing file. `write_file` regenerates the entire file from your output, which is wasteful and risks drift on the parts you meant to keep. Reserve `write_file` for genuinely creating a file (e.g. SYNTHESIS.md on first run) or genuinely replacing it end-to-end.
 
 **CHRONICLE.md** — significant moments and turning points.
 
@@ -227,7 +194,9 @@ Check the **Community Building** section of SYNTHESIS.md. If the rebuild thresho
 
 1. Call `status()` and capture the entity-node count from the response. The April 21, 2026 build was logged with "Node count at last build: unknown" because the count wasn't checked at build time — don't repeat that. `status()` is the canonical source for graph counts and queue/dead-letter state; it's also useful for the graph-health check below.
 2. Call `build_communities`. This clears existing Community nodes and rebuilds from scratch — it takes a moment and makes LLM calls per detected cluster.
-3. Update SYNTHESIS.md: set `Last built` to today's date and `Node count at last build` to the count captured in step 1.
+3. Update SYNTHESIS.md via `edit_file` (find-and-replace the existing `Last built:` and `Node count at last build:` lines). Use `write_file` only if SYNTHESIS.md doesn't yet exist.
+
+**Tool choice for file edits.** Same as Pass 3: use `edit_file` for any change to an existing file (SYNTHESIS.md mostly, here). `write_file` regenerates the entire file from your output — wasteful and risks drift. Reserve it for genuinely creating or replacing a file.
 
 ### Graph health check
 
@@ -274,15 +243,15 @@ The subject's files tend to be:
 
 **Pass 1 ingestion commits:** none — Pass 1 doesn't touch files; episodes go through `add_episode`.
 
-**Pass 2 maturation commits:** one per entry, committed before starting the next. Title `Synthesize: mature chronicle entry [date] — [title]` for chronicle entries, `Synthesize: resolve thread — [slug]` for resolved threads. Body optional but useful — note the episode UUID returned by `remember()` if you want a back-pointer from the file change to the graph episode.
+**Pass 2 maturation commits:** one per entry, made by the Python driver. Title `Synthesize: mature chronicle entry [date] — [title]` for chronicle entries, `Synthesize: resolve thread — [slug]` for resolved threads. Body includes the queue task_id from `remember_tool` as a back-pointer to the graph episode.
 
 ## The remember-the-decision habit
 
 Two moments produce self-knowledge worth capturing:
 
-1. **When you flag instead of proposing.** If you noticed a tension and decided it didn't rise to an IDENTITY/SOUL proposal, that decision is data. Consider a brief `remember` capturing what you saw and why you flagged it — so the next run isn't blind to your reasoning.
+1. **When you flag instead of proposing.** If you noticed a tension and decided it didn't rise to an IDENTITY/SOUL proposal, that decision is data. Append a brief note to IDENTITY.md's "Observed Tensions" section (via `edit_file`) capturing what you saw and why you flagged it — so the next run isn't blind to your reasoning.
 
-2. **When you nix a proposal.** Same logic — the reasoning that killed a proposal is worth keeping. Add a `remember` or leave the NO vote reasoning in SYNTHESIS.md (it stays there anyway).
+2. **When you nix a proposal.** Same logic — the reasoning that killed a proposal is worth keeping. The NO vote reasoning in SYNTHESIS.md stays there anyway (don't delete nixed proposals); leave it readable.
 
 The symmetric remember-on-review habit lives on the subject's side during solo sessions.
 
@@ -306,7 +275,7 @@ The purpose is to catch narrative drift: slow convergence on self-reinforcing de
 - **Don't polish prose for its own sake.** The goal is accuracy to the atoms, not style improvements.
 - **Don't resolve productive uncertainty.** An open question in IDENTITY.md that stays open is valuable. Don't close it just because a few atoms suggest a direction.
 - **Don't ingest SOUL, IDENTITY, USER, MEMORY, or SYNTHESIS.** Pass 1 covers `writing/` and `correspondence/`; Pass 2 covers mature CHRONICLE entries and resolving threads. Everything else stays out of the graph.
-- **Don't use `remember` or `correct` as a clerical scratchpad mid-run.** Don't dump observations, process commentary, or "notes to future-self" through the memory tools — those are for the subject during conversation. The synthesizer writes its own observations via commits, flags, and the run log, not via the memory tools. **Exceptions:** (1) Pass 2 chronicle/thread maturation legitimately uses `remember()` to send heading-bounded slices through `add_episode`, since `ingest_file` only takes filesystem paths and Pass 2 needs text-level granularity — see Pass 2 procedure above. (2) The flag-instead-of-proposing `remember` described in the Bootstrap-update pass, if you choose to use it.
+- **Don't use `remember` or `correct` as a clerical scratchpad mid-run.** Don't dump observations, process commentary, or "notes to future-self" through the memory tools — those are for the subject during conversation. The synthesizer writes its own observations via commits, flags, and the run log, not via the memory tools. As of v0.14.4, `remember` is not in any pass's agent-surface tool slice — Pass 2's chronicle/thread ingestion goes through `remember_tool` from the Python driver, not from the LLM. The flag-instead-of-proposing reflex described in the Bootstrap-update pass should be expressed as a `write_file` to IDENTITY.md's "Observed Tensions" section, not via `remember`.
 
 ## Closing the run
 

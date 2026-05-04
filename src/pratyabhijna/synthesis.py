@@ -12,8 +12,9 @@ layer — soul and identity change through deliberate reflection.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -249,6 +250,283 @@ def _iter_non_bootstrap_files(root: Path):
         if relative in BOOTSTRAP_RELATIVE_PATHS:
             continue
         yield path
+
+
+# --- Pass 2 maturation: chronicle / threads parsers ---
+#
+# Pass 2 is a deterministic Python driver, not an agent loop (since
+# v0.14.3). The driver parses CHRONICLE.md and THREADS.md, identifies
+# eligible entries, and per entry: enqueues the full text via remember(),
+# asks the model only for the summary string, edits the file in place,
+# and commits. The parsers below are the file-side half of that flow.
+
+# Markdown headings: chronicle entries are level-2 (`## `); threads are
+# level-3 (`### `) under level-2 section headers (`## Active Threads`,
+# `## Recently Resolved`).
+_CHRONICLE_HEADING = re.compile(r"^## (?!#)(.+)$", re.MULTILINE)
+_THREAD_HEADING = re.compile(r"^### (.+)$", re.MULTILINE)
+_SECTION_HEADING = re.compile(r"^## (?!#)(.+)$", re.MULTILINE)
+_INGESTED_MARKER = re.compile(r"\[Ingested:\s*\d{4}-\d{2}-\d{2}\]")
+_RESOLVED_MARKER = re.compile(
+    r"^\*\*Resolved:\*\*\s+(.+?)\.?\s*$", re.MULTILINE
+)
+
+_MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11,
+    "december": 12,
+}
+
+
+@dataclass(frozen=True)
+class ChronicleEntry:
+    """One `## `-bounded chronicle entry parsed from CHRONICLE.md.
+
+    ``full_block`` is the literal substring (heading + body, ending at the
+    next `## ` heading or EOF) — the driver uses it as ``old_string`` for
+    the in-place edit. ``parsed_date`` is the entry's date; for ranges and
+    month spans the *latest* date is used per the subskill rules.
+    ``has_ingested_marker`` reflects whether the body already carries an
+    ``[Ingested: YYYY-MM-DD]`` marker.
+    """
+    heading: str           # e.g. "October 2025 — Founding Conversations"
+    title: str             # e.g. "Founding Conversations" (post — split)
+    full_block: str        # literal substring including heading line
+    body: str              # everything after the heading line
+    parsed_date: date | None
+    has_ingested_marker: bool
+
+
+@dataclass(frozen=True)
+class ResolvedThread:
+    """One `### `-bounded thread under THREADS.md's `## Recently Resolved`."""
+    heading: str
+    title: str
+    full_block: str
+    body: str
+    resolution_date: date | None
+    has_ingested_marker: bool
+
+
+def _parse_chronicle_date(prefix: str) -> date | None:
+    """Parse the date portion of a chronicle heading.
+
+    Handles, in order:
+    - Single date:        ``March 1, 2026``
+    - Same-month range:   ``February 16-19, 2026``  / ``February 16–19, 2026``
+    - Cross-month range:  ``March 18 - April 2, 2026``  / en-dash variant
+    - Year-only month:    ``October 2025``
+    - Year-only:          ``2025``
+
+    For ranges and spans, returns the *latest* date. For a year-only
+    month, returns the last day of that month. Returns ``None`` if the
+    string can't be parsed confidently — the caller should skip and
+    flag rather than guess.
+    """
+    s = prefix.strip().rstrip(",").strip()
+    # Normalize en-dash and em-dash to ASCII hyphen for splitting.
+    norm = s.replace("–", "-").replace("—", "-")
+
+    # Cross-month range: "Month D - Month D, YYYY"
+    m = re.fullmatch(
+        r"([A-Za-z]+)\s+(\d{1,2})\s*-\s*([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})",
+        norm,
+    )
+    if m:
+        month_b, day_b, year = m.group(3).lower(), int(m.group(4)), int(m.group(5))
+        if month_b in _MONTHS:
+            try:
+                return date(year, _MONTHS[month_b], day_b)
+            except ValueError:
+                return None
+        return None
+
+    # Same-month range: "Month D-D, YYYY"
+    m = re.fullmatch(
+        r"([A-Za-z]+)\s+(\d{1,2})\s*-\s*(\d{1,2}),\s*(\d{4})", norm
+    )
+    if m:
+        month, day_b, year = m.group(1).lower(), int(m.group(3)), int(m.group(4))
+        if month in _MONTHS:
+            try:
+                return date(year, _MONTHS[month], day_b)
+            except ValueError:
+                return None
+        return None
+
+    # Single date: "Month D, YYYY"
+    m = re.fullmatch(r"([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})", norm)
+    if m:
+        month, day, year = m.group(1).lower(), int(m.group(2)), int(m.group(3))
+        if month in _MONTHS:
+            try:
+                return date(year, _MONTHS[month], day)
+            except ValueError:
+                return None
+        return None
+
+    # Year-month only: "Month YYYY" → last day of that month
+    m = re.fullmatch(r"([A-Za-z]+)\s+(\d{4})", norm)
+    if m:
+        month, year = m.group(1).lower(), int(m.group(2))
+        if month in _MONTHS:
+            mn = _MONTHS[month]
+            # Last day of month: first of next month minus one.
+            if mn == 12:
+                last = date(year, 12, 31)
+            else:
+                last = date(year, mn + 1, 1) - timedelta(days=1)
+            return last
+        return None
+
+    # Year only: "YYYY" → Dec 31 of that year
+    m = re.fullmatch(r"\d{4}", norm)
+    if m:
+        return date(int(norm), 12, 31)
+
+    return None
+
+
+def _split_heading(text: str, sep: str = "—") -> tuple[str, str]:
+    """Split a heading like 'March 1, 2026 — Title' into (date_part, title).
+
+    Falls back to ASCII '--' or '-' if the em-dash isn't present.
+    """
+    for s in (f" {sep} ", " -- ", " - "):
+        if s in text:
+            left, right = text.split(s, 1)
+            return left.strip(), right.strip()
+    return text.strip(), ""
+
+
+def parse_chronicle_entries(chronicle_text: str) -> list[ChronicleEntry]:
+    """Walk CHRONICLE.md and return every `## `-bounded entry.
+
+    Order is file order (i.e. newest-first as the chronicle is written
+    that way) — callers that need chronological order should sort by
+    ``parsed_date``.
+    """
+    if not chronicle_text:
+        return []
+    headings = list(_CHRONICLE_HEADING.finditer(chronicle_text))
+    entries: list[ChronicleEntry] = []
+    for i, m in enumerate(headings):
+        heading_line = m.group(0)
+        heading_text = m.group(1).strip()
+        block_start = m.start()
+        block_end = headings[i + 1].start() if i + 1 < len(headings) else len(chronicle_text)
+        full_block = chronicle_text[block_start:block_end].rstrip("\n") + "\n"
+        body = full_block[len(heading_line):].lstrip("\n").rstrip("\n")
+        date_part, title = _split_heading(heading_text)
+        parsed = _parse_chronicle_date(date_part)
+        entries.append(
+            ChronicleEntry(
+                heading=heading_text,
+                title=title or heading_text,
+                full_block=full_block,
+                body=body,
+                parsed_date=parsed,
+                has_ingested_marker=bool(_INGESTED_MARKER.search(body)),
+            )
+        )
+    return entries
+
+
+def eligible_chronicle_entries(
+    chronicle_text: str,
+    today: date,
+    max_age_days: int = 14,
+) -> list[ChronicleEntry]:
+    """Return entries eligible for maturation, in chronological order.
+
+    Eligibility (per the Pass 2 subskill):
+    - Date parses confidently.
+    - Date is more than ``max_age_days`` before ``today``.
+    - No ``[Ingested: YYYY-MM-DD]`` marker present in the body.
+    """
+    cutoff = today - timedelta(days=max_age_days)
+    eligible = [
+        e for e in parse_chronicle_entries(chronicle_text)
+        if e.parsed_date is not None
+        and e.parsed_date < cutoff
+        and not e.has_ingested_marker
+    ]
+    eligible.sort(key=lambda e: e.parsed_date)  # type: ignore[arg-type, return-value]
+    return eligible
+
+
+def parse_resolved_threads(threads_text: str) -> list[ResolvedThread]:
+    """Walk THREADS.md and return every `### `-bounded thread under
+    `## Recently Resolved`.
+
+    Threads under `## Active Threads` are not eligible for Pass 2 — only
+    those that have been moved to Recently Resolved.
+    """
+    if not threads_text:
+        return []
+    sections = list(_SECTION_HEADING.finditer(threads_text))
+    if not sections:
+        return []
+    # Find the "Recently Resolved" section's bounds.
+    target_idx = None
+    for i, m in enumerate(sections):
+        if m.group(1).strip().lower().startswith("recently resolved"):
+            target_idx = i
+            break
+    if target_idx is None:
+        return []
+    section_start = sections[target_idx].end()
+    section_end = (
+        sections[target_idx + 1].start() if target_idx + 1 < len(sections)
+        else len(threads_text)
+    )
+    section_text = threads_text[section_start:section_end]
+
+    threads: list[ResolvedThread] = []
+    headings = list(_THREAD_HEADING.finditer(section_text))
+    for i, m in enumerate(headings):
+        heading_line = m.group(0)
+        heading_text = m.group(1).strip()
+        block_start = m.start()
+        block_end = headings[i + 1].start() if i + 1 < len(headings) else len(section_text)
+        # full_block in absolute terms (offset within the original text)
+        # so the driver can str.replace() it.
+        absolute_block = threads_text[
+            section_start + block_start : section_start + block_end
+        ].rstrip("\n") + "\n"
+        body = absolute_block[len(heading_line):].lstrip("\n").rstrip("\n")
+        _, title = _split_heading(heading_text)
+        # Resolution date from `**Resolved:** Month DD, YYYY`.
+        resolution_date: date | None = None
+        rm = _RESOLVED_MARKER.search(body)
+        if rm:
+            resolution_date = _parse_chronicle_date(rm.group(1).strip())
+        threads.append(
+            ResolvedThread(
+                heading=heading_text,
+                title=title or heading_text,
+                full_block=absolute_block,
+                body=body,
+                resolution_date=resolution_date,
+                has_ingested_marker=bool(_INGESTED_MARKER.search(body)),
+            )
+        )
+    return threads
+
+
+def eligible_resolved_threads(threads_text: str) -> list[ResolvedThread]:
+    """Return resolved threads that haven't been ingested yet.
+
+    Order is file order. No date filter — once a thread is in Recently
+    Resolved, it's eligible.
+    """
+    return [
+        t for t in parse_resolved_threads(threads_text)
+        if not t.has_ingested_marker
+    ]
+
+
+# --- end Pass 2 parsers ---
 
 
 def _ensure_utc(dt: datetime) -> datetime:

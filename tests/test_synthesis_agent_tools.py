@@ -17,8 +17,6 @@ import pytest
 from pratyabhijna.synthesis_agent import (
     PASS1_TOOL_NAMES,
     PASS1_TOOL_SCHEMAS,
-    PASS2_TOOL_NAMES,
-    PASS2_TOOL_SCHEMAS,
     PASS3_TOOL_NAMES,
     PASS3_TOOL_SCHEMAS,
     PASS4_TOOL_NAMES,
@@ -112,8 +110,9 @@ def test_all_schemas_have_required_fields():
 @pytest.mark.parametrize(
     ("names", "schemas", "label"),
     [
+        # Pass 2 has no slice — it's a Python driver. Tested separately
+        # (test_pass2_has_no_tool_slice).
         (PASS1_TOOL_NAMES, PASS1_TOOL_SCHEMAS, "pass1_ingestion"),
-        (PASS2_TOOL_NAMES, PASS2_TOOL_SCHEMAS, "pass2_maturation"),
         (PASS3_TOOL_NAMES, PASS3_TOOL_SCHEMAS, "pass3_bootstrap"),
         (PASS4_TOOL_NAMES, PASS4_TOOL_SCHEMAS, "pass4_maintenance"),
     ],
@@ -124,7 +123,7 @@ def test_pass_schemas_match_pass_names(names, schemas, label):
 
 @pytest.mark.parametrize(
     "names",
-    [PASS1_TOOL_NAMES, PASS2_TOOL_NAMES, PASS3_TOOL_NAMES, PASS4_TOOL_NAMES],
+    [PASS1_TOOL_NAMES, PASS3_TOOL_NAMES, PASS4_TOOL_NAMES],
 )
 def test_pass_handler_slice_matches_names(tools, names):
     handlers = build_pass_handlers(tools, names)
@@ -134,32 +133,124 @@ def test_pass_handler_slice_matches_names(tools, names):
 def test_pass_names_subset_of_union():
     """No per-pass name should reference a tool not in TOOL_SCHEMAS."""
     union = {t["name"] for t in TOOL_SCHEMAS}
-    for names in (PASS1_TOOL_NAMES, PASS2_TOOL_NAMES,
-                  PASS3_TOOL_NAMES, PASS4_TOOL_NAMES):
+    for names in (PASS1_TOOL_NAMES, PASS3_TOOL_NAMES, PASS4_TOOL_NAMES):
         assert names <= union
 
 
-def test_finish_present_in_every_pass():
-    """`finish` is the termination signal — every subagent must have it."""
-    for names in (PASS1_TOOL_NAMES, PASS2_TOOL_NAMES,
-                  PASS3_TOOL_NAMES, PASS4_TOOL_NAMES):
+def test_finish_present_in_every_agent_loop_pass():
+    """`finish` is the termination signal — every subagent loop pass needs it.
+
+    Pass 2 is excluded: it's a Python driver, not an agent loop, so it
+    has no tool slice and no `finish` tool.
+    """
+    for names in (PASS1_TOOL_NAMES, PASS3_TOOL_NAMES, PASS4_TOOL_NAMES):
         assert "finish" in names
 
 
-def test_pass1_has_ingestion_pass2_has_remember_pass3_has_recall_pass4_has_status():
+def test_subskill_prose_only_mentions_tools_each_pass_actually_has():
+    """Regression guard against the recurring "subskill instructs the agent
+    to use a tool that isn't in the pass's slice" bug.
+
+    Three times in the past month a Pass N section's prose has referenced a
+    tool not actually wired into PASS{N}_TOOL_NAMES — Pass 2's `remember`
+    (PR #30/#31), Pass 4's `recall` (PR #33), Pass 3's `remember` exception
+    in "What not to do" (caught pre-merge in #34). Each one resulted in the
+    agent silently doing the wrong thing or nothing. This test parses
+    `synthesis.md`, finds backtick-quoted tool references inside each Pass
+    N section, and asserts they're in that pass's TOOL_NAMES.
+
+    Tool name references in `code blocks` are detected; references in
+    sentences like "use `recall` for X" are also caught. False positives
+    (e.g. mentioning a tool by name in a comparative aside) are addressed
+    by adding the tool to the slice OR rewording the prose.
+    """
+    import re
+    from pathlib import Path
+    import pratyabhijna.synthesis_agent as agent_mod
+
+    skill_path = (
+        Path(__file__).parent.parent
+        / "skills" / "pratyabhijna" / "references" / "synthesis.md"
+    )
+    text = skill_path.read_text(encoding="utf-8")
+
+    # Map heading → pass slice. "Pass 2" intentionally has an empty
+    # allowed set since it's a Python driver — its prose should not
+    # reference any agent-callable tool by name.
+    pass_sections: dict[str, frozenset[str]] = {
+        "Pass 1": PASS1_TOOL_NAMES,
+        "Pass 2": frozenset(),
+        "Pass 3": PASS3_TOOL_NAMES,
+        "Pass 4": PASS4_TOOL_NAMES,
+    }
+    # Bracket each pass section: from its `## Pass N:` heading to the next
+    # `## ` heading or EOF.
+    section_text: dict[str, str] = {}
+    for label in pass_sections:
+        m = re.search(rf"^## {re.escape(label)}: ", text, re.MULTILINE)
+        if not m:
+            pytest.fail(f"could not find '## {label}: ' heading in synthesis.md")
+        start = m.start()
+        # Find the next top-level heading after this one.
+        rest = text[m.end():]
+        next_m = re.search(r"^## ", rest, re.MULTILINE)
+        end = m.end() + (next_m.start() if next_m else len(rest))
+        section_text[label] = text[start:end]
+
+    # Universe of agent-callable tool names. Subskill references to names
+    # outside this set (e.g. `add_episode`, `remember_tool`) are runtime
+    # internals, not agent tools — exclude them.
+    agent_tools = {t["name"] for t in agent_mod.TOOL_SCHEMAS}
+
+    # Find backtick-quoted identifiers like `name` or `name(`. A name is
+    # a Python-shaped identifier.
+    pattern = re.compile(r"`([a-z_][a-z_0-9]*)\(?\)?`")
+    failures: list[str] = []
+    for label, allowed in pass_sections.items():
+        body = section_text[label]
+        mentioned = {m.group(1) for m in pattern.finditer(body)}
+        # Filter to agent tool names.
+        mentioned_tools = mentioned & agent_tools
+        bad = mentioned_tools - allowed
+        if bad:
+            failures.append(
+                f"{label} prose mentions agent tools not in its slice: "
+                f"{sorted(bad)} (allowed: {sorted(allowed)})"
+            )
+    assert not failures, "\n".join(failures)
+
+
+def test_pass2_has_no_tool_slice():
+    """Pass 2 is a deterministic Python driver, not an agent loop.
+
+    It should have no `PASS2_TOOL_NAMES` constant exposed from the module —
+    importing it should fail. This is a regression guard against a future
+    change accidentally turning Pass 2 back into a tool-using subagent
+    without revisiting the cost analysis that drove v0.14.4.
+    """
+    import pratyabhijna.synthesis_agent as agent_mod
+    assert not hasattr(agent_mod, "PASS2_TOOL_NAMES")
+    assert not hasattr(agent_mod, "PASS2_TOOL_SCHEMAS")
+
+
+def test_pass1_has_ingestion_pass3_has_recall_pass4_has_status():
     """Anchor each pass's distinguishing tool (regression guard).
 
     `recall` is shared between Pass 3 (bootstrap reasoning) and Pass 4
-    (graph health check); the rest are exclusive to one pass.
+    (graph health check). `edit_file` is shared between Passes 3 and 4
+    (file-edit primitive); Pass 1 doesn't edit files. Pass 2 is excluded
+    — it's a Python driver, not an agent loop.
     """
     assert "ingest_file" in PASS1_TOOL_NAMES
-    assert "ingest_file" not in PASS2_TOOL_NAMES
-    assert "remember" in PASS2_TOOL_NAMES
-    assert "remember" not in PASS3_TOOL_NAMES
+    assert "ingest_file" not in PASS3_TOOL_NAMES
+    assert "ingest_file" not in PASS4_TOOL_NAMES
     assert "recall" in PASS3_TOOL_NAMES
-    assert "recall" in PASS4_TOOL_NAMES  # graph health check needs queries
+    assert "recall" in PASS4_TOOL_NAMES
     assert "status" in PASS4_TOOL_NAMES
     assert "status" not in PASS3_TOOL_NAMES
+    assert "edit_file" in PASS3_TOOL_NAMES
+    assert "edit_file" in PASS4_TOOL_NAMES
+    assert "edit_file" not in PASS1_TOOL_NAMES
 
 
 # --- Path resolution / security ---
