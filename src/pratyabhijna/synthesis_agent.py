@@ -672,6 +672,7 @@ PASS3_TOOL_NAMES: frozenset[str] = frozenset({
 PASS4_TOOL_NAMES: frozenset[str] = frozenset({
     "read_file",
     "write_file",
+    "recall",
     "status",
     "build_communities",
     "update_synthesis_metadata",
@@ -972,14 +973,84 @@ def _build_pass3_message(
     return "\n".join(parts)
 
 
+def _format_pass_results(pass_results: list[dict[str, Any]]) -> str:
+    """Render the per-pass outcomes for Pass 4's opening message."""
+    if not pass_results:
+        return "(no prior passes ran)"
+    lines = []
+    for p in pass_results:
+        line = f"- **{p['pass']}**: {p['status']}"
+        if p["status"] == "skipped" and p.get("reason"):
+            line += f" — {p['reason']}"
+        elif p["status"] == "raised" and p.get("error"):
+            line += f" — {p['error']}"
+        elif p["status"] in ("max_iterations", "no_finish", "max_tokens_per_turn"):
+            line += f" (iterations={p.get('iterations', 0)})"
+        elif p["status"] == "completed" and p.get("iterations"):
+            line += f" (iterations={p['iterations']})"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _resolve_metadata_flags(pass_results: list[dict[str, Any]]) -> dict[str, bool]:
+    """Compute which Person-node timestamps Pass 4 should bump.
+
+    The agent does not get to judge this. Bumping a timestamp the work
+    didn't earn corrupts the next run's delta and candidate scans, so
+    the orchestrator pre-resolves and embeds the exact call into Pass
+    4's opening message — no discretion.
+
+    - ``last_ingestion_scan``: True iff Pass 1 completed, OR was skipped
+      because there were no candidates (the scan is effectively current).
+    - ``context_rebuilt_at``: True iff Pass 3 completed.
+    """
+    by_label = {p["pass"]: p for p in pass_results}
+    p1 = by_label.get("pass1_ingestion")
+    p3 = by_label.get("pass3_bootstrap")
+    last_ingestion_scan = bool(
+        p1 and (
+            p1["status"] == "completed"
+            or (p1["status"] == "skipped" and p1.get("reason") == "no ingestion candidates")
+        )
+    )
+    context_rebuilt_at = bool(p3 and p3["status"] == "completed")
+    return {
+        "last_ingestion_scan": last_ingestion_scan,
+        "context_rebuilt_at": context_rebuilt_at,
+    }
+
+
+def _format_metadata_call(flags: dict[str, bool]) -> str:
+    """Render the exact `update_synthesis_metadata` call Pass 4 must make."""
+    if not any(flags.values()):
+        return (
+            "Skip `update_synthesis_metadata` entirely this run — neither "
+            "ingestion nor bootstrap completed cleanly, so neither timestamp "
+            "is justified."
+        )
+    args = ", ".join(f"{k}={v}" for k, v in flags.items() if v)
+    return f"Call `update_synthesis_metadata({args})` — exactly that, no other flags."
+
+
 def _build_pass4_message(
     subject_name: str,
     now: datetime,
     git_branch: str,
     git_dirty: bool,
     synthesis_file: str | None,
+    pass_results: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Pass 4 — maintenance. Threshold checks + run-log."""
+    """Pass 4 — maintenance. Threshold checks + run-log + per-pass summary.
+
+    ``pass_results`` lists what Passes 1–3 did. Pass 4 uses it for two
+    things, neither of which involves judgment on the agent's part:
+    (a) the run-log entry should reflect the actual per-pass outcomes,
+    and (b) the orchestrator pre-resolves which Person-node timestamps
+    are justified and embeds the exact ``update_synthesis_metadata``
+    call as an imperative — the agent doesn't get to second-guess it.
+    """
+    results = pass_results or []
+    metadata_flags = _resolve_metadata_flags(results)
     parts = _format_run_header(
         subject_name, now, git_branch, git_dirty, pass_label="Pass 4 / maintenance"
     )
@@ -988,11 +1059,21 @@ def _build_pass4_message(
         "",
         synthesis_file.strip() if synthesis_file else "(file missing — create it on first run)",
         "",
+        "## Prior pass results (this run)",
+        "",
+        _format_pass_results(results),
+        "",
         "---",
         "",
-        "Pass 4 of 4. Call `status` to capture node counts, advance any active "
-        "proposals, run `build_communities` if the threshold is met, then write "
-        "the run-log entry to SYNTHESIS.md and commit on main. Call `finish` when done.",
+        "Pass 4 of 4. Call `status` to capture node counts, run `build_communities` "
+        "if the threshold is met, do the graph health check via `recall`, then "
+        "write the run-log entry to SYNTHESIS.md and commit on main. The run-log "
+        "entry must reflect the prior pass results above honestly — failed or "
+        "partial passes belong there too.",
+        "",
+        _format_metadata_call(metadata_flags),
+        "",
+        "Call `finish` when done.",
     ])
     return "\n".join(parts)
 
@@ -1126,9 +1207,19 @@ async def _run_pass(
 ) -> dict[str, Any]:
     """Run one pass's tool-use loop.
 
-    Returns ``{status, iterations, summary}``. ``status`` is one of
-    ``"completed"`` (agent called ``finish``), ``"no_finish"`` (loop ended
-    without explicit termination), or ``"max_iterations"`` (circuit broken).
+    Returns ``{status, iterations, summary}``. ``status`` is one of:
+
+    - ``"completed"`` — agent called ``finish``.
+    - ``"no_finish"`` — loop ended (no tool calls) without explicit
+      termination.
+    - ``"max_iterations"`` — iteration cap fired.
+    - ``"max_tokens_per_turn"`` — a single response hit the per-call
+      ``max_tokens`` budget mid-generation (``stop_reason="max_tokens"``).
+      Continuing past this would feed a truncated assistant turn — and
+      possibly a partial ``tool_use`` block — back into the loop and
+      corrupt downstream state, so the pass bails immediately. Per-pass
+      independent dispatch in ``run_synthesis`` then continues to the
+      next pass.
 
     The caller is responsible for resetting ``tools.finished`` /
     ``tools.summary`` before invocation if running multiple passes against
@@ -1173,6 +1264,23 @@ async def _run_pass(
         # 10-minute non-streaming timeout.
         async with client.messages.stream(**create_kwargs) as stream:
             response = await stream.get_final_message()
+
+        # Truncation circuit-break: if the response hit max_tokens
+        # mid-generation, any tool_use block in it may be malformed
+        # (incomplete `input` JSON), and the assistant turn is
+        # mid-thought. Don't append, don't dispatch — bail this pass and
+        # let independent dispatch continue with the others.
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            _log.warning(
+                "synthesis: %s hit max_tokens (%d) mid-generation at iteration %d — "
+                "discarding truncated turn and bailing this pass",
+                pass_label, max_tokens, iterations,
+            )
+            return {
+                "status": "max_tokens_per_turn",
+                "iterations": iterations,
+                "summary": tools.summary,
+            }
 
         messages.append({"role": "assistant", "content": response.content})
 
@@ -1239,13 +1347,19 @@ async def run_synthesis(
     4. Maintenance (Sonnet) — communities, status checks, run-log entry.
 
     Each pass runs its own message loop with its own model and tool slice.
-    On a per-pass failure (raise or ``max_iterations``), the orchestrator
-    aborts the rest of the run; partial state is left for the next run
-    to pick up.
+    Passes succeed or fail independently — a per-pass failure (raise,
+    ``max_iterations``, ``no_finish``) is recorded in that pass's result
+    and the orchestrator continues to the next pass. The only sequential
+    dependency is Pass 4's precondition that HEAD be on ``main`` (a fresh
+    git checkout is attempted; if that fails, Pass 4 is skipped). Pass 4
+    receives the prior pass results in its opening message and uses them
+    to gate ``update_synthesis_metadata`` and to write an honest run-log
+    entry.
 
-    Returns a dict with at least: ``status``, ``iterations`` (sum across
-    passes that ran), ``summary`` (from the last pass's ``finish``), and
-    ``passes`` (per-pass result dicts).
+    Returns a dict with: ``status`` (``"completed"`` if every dispatched
+    pass completed; ``"partial"`` if any failed), ``iterations`` (sum
+    across passes that ran), ``summary`` (from the last pass with a
+    non-empty summary), and ``passes`` (per-pass result dicts).
 
     ``client`` is an Anthropic Messages client (or any object with a
     compatible ``.messages.stream`` coroutine). Default is a freshly
@@ -1333,8 +1447,6 @@ async def run_synthesis(
             last_summary = result["summary"]
         return result
 
-    abort_reason: str | None = None
-
     def _skip(label: str, reason: str) -> dict[str, Any]:
         entry = {
             "pass": label,
@@ -1347,141 +1459,172 @@ async def run_synthesis(
         _log.info("synthesis: %s skipped (%s)", label, reason)
         return entry
 
-    try:
-        # Pass 1 — Ingestion (Sonnet). Skip if no new candidates.
-        if not candidates:
-            _skip("pass1_ingestion", "no ingestion candidates")
-            pass1_completed = True
-        else:
-            pass1 = await _do_pass(
-                "pass1_ingestion",
-                workhorse_model,
-                PASS1_TOOL_NAMES,
-                _build_pass1_message(
-                    subject_name=config.subject_name,
-                    now=now,
-                    git_branch=git_branch,
-                    git_dirty=git_dirty,
-                    candidates=candidates,
-                    last_ingestion_scan=subject_node.attributes.get("last_ingestion_scan"),
-                ),
-                thinking=False,
-            )
-            pass1_completed = pass1["status"] == "completed"
-            if not pass1_completed:
-                abort_reason = f"pass1 status={pass1['status']}"
-        if pass1_completed:
-            # Pass 2 — Maturation (Sonnet) — needs fresh chronicle/threads text
-            chronicle_text = identity_files.get("chronicle")
-            threads_text = identity_files.get("threads")
-            pass2 = await _do_pass(
-                "pass2_maturation",
-                workhorse_model,
-                PASS2_TOOL_NAMES,
-                _build_pass2_message(
-                    subject_name=config.subject_name,
-                    now=now,
-                    git_branch=await git_ops.current_branch(repo_path),
-                    git_dirty=await git_ops.is_dirty(repo_path),
-                    chronicle_text=chronicle_text,
-                    threads_text=threads_text,
-                ),
-                thinking=False,
-            )
-            if pass2["status"] != "completed":
-                abort_reason = f"pass2 status={pass2['status']}"
-            else:
-                # Pass 3 — Bootstrap update (Opus). May land on synth/draft.
-                # Reread identity files in case Pass 2 compressed CHRONICLE/THREADS.
-                identity_files_p3 = read_identity_files(repo_path)
-                synthesis_file_p3 = _read_synthesis_file(repo_path)
-                atoms_p3 = await get_identity_atoms(service, subject_node)
-                delta_p3 = await get_identity_delta(service, subject_node)
-                pass3 = await _do_pass(
-                    "pass3_bootstrap",
-                    judgment_model,
-                    PASS3_TOOL_NAMES,
-                    _build_pass3_message(
-                        subject_name=config.subject_name,
-                        now=now,
-                        git_branch=await git_ops.current_branch(repo_path),
-                        git_dirty=await git_ops.is_dirty(repo_path),
-                        identity_files=identity_files_p3,
-                        synthesis_file=synthesis_file_p3,
-                        atoms=atoms_p3,
-                        delta=delta_p3,
-                        last_context_rebuilt_at=subject_node.attributes.get(
-                            "context_rebuilt_at"
-                        ),
-                    ),
-                    thinking=use_thinking,
-                )
-                if pass3["status"] != "completed":
-                    abort_reason = f"pass3 status={pass3['status']}"
-                else:
-                    # Ensure HEAD is on main before Pass 4 — Pass 3 may have
-                    # left HEAD on synth/draft for the protected-layer flow.
-                    # If the checkout fails, do NOT run Pass 4: its run-log
-                    # commit would land on the wrong branch.
-                    pass4_blocked: str | None = None
-                    if await git_ops.current_branch(repo_path) != "main":
-                        try:
-                            await git_ops.checkout(repo_path, "main")
-                        except git_ops.GitError as e:
-                            pass4_blocked = (
-                                "pass3→pass4 checkout to main failed: "
-                                f"{e.stderr.strip() if hasattr(e, 'stderr') else e}"
-                            )
-                            _log.warning(
-                                "synthesis: %s — skipping Pass 4",
-                                pass4_blocked,
-                                exc_info=True,
-                            )
+    async def _try_pass(
+        label: str,
+        model_id: str,
+        names: frozenset[str],
+        opening: str,
+        thinking: bool,
+    ) -> dict[str, Any]:
+        """Run a pass; record exceptions as 'raised' results without re-raising.
 
-                    if pass4_blocked is not None:
-                        _skip("pass4_maintenance", pass4_blocked)
-                        abort_reason = pass4_blocked
-                    else:
-                        synthesis_file_p4 = _read_synthesis_file(repo_path)
-                        pass4 = await _do_pass(
-                            "pass4_maintenance",
-                            workhorse_model,
-                            PASS4_TOOL_NAMES,
-                            _build_pass4_message(
-                                subject_name=config.subject_name,
-                                now=now,
-                                git_branch=await git_ops.current_branch(repo_path),
-                                git_dirty=await git_ops.is_dirty(repo_path),
-                                synthesis_file=synthesis_file_p4,
-                            ),
-                            thinking=False,
-                        )
-                        if pass4["status"] != "completed":
-                            abort_reason = f"pass4 status={pass4['status']}"
-    except Exception as e:  # noqa: BLE001 — surface the failure to caller
-        _log.warning(
-            "synthesis: pass raised, aborting remaining passes (%s)",
-            type(e).__name__,
-            exc_info=True,
+        Each pass's failure is local — the orchestrator continues to the
+        next pass regardless of outcome. Sequential dependencies are
+        narrow (see Pass 4's git precondition) and handled as preconditions
+        on the dependent pass, not as cascading aborts.
+        """
+        try:
+            return await _do_pass(label, model_id, names, opening, thinking)
+        except Exception as e:  # noqa: BLE001 — record + continue
+            _log.warning(
+                "synthesis: %s raised (%s)", label, type(e).__name__, exc_info=True
+            )
+            entry = {
+                "pass": label,
+                "status": "raised",
+                "iterations": 0,
+                "summary": "",
+                "error": f"{type(e).__name__}: {e}",
+            }
+            passes.append(entry)
+            return entry
+
+    # Pass 1 — Ingestion. Skip if no candidates; otherwise dispatch.
+    if not candidates:
+        _skip("pass1_ingestion", "no ingestion candidates")
+    else:
+        await _try_pass(
+            "pass1_ingestion",
+            workhorse_model,
+            PASS1_TOOL_NAMES,
+            _build_pass1_message(
+                subject_name=config.subject_name,
+                now=now,
+                git_branch=git_branch,
+                git_dirty=git_dirty,
+                candidates=candidates,
+                last_ingestion_scan=subject_node.attributes.get("last_ingestion_scan"),
+            ),
+            thinking=False,
         )
-        abort_reason = f"raised: {type(e).__name__}: {e}"
+
+    # Pass 2 — Maturation. Independent of Pass 1 — chronicle/thread
+    # eligibility doesn't depend on whether new writing was ingested.
+    await _try_pass(
+        "pass2_maturation",
+        workhorse_model,
+        PASS2_TOOL_NAMES,
+        _build_pass2_message(
+            subject_name=config.subject_name,
+            now=now,
+            git_branch=await git_ops.current_branch(repo_path),
+            git_dirty=await git_ops.is_dirty(repo_path),
+            chronicle_text=identity_files.get("chronicle"),
+            threads_text=identity_files.get("threads"),
+        ),
+        thinking=False,
+    )
+
+    # Pass 3 — Bootstrap update. Independent of Passes 1 and 2 in principle;
+    # rereads identity files and atoms in case earlier passes edited them.
+    # If the reread itself raises (e.g. filesystem trouble), record as
+    # 'raised' on Pass 3 and move on.
+    try:
+        identity_files_p3 = read_identity_files(repo_path)
+        synthesis_file_p3 = _read_synthesis_file(repo_path)
+        atoms_p3 = await get_identity_atoms(service, subject_node)
+        delta_p3 = await get_identity_delta(service, subject_node)
+        pass3_opening = _build_pass3_message(
+            subject_name=config.subject_name,
+            now=now,
+            git_branch=await git_ops.current_branch(repo_path),
+            git_dirty=await git_ops.is_dirty(repo_path),
+            identity_files=identity_files_p3,
+            synthesis_file=synthesis_file_p3,
+            atoms=atoms_p3,
+            delta=delta_p3,
+            last_context_rebuilt_at=subject_node.attributes.get("context_rebuilt_at"),
+        )
+    except Exception as e:  # noqa: BLE001
+        _log.warning("synthesis: pass3 setup raised (%s)", type(e).__name__, exc_info=True)
+        passes.append({
+            "pass": "pass3_bootstrap",
+            "status": "raised",
+            "iterations": 0,
+            "summary": "",
+            "error": f"setup: {type(e).__name__}: {e}",
+        })
+    else:
+        await _try_pass(
+            "pass3_bootstrap",
+            judgment_model,
+            PASS3_TOOL_NAMES,
+            pass3_opening,
+            thinking=use_thinking,
+        )
+
+    # Pass 4 — Maintenance. Precondition: HEAD on main. Pass 3 may have
+    # left HEAD on synth/draft for protected-layer work, or a failed Pass
+    # 3 may have left the working tree mid-edit. Either way, only run
+    # Pass 4 if we can land it on main cleanly — its run-log commit must
+    # not stray to the wrong branch.
+    pass4_blocked: str | None = None
+    try:
+        if await git_ops.current_branch(repo_path) != "main":
+            await git_ops.checkout(repo_path, "main")
+    except git_ops.GitError as e:
+        pass4_blocked = (
+            "checkout to main failed: "
+            f"{e.stderr.strip() if hasattr(e, 'stderr') else e}"
+        )
+        _log.warning("synthesis: %s — skipping Pass 4", pass4_blocked, exc_info=True)
+
+    if pass4_blocked is not None:
+        _skip("pass4_maintenance", pass4_blocked)
+    else:
+        synthesis_file_p4 = _read_synthesis_file(repo_path)
+        await _try_pass(
+            "pass4_maintenance",
+            workhorse_model,
+            PASS4_TOOL_NAMES,
+            _build_pass4_message(
+                subject_name=config.subject_name,
+                now=now,
+                git_branch=await git_ops.current_branch(repo_path),
+                git_dirty=await git_ops.is_dirty(repo_path),
+                synthesis_file=synthesis_file_p4,
+                pass_results=list(passes),
+            ),
+            thinking=False,
+        )
 
     # Push whatever landed (main and/or synth/draft). Non-fatal on error.
     if repo_path:
         await _push_to_remote(repo_path, config.synthesis.draft_branch)
 
-    if abort_reason is None:
+    # Run-level status: "completed" iff every dispatched pass completed.
+    # "skipped" passes don't count against completion (a skipped pass is
+    # one whose preconditions weren't met — the orchestrator's choice,
+    # not a failure). "partial" if any dispatched pass landed at
+    # max_iterations / no_finish / raised.
+    dispatched = [p for p in passes if p["status"] != "skipped"]
+    failed = [p for p in dispatched if p["status"] != "completed"]
+    if not failed:
         status = "completed"
     else:
-        status = "aborted"
-        _log.info("synthesis: run aborted (%s)", abort_reason)
+        status = "partial"
+        _log.info(
+            "synthesis: run partial (%d of %d dispatched passes failed: %s)",
+            len(failed),
+            len(dispatched),
+            ", ".join(f"{p['pass']}={p['status']}" for p in failed),
+        )
 
     return {
         "status": status,
         "iterations": total_iterations,
         "summary": last_summary,
         "passes": passes,
-        **({"abort_reason": abort_reason} if abort_reason else {}),
     }
 
 

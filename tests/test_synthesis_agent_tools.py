@@ -147,13 +147,17 @@ def test_finish_present_in_every_pass():
 
 
 def test_pass1_has_ingestion_pass2_has_remember_pass3_has_recall_pass4_has_status():
-    """Anchor each pass's distinguishing tool (regression guard)."""
+    """Anchor each pass's distinguishing tool (regression guard).
+
+    `recall` is shared between Pass 3 (bootstrap reasoning) and Pass 4
+    (graph health check); the rest are exclusive to one pass.
+    """
     assert "ingest_file" in PASS1_TOOL_NAMES
     assert "ingest_file" not in PASS2_TOOL_NAMES
     assert "remember" in PASS2_TOOL_NAMES
     assert "remember" not in PASS3_TOOL_NAMES
     assert "recall" in PASS3_TOOL_NAMES
-    assert "recall" not in PASS4_TOOL_NAMES
+    assert "recall" in PASS4_TOOL_NAMES  # graph health check needs queries
     assert "status" in PASS4_TOOL_NAMES
     assert "status" not in PASS3_TOOL_NAMES
 
