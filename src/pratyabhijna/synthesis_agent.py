@@ -1618,7 +1618,7 @@ async def _drive_pass2(
             )
             # 4. Edit + commit. Read fresh each time — prior loop iterations
             #    have changed the file already.
-            abs_chronicle = (Path(repo_path) / chronicle_path).resolve()
+            abs_chronicle = Path(repo_path).expanduser().resolve() / chronicle_path
             current = abs_chronicle.read_text(encoding="utf-8")
             if entry.full_block not in current:
                 raise RuntimeError(
@@ -1679,7 +1679,7 @@ async def _drive_pass2(
             # last non-blank line in the body and append the marker to it.
             marker = f"  [Ingested: {today_str}]"
             new_block = thread.full_block.rstrip("\n") + marker + "\n\n"
-            abs_threads = (Path(repo_path) / threads_path).resolve()
+            abs_threads = Path(repo_path).expanduser().resolve() / threads_path
             current = abs_threads.read_text(encoding="utf-8")
             if thread.full_block not in current:
                 raise RuntimeError(
