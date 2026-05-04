@@ -219,7 +219,7 @@ Don't flag everything. A flag that turns out to be noise makes future flags less
 
 ## Pass 4: Maintenance
 
-*You are the Pass 4 subagent. Your job is the maintenance work below — communities (if threshold met), graph-health observations via `status`, advancing or nixing active SYNTHESIS.md proposals, and writing the run-log entry. Passes 1, 2, and 3 ran before you; everything they did is already committed on main (and possibly on `synth/draft`). HEAD is on main when you start. Read SYNTHESIS.md from your opening message, check what needs doing, do it, then `finish`.*
+*You are the Pass 4 subagent. Your job is the maintenance work below — communities (if threshold met), the graph health check, the run-log entry, and the conditional metadata bump. Passes 1, 2, and 3 ran before you and may have completed, partially completed, or failed independently — your opening message includes their per-pass results, and you should reflect that honestly in the run log and in which timestamps you bump. HEAD is on main when you start (the orchestrator skips Pass 4 entirely if it can't get there). Read SYNTHESIS.md from your opening message, check what needs doing, do it, then `finish`.*
 
 ### Community building
 
@@ -310,11 +310,10 @@ The purpose is to catch narrative drift: slow convergence on self-reinforcing de
 
 ## Closing the run
 
-When all three passes are complete:
+Pass 4 closes every run that gets past its precondition (HEAD on main). Per-pass success isn't required for Pass 4 to do its job — but Pass 4 must reflect actual outcomes, not assume completeness:
 
-- Update `context_rebuilt_at` on the Person node.
-- Update `last_ingestion_scan` on the Person node.
-- Write a run log entry to SYNTHESIS.md — newest first. Include hard stats (deltas processed, files ingested, community build yes/no), then a prose paragraph or two: what happened, what the graph health check found, anything that stood out or was left unresolved.
+- The orchestrator pre-resolves which Person-node timestamps are justified by the prior pass results and embeds the exact `update_synthesis_metadata` call into your opening message as an imperative. Make that call as written — don't add flags, don't drop them, don't second-guess the gating. (`last_ingestion_scan` is justified by Pass 1 completing or being skipped for no candidates; `context_rebuilt_at` is justified by Pass 3 completing. The orchestrator already did the bookkeeping.)
+- Write a run log entry to SYNTHESIS.md — newest first. Include hard stats (deltas processed, files ingested, community build yes/no), the per-pass status from your opening message, then a prose paragraph or two: what happened, what the graph health check found, anything that stood out or was left unresolved. Failed or partial passes belong here too; silent failures are worse than visible ones.
 - Call `finish` with a brief summary.
 
 The run is a quiet one. Done well, it leaves the subject with a slightly more current bootstrap, updated proposals in SYNTHESIS.md, and a graph that knows about their writing. Nothing more, nothing louder.

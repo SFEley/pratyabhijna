@@ -440,40 +440,167 @@ async def test_run_synthesis_dispatches_tool_then_finishes_in_pass2(
 
 
 @pytest.mark.asyncio
-async def test_run_synthesis_aborts_on_pass_max_iterations(
+async def test_run_synthesis_records_pass_max_iterations_without_aborting(
     service, config, no_candidates
 ):
-    """A pass hitting max_iterations aborts the run; later passes don't dispatch."""
+    """A pass hitting max_iterations is recorded; later passes still dispatch."""
     # Pass 2 keeps calling git_status forever — never finishes (Pass 1 skipped).
+    # Pass 3 + Pass 4 each finish on their first iteration.
     over_limit = config.synthesis.max_iterations + 1
-    script = [[_tool_use_block(f"t{i}", "git_status", {})] for i in range(over_limit)]
+    script = (
+        [[_tool_use_block(f"t{i}", "git_status", {})] for i in range(over_limit)]
+        + [_finish_call("p3"), _finish_call("p4")]
+    )
     client = FakeClient(script=script)
 
     result = await run_synthesis(service, config, client=client)
 
-    assert result["status"] == "aborted"
+    assert result["status"] == "partial"
     pass2 = next(p for p in result["passes"] if p["pass"] == "pass2_maturation")
     assert pass2["status"] == "max_iterations"
     assert pass2["iterations"] == config.synthesis.max_iterations
+    # Pass 3 and Pass 4 still run independently, despite Pass 2's failure.
     labels = [p["pass"] for p in result["passes"]]
-    assert "pass3_bootstrap" not in labels
-    assert "pass4_maintenance" not in labels
+    assert "pass3_bootstrap" in labels
+    assert "pass4_maintenance" in labels
+    assert next(p for p in result["passes"] if p["pass"] == "pass3_bootstrap")["status"] == "completed"
+    assert next(p for p in result["passes"] if p["pass"] == "pass4_maintenance")["status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_run_synthesis_stops_on_no_tools_no_finish(
+async def test_run_synthesis_records_no_finish_without_aborting(
     service, config, no_candidates
 ):
-    """A pass that produces text only with no tool_use stops 'no_finish' and aborts."""
+    """A pass that stops 'no_finish' is recorded; later passes still dispatch."""
     client = FakeClient(script=[
-        [_text_block("just thinking")],
+        [_text_block("just thinking")],     # Pass 2 — no_finish
+        _finish_call("p3"),                 # Pass 3 — completes
+        _finish_call("p4"),                 # Pass 4 — completes
     ])
 
     result = await run_synthesis(service, config, client=client)
 
-    assert result["status"] == "aborted"
+    assert result["status"] == "partial"
     pass2 = next(p for p in result["passes"] if p["pass"] == "pass2_maturation")
     assert pass2["status"] == "no_finish"
+    labels = [p["pass"] for p in result["passes"]]
+    assert "pass3_bootstrap" in labels
+    assert "pass4_maintenance" in labels
+
+
+@pytest.mark.asyncio
+async def test_run_synthesis_continues_when_pass3_fails(
+    service, config, no_candidates
+):
+    """Pass 3 hitting max_iterations doesn't prevent Pass 4 from running."""
+    over_limit = config.synthesis.max_iterations + 1
+    script = (
+        [_finish_call("p2")]                                              # Pass 2 ok
+        + [[_tool_use_block(f"t{i}", "git_status", {})] for i in range(over_limit)]  # Pass 3 stuck
+        + [_finish_call("p4")]                                            # Pass 4 ok
+    )
+    client = FakeClient(script=script)
+
+    result = await run_synthesis(service, config, client=client)
+
+    assert result["status"] == "partial"
+    by_label = {p["pass"]: p for p in result["passes"]}
+    assert by_label["pass2_maturation"]["status"] == "completed"
+    assert by_label["pass3_bootstrap"]["status"] == "max_iterations"
+    assert by_label["pass4_maintenance"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_run_synthesis_continues_when_pass1_raises(
+    service, config, monkeypatch
+):
+    """Pass 1 raising in its message loop doesn't stop Passes 2/3/4."""
+    from pratyabhijna.synthesis import IngestionCandidate
+
+    # Force one candidate so Pass 1 dispatches.
+    async def _one(*args, **kwargs):
+        return [IngestionCandidate(
+            relative_path="writing/dummy.md",
+            absolute_path=None,
+            mtime=datetime(2026, 5, 1, tzinfo=timezone.utc),
+            reason="new",
+            latest_episode_at=None,
+        )]
+    monkeypatch.setattr(agent_mod, "scan_repo_for_ingestion_candidates", _one)
+    from pratyabhijna import synthesis as synthesis_mod
+    monkeypatch.setattr(synthesis_mod, "scan_repo_for_ingestion_candidates", _one)
+
+    # Wrap FakeClient so the first stream() call raises (Pass 1) but the
+    # remaining calls (Passes 2/3/4) consume the scripted finish blocks.
+    inner = FakeClient(script=[
+        _finish_call("p2"),
+        _finish_call("p3"),
+        _finish_call("p4"),
+    ])
+
+    class FailFirstClient:
+        def __init__(self, wrapped):
+            self._wrapped = wrapped
+            self._calls_made = 0
+            outer = self
+            class _Messages:
+                def stream(self, **kwargs):
+                    if outer._calls_made == 0:
+                        outer._calls_made += 1
+                        raise RuntimeError("simulated Pass 1 failure")
+                    outer._calls_made += 1
+                    return outer._wrapped.messages.stream(**kwargs)
+            self.messages = _Messages()
+
+    result = await run_synthesis(service, config, client=FailFirstClient(inner))
+
+    assert result["status"] == "partial"
+    by_label = {p["pass"]: p for p in result["passes"]}
+    assert by_label["pass1_ingestion"]["status"] == "raised"
+    assert "RuntimeError" in by_label["pass1_ingestion"]["error"]
+    assert by_label["pass2_maturation"]["status"] == "completed"
+    assert by_label["pass3_bootstrap"]["status"] == "completed"
+    assert by_label["pass4_maintenance"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_pass4_skipped_when_checkout_to_main_fails(
+    service, config, no_candidates, monkeypatch
+):
+    """If the orchestrator can't get HEAD onto main after Pass 3, Pass 4 is skipped."""
+    from pratyabhijna import git_ops
+
+    async def _on_synth_draft(repo_path):
+        return "synth/draft"
+
+    async def _checkout_fails(repo_path, ref):
+        raise git_ops.GitError(
+            cmd=["git", "checkout", "main"],
+            returncode=1,
+            stderr="error: Your local changes to the following files would be overwritten",
+        )
+
+    # Pass 2 + Pass 3 finish; Pass 3's "leave HEAD on synth/draft" is simulated
+    # by patching current_branch to return synth/draft after Pass 3.
+    monkeypatch.setattr(git_ops, "current_branch", _on_synth_draft)
+    monkeypatch.setattr(git_ops, "checkout", _checkout_fails)
+
+    client = FakeClient(script=[
+        _finish_call("p2"),
+        _finish_call("p3"),
+        # No Pass 4 entry — should never be invoked.
+    ])
+
+    result = await run_synthesis(service, config, client=client)
+
+    by_label = {p["pass"]: p for p in result["passes"]}
+    assert by_label["pass4_maintenance"]["status"] == "skipped"
+    assert "checkout to main failed" in by_label["pass4_maintenance"]["reason"]
+    # Pass 4 was skipped (precondition), not failed — so the run is still
+    # "completed" if every dispatched pass completed.
+    assert by_label["pass2_maturation"]["status"] == "completed"
+    assert by_label["pass3_bootstrap"]["status"] == "completed"
+    assert result["status"] == "completed"
 
 
 # --- run_synthesis: per-pass model + thinking selection ---
