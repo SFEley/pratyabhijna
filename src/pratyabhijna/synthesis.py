@@ -97,7 +97,7 @@ async def is_stale(node: EntityNode, service: PratyabhijnaService) -> bool:
     if age_hours >= service.config.synthesis.max_age_hours:
         return True
 
-    delta = await get_identity_delta(service, node)
+    delta = await get_subject_delta(service, node)
     return len(delta) >= service.config.synthesis.max_delta_changes
 
 
@@ -107,7 +107,9 @@ async def get_identity_atoms(
     """Collect identity-typed edges connected to the subject node.
 
     Returns atoms for edges whose non-subject endpoint is an
-    identity type (any label in IDENTITY_LABELS).
+    identity type (any label in IDENTITY_LABELS). This is the
+    narrow view used by Pass 3 for narrative reweighting — the
+    full set of "what is the subject" atoms.
     """
     edges = await service.get_edges_for_node(node.uuid)
     atoms = []
@@ -124,19 +126,56 @@ async def get_identity_atoms(
     return atoms
 
 
-async def get_identity_delta(
+async def get_subject_atoms(
     service: PratyabhijnaService, node: EntityNode
 ) -> list[dict]:
-    """Return identity atoms created since the last context rebuild.
+    """Collect every edge connected to the subject node, unfiltered.
 
-    When no context has been built yet, all identity atoms are the delta.
+    Includes Person/Place/Project/Event/Artifact relationships in
+    addition to the identity-typed atoms. Used to compute the broad
+    delta — anything new or changed in the subject's relational world
+    since the prior synthesis run, not only changes in the subject's
+    self-knowledge.
     """
-    rebuilt_at_str = node.attributes.get("context_rebuilt_at")
-    all_atoms = await get_identity_atoms(service, node)
-    if rebuilt_at_str is None:
+    edges = await service.get_edges_for_node(node.uuid)
+    atoms = []
+    for edge in edges:
+        other_uuid = (
+            edge.target_node_uuid
+            if edge.source_node_uuid == node.uuid
+            else edge.source_node_uuid
+        )
+        other_node = await service.get_entity_by_uuid(other_uuid)
+        if other_node is None:
+            continue
+        atoms.append(_edge_to_atom(edge, other_node))
+    return atoms
+
+
+async def get_subject_delta(
+    service: PratyabhijnaService, node: EntityNode
+) -> list[dict]:
+    """Return atoms created since the start of the prior synthesis run.
+
+    Reads ``synthesis_run_started_at`` as the reference timestamp, with
+    ``context_rebuilt_at`` as the fallback for nodes from before the
+    timestamp split landed. When neither attribute is set, every
+    subject-connected atom is part of the delta.
+
+    Scope: every edge connected to the subject, not just identity-
+    typed edges. New people, places, projects, events and corrected
+    facts surface here so the synthesizer can decide whether to thread
+    them into CHRONICLE/THREADS — without requiring Vesper-as-subject
+    to author the entry directly.
+    """
+    started_at_str = node.attributes.get(
+        "synthesis_run_started_at"
+    ) or node.attributes.get("context_rebuilt_at")
+    all_atoms = await get_subject_atoms(service, node)
+    if started_at_str is None:
         return all_atoms
-    rebuilt_at = _ensure_utc(datetime.fromisoformat(rebuilt_at_str))
-    return [a for a in all_atoms if _ensure_utc(a["created_at"]) > rebuilt_at]
+    started_at = _ensure_utc(datetime.fromisoformat(started_at_str))
+    return [a for a in all_atoms if _ensure_utc(a["created_at"]) > started_at]
 
 
 def _is_identity_node(node: EntityNode) -> bool:

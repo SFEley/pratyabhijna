@@ -204,7 +204,11 @@ class TestStatusSynthesisBlock:
 
     @pytest.mark.asyncio
     async def test_synthesis_block_with_subject(self, tmp_path, monkeypatch):
-        """With a subject node, synthesis surfaces last_run and delta count."""
+        """With a subject node, synthesis surfaces last_run and delta count.
+
+        Legacy nodes (no ``synthesis_run_started_at``) fall back to
+        ``context_rebuilt_at`` for ``last_run``.
+        """
         from pratyabhijna.tools.status import status
 
         node = MagicMock()
@@ -220,7 +224,7 @@ class TestStatusSynthesisBlock:
             "pratyabhijna.synthesis.get_subject_node", fake_get_subject_node
         )
         monkeypatch.setattr(
-            "pratyabhijna.synthesis.get_identity_delta", fake_get_delta
+            "pratyabhijna.synthesis.get_subject_delta", fake_get_delta
         )
 
         result = await status(
@@ -229,3 +233,36 @@ class TestStatusSynthesisBlock:
         s = result["synthesis"]
         assert s["last_run"] == "2026-04-13T12:00:00+00:00"
         assert s["delta_count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_synthesis_block_prefers_run_start_over_rebuilt_at(
+        self, tmp_path, monkeypatch
+    ):
+        """``last_run`` mirrors the delta's reference timestamp, so it
+        prefers ``synthesis_run_started_at`` when present rather than the
+        later ``context_rebuilt_at``."""
+        from pratyabhijna.tools.status import status
+
+        node = MagicMock()
+        node.attributes = {
+            "synthesis_run_started_at": "2026-04-13T11:00:00+00:00",
+            "context_rebuilt_at": "2026-04-13T12:00:00+00:00",
+        }
+
+        async def fake_get_subject_node(service):
+            return node
+
+        async def fake_get_delta(service, subject_node):
+            return []
+
+        monkeypatch.setattr(
+            "pratyabhijna.synthesis.get_subject_node", fake_get_subject_node
+        )
+        monkeypatch.setattr(
+            "pratyabhijna.synthesis.get_subject_delta", fake_get_delta
+        )
+
+        result = await status(
+            service=_make_service(), queue_db_path=str(tmp_path / "q.db")
+        )
+        assert result["synthesis"]["last_run"] == "2026-04-13T11:00:00+00:00"

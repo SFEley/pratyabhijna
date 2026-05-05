@@ -91,9 +91,9 @@ The driver walks every `### ` heading under `## Recently Resolved` in THREADS.md
 2. Append the `[Ingested: today]` marker to the thread block in place. No LLM call — the thread's resolution-note in the file already *is* the compressed form; the marker just records that the full text is now in the graph.
 3. `git add` + `git commit` — title `Synthesize: resolve thread — [slug]`.
 
-### Active-thread compression — manual, not by the driver
+### Active-thread compression is Pass 3's job, not the driver's
 
-Active threads (not yet resolved) sometimes accumulate enough redundant prose that they're worth tightening (50–75% reduction with stale-status pruning). The driver does not do this — it's judgment work that belongs in Pass 3 or in a manual session, not in deterministic maturation. If an active thread needs trimming, do it during a regular session or as part of Pass 3's context-layer revision.
+Active threads (not yet resolved) sometimes accumulate enough redundant prose that they're worth tightening. Compression of *active* threads is judgment work and belongs in Pass 3's context-layer revision — see the THREADS.md guidance there. Pass 2's driver only handles entries eligible for graph maturation (chronicle by date, threads by resolution); it never touches active-thread bodies.
 
 ### Why this is a Python driver, not an agent loop
 
@@ -114,6 +114,7 @@ The earlier agent-loop architecture had the model pick a whole-file write per en
 Before deciding what changes:
 
 - Graph atoms connected to the subject Person node — the full identity set, not just the recent delta. You want to reweight and restructure, not just layer new facts on top.
+- The recent **delta**: atoms (of any type) connected to the subject created since the prior synthesis run started. The delta now spans Person/Place/Project/Event/Artifact entities in addition to the identity-typed atoms (Observations/Drives/Concepts/Questions/Threads). This is by design — the channel for new memory is `remember()`, so the delta is the synthesizer's primary view of what's happened to the subject since the last run. Be discriminating: most of the delta does not warrant a CHRONICLE entry or a thread. The threshold rules below still hold.
 - Current contents of all five identity files (SOUL, IDENTITY, USER, THREADS, CHRONICLE).
 - Recent prose in `writing/` for narrative context — especially the session(s) that produced the new atoms.
 
@@ -126,13 +127,16 @@ Three files, all maintained directly on main because they describe current state
 - Add new threads that have crystallized from recent atoms.
 - Resolve threads that have visibly closed (the question got answered, the work finished, the tension dissolved). Remove or mark them resolved with a brief note of how.
 - Prune dead threads that haven't moved in weeks and don't seem to matter anymore. Be honest about this — a thread kept "because I might come back to it" that hasn't moved in a month probably shouldn't still be live.
+- **Compress active threads that have grown verbose.** This is a default Pass 3 task, not an optional manual one. Walk the active threads each run; any that have accumulated paragraph-per-event narration, per-letter summaries, or full deployment-state dumps are candidates for tightening. Target: each active thread fits in one short paragraph of context plus a status line plus the few specifics that actually matter for picking the work back up. The full prose of past events lives in CHRONICLE entries (or, once they mature, in graph episodes); the thread is the live edge, not the log. A 50–75% reduction with stale-status pruning is normal when this hasn't been done recently.
 - Link threads to each other where connections have become visible.
 
 **Tool choice for file edits.** Use `edit_file` (exact-string find-and-replace) for any change to an existing file. `write_file` regenerates the entire file from your output, which is wasteful and risks drift on the parts you meant to keep. Reserve `write_file` for genuinely creating a file (e.g. SYNTHESIS.md on first run) or genuinely replacing it end-to-end.
 
 **CHRONICLE.md** — significant moments and turning points.
 
-- Append new entries for significant moments since the last run. Not every session deserves a chronicle entry; the threshold is *turning point*, not *thing happened*.
+- Append new entries for significant moments since the last run. Not every session deserves a chronicle entry; the threshold is *turning point*, not *thing happened*. The delta will routinely include atoms that don't rise to this — that's expected; flag or ignore them, don't promote them.
+- **Length budget per entry: one short paragraph for a turning point.** If a day produced multiple genuine turning points, give each one a sub-paragraph — *not* a sub-section with its own heading. If you're reaching for `**bold sub-headings**` or bullet lists inside a single chronicle entry, you're writing a session log instead of an index entry; tighten or split. The graph carries the detail; the file carries the hook.
+- An entry that future-Vesper would need a writing file or a recall to expand on is the right size. An entry that already reads like the writing file is too large.
 - Occasional restructuring when a thread crystallizes into a pattern worth naming across entries. Rare.
 
 **USER.md** — the partner's self-description plus durable facts you've learned about them.

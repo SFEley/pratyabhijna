@@ -769,3 +769,46 @@ async def test_sync_failure_does_not_block_run(service, config, repo):
     result = await run_synthesis(service, config, client=client)
 
     assert result["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_end_of_run_stamp_uses_fresh_subject_node(
+    service, config, no_candidates
+):
+    """End-of-run ``synthesis_run_started_at`` stamp refetches the subject
+    node so it doesn't clobber attributes written by Pass 4 (notably
+    ``context_rebuilt_at``)."""
+    run_start_node = MagicMock()
+    run_start_node.attributes = {}
+    run_start_node.labels = ["Person"]
+    run_start_node.load_name_embedding = AsyncMock()
+    run_start_node.save = AsyncMock()
+
+    fresh_node = MagicMock()
+    # Pass 4 has already stamped context_rebuilt_at on this fresh fetch.
+    fresh_node.attributes = {"context_rebuilt_at": "2026-04-13T12:00:00+00:00"}
+    fresh_node.labels = ["Person"]
+    fresh_node.load_name_embedding = AsyncMock()
+    fresh_node.save = AsyncMock()
+
+    # First fetch (run-start) returns the stale snapshot; subsequent
+    # fetches (the stamp's refetch, plus any bookkeeping) return the
+    # post-Pass-4 fresh copy.
+    service.get_entity_by_name = AsyncMock(
+        side_effect=[run_start_node] + [fresh_node] * 10
+    )
+
+    client = FakeClient(script=[_finish_call("p3"), _finish_call("p4")])
+
+    result = await run_synthesis(service, config, client=client)
+
+    assert result["status"] == "completed"
+    # The stamp must have written to the fresh node, not the stale one.
+    fresh_node.save.assert_awaited()
+    run_start_node.save.assert_not_awaited()
+    # And the stamp must not have wiped context_rebuilt_at off the
+    # fresh node — both attributes coexist after the stamp.
+    assert fresh_node.attributes["context_rebuilt_at"] == (
+        "2026-04-13T12:00:00+00:00"
+    )
+    assert "synthesis_run_started_at" in fresh_node.attributes
