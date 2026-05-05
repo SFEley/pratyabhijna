@@ -1805,7 +1805,7 @@ async def run_synthesis(
     """
     from pratyabhijna.synthesis import (
         get_identity_atoms,
-        get_identity_delta,
+        get_subject_delta,
         get_subject_node,
         read_identity_files,
         scan_repo_for_ingestion_candidates,
@@ -1825,7 +1825,11 @@ async def run_synthesis(
     identity_files = read_identity_files(repo_path)
     synthesis_file = _read_synthesis_file(repo_path)
     atoms = await get_identity_atoms(service, subject_node)
-    delta = await get_identity_delta(service, subject_node)
+    # Delta is computed against synthesis_run_started_at on the subject
+    # node — which still reflects the *prior* run's start. The orchestrator
+    # writes ``now`` to that attribute at end of run (after Pass 4), so
+    # the next run's delta covers [this_run_start, next_run_start).
+    delta = await get_subject_delta(service, subject_node)
     candidates = await scan_repo_for_ingestion_candidates(
         repo_path, service, max_age_days=config.synthesis.ingestion_lookback_days
     )
@@ -1989,7 +1993,7 @@ async def run_synthesis(
         identity_files_p3 = read_identity_files(repo_path)
         synthesis_file_p3 = _read_synthesis_file(repo_path)
         atoms_p3 = await get_identity_atoms(service, subject_node)
-        delta_p3 = await get_identity_delta(service, subject_node)
+        delta_p3 = await get_subject_delta(service, subject_node)
         pass3_opening = _build_pass3_message(
             subject_name=config.subject_name,
             now=now,
@@ -2075,6 +2079,20 @@ async def run_synthesis(
             len(dispatched),
             ", ".join(f"{p['pass']}={p['status']}" for p in failed),
         )
+
+    # Stamp this run's start time onto the subject node so the next run's
+    # delta covers [this_run_start, next_run_start). Done at end of run
+    # (rather than at start) so all this run's reads of the attribute
+    # see the prior run's start as the delta reference. If the run
+    # crashed before this point, the attribute stays at the prior value
+    # and the next delta covers a wider window — which is desirable.
+    try:
+        subject_node.attributes["synthesis_run_started_at"] = now.isoformat()
+        await subject_node.load_name_embedding(service._graphiti.driver)
+        await subject_node.save(service._graphiti.driver)
+        _log.info("synthesis: synthesis_run_started_at stamped (%s)", now.isoformat())
+    except Exception:  # noqa: BLE001
+        _log.warning("synthesis: failed to stamp synthesis_run_started_at", exc_info=True)
 
     return {
         "status": status,

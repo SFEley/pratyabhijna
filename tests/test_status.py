@@ -220,7 +220,7 @@ class TestStatusSynthesisBlock:
             "pratyabhijna.synthesis.get_subject_node", fake_get_subject_node
         )
         monkeypatch.setattr(
-            "pratyabhijna.synthesis.get_identity_delta", fake_get_delta
+            "pratyabhijna.synthesis.get_subject_delta", fake_get_delta
         )
 
         result = await status(

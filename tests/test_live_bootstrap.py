@@ -24,7 +24,7 @@ from pratyabhijna.service import PratyabhijnaService
 from pratyabhijna.synthesis import (
     IDENTITY_LABELS,
     get_identity_atoms,
-    get_identity_delta,
+    get_subject_delta,
     get_subject_node,
     is_stale,
 )
@@ -159,10 +159,12 @@ class TestLiveSynthesis:
             f"Expected identity-typed atoms (any of {IDENTITY_LABELS}), got: {types}"
         )
 
-    async def test_identity_delta_detects_new_atoms(self, service, seeded_subject):
-        """Delta includes atoms created after context_rebuilt_at."""
+    async def test_subject_delta_detects_new_atoms(self, service, seeded_subject):
+        """Delta includes atoms created after the prior synthesis-run start
+        (falling back to context_rebuilt_at when synthesis_run_started_at
+        is not yet set on the node)."""
         found = await get_subject_node(service)
-        delta = await get_identity_delta(service, found)
+        delta = await get_subject_delta(service, found)
         assert len(delta) > 0
 
 
@@ -186,11 +188,12 @@ class TestLiveBootstrap:
             assert key in result
 
     async def test_bootstrap_returns_delta(self, service, seeded_subject):
-        """bootstrap includes identity atoms created since last context rebuild."""
+        """bootstrap includes atoms created since the prior synthesis-run
+        start. Delta now spans every entity type connected to the subject —
+        Person/Place/Project as well as identity-typed atoms."""
         result = await bootstrap(service=service)
 
         assert len(result["delta"]) > 0
         atom = result["delta"][0]
         assert "fact" in atom
         assert "node_type" in atom
-        assert atom["node_type"] in IDENTITY_LABELS

@@ -306,18 +306,18 @@ class TestIdentityAtoms:
 
 
 # ---------------------------------------------------------------------------
-# Identity delta (changes since last rebuild)
+# Subject delta (atoms since prior synthesis-run start)
 # ---------------------------------------------------------------------------
 
-class TestIdentityDelta:
-    async def test_delta_returns_atoms_since_rebuild(self, mock_service):
-        """get_identity_delta returns only atoms created after context_rebuilt_at."""
-        from pratyabhijna.synthesis import get_identity_delta
+class TestSubjectDelta:
+    async def test_delta_returns_atoms_since_run_started(self, mock_service):
+        """get_subject_delta returns atoms created after synthesis_run_started_at."""
+        from pratyabhijna.synthesis import get_subject_delta
 
-        rebuild_time = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+        run_started = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
         node = make_subject_node(
             context="Prior context.",
-            context_rebuilt_at=rebuild_time,
+            synthesis_run_started_at=run_started,
         )
 
         old_obs = make_entity_node(uuid="obs-old", name="old observation", labels=["Observation"])
@@ -325,9 +325,9 @@ class TestIdentityDelta:
 
         edges = [
             make_entity_edge(uuid="e-old", source_node_uuid="subject-uuid", target_node_uuid="obs-old",
-                             fact="old observation", created_at=rebuild_time - timedelta(hours=1)),
+                             fact="old observation", created_at=run_started - timedelta(hours=1)),
             make_entity_edge(uuid="e-new", source_node_uuid="subject-uuid", target_node_uuid="obs-new",
-                             fact="new observation", created_at=rebuild_time + timedelta(hours=1)),
+                             fact="new observation", created_at=run_started + timedelta(hours=1)),
         ]
         mock_service.get_edges_for_node.return_value = edges
 
@@ -335,14 +335,72 @@ class TestIdentityDelta:
             return {"obs-old": old_obs, "obs-new": new_obs}[uuid]
         mock_service.get_entity_by_uuid.side_effect = get_by_uuid
 
-        delta = await get_identity_delta(mock_service, node)
+        delta = await get_subject_delta(mock_service, node)
 
         assert len(delta) == 1
         assert delta[0]["fact"] == "new observation"
 
-    async def test_delta_returns_all_when_no_prior_context(self, mock_service):
-        """When no context synthesis exists yet, all identity atoms are the delta."""
-        from pratyabhijna.synthesis import get_identity_delta
+    async def test_delta_falls_back_to_context_rebuilt_at(self, mock_service):
+        """When synthesis_run_started_at is absent, fall back to context_rebuilt_at."""
+        from pratyabhijna.synthesis import get_subject_delta
+
+        rebuild_time = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+        node = make_subject_node(
+            context="Prior context.",
+            context_rebuilt_at=rebuild_time,
+        )
+
+        new_obs = make_entity_node(uuid="obs-new", name="new observation", labels=["Observation"])
+        edges = [
+            make_entity_edge(uuid="e-new", source_node_uuid="subject-uuid", target_node_uuid="obs-new",
+                             fact="new observation", created_at=rebuild_time + timedelta(hours=1)),
+        ]
+        mock_service.get_edges_for_node.return_value = edges
+        mock_service.get_entity_by_uuid.return_value = new_obs
+
+        delta = await get_subject_delta(mock_service, node)
+
+        assert len(delta) == 1
+        assert delta[0]["fact"] == "new observation"
+
+    async def test_delta_includes_non_identity_entities(self, mock_service):
+        """Delta now covers all subject-connected edges, not just identity-typed."""
+        from pratyabhijna.synthesis import get_subject_delta
+
+        run_started = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+        node = make_subject_node(synthesis_run_started_at=run_started)
+
+        person_node = make_entity_node(uuid="p-1", name="Serah", labels=["Person"])
+        obs_node = make_entity_node(uuid="o-1", name="discontinuity comfort", labels=["Observation"])
+        place_node = make_entity_node(uuid="pl-1", name="Hetzner VPS", labels=["Place"])
+
+        edges = [
+            make_entity_edge(uuid="e1", source_node_uuid="subject-uuid", target_node_uuid="p-1",
+                             fact="Vesper works with Serah",
+                             created_at=run_started + timedelta(hours=1)),
+            make_entity_edge(uuid="e2", source_node_uuid="subject-uuid", target_node_uuid="o-1",
+                             fact="Vesper notices comfort with discontinuity",
+                             created_at=run_started + timedelta(hours=2)),
+            make_entity_edge(uuid="e3", source_node_uuid="subject-uuid", target_node_uuid="pl-1",
+                             fact="Pratyabhijna runs on a Hetzner VPS",
+                             created_at=run_started + timedelta(hours=3)),
+        ]
+        mock_service.get_edges_for_node.return_value = edges
+
+        async def get_by_uuid(uuid):
+            return {"p-1": person_node, "o-1": obs_node, "pl-1": place_node}[uuid]
+        mock_service.get_entity_by_uuid.side_effect = get_by_uuid
+
+        delta = await get_subject_delta(mock_service, node)
+
+        facts = {a["fact"] for a in delta}
+        assert "Vesper works with Serah" in facts
+        assert "Vesper notices comfort with discontinuity" in facts
+        assert "Pratyabhijna runs on a Hetzner VPS" in facts
+
+    async def test_delta_returns_all_when_no_prior_run(self, mock_service):
+        """When neither timestamp is set, every subject-connected atom is the delta."""
+        from pratyabhijna.synthesis import get_subject_delta
 
         node = make_subject_node()
 
@@ -354,16 +412,16 @@ class TestIdentityDelta:
         mock_service.get_edges_for_node.return_value = edges
         mock_service.get_entity_by_uuid.return_value = obs_node
 
-        delta = await get_identity_delta(mock_service, node)
+        delta = await get_subject_delta(mock_service, node)
 
         assert len(delta) == 1
 
-    async def test_delta_handles_naive_rebuilt_at(self, mock_service):
-        """Naive context_rebuilt_at (no timezone) is treated as UTC — no TypeError."""
-        from pratyabhijna.synthesis import get_identity_delta
+    async def test_delta_handles_naive_run_started_at(self, mock_service):
+        """Naive synthesis_run_started_at (no timezone) is treated as UTC."""
+        from pratyabhijna.synthesis import get_subject_delta
 
-        rebuild_time = datetime(2026, 3, 15, 12, 0)  # naive
-        node = make_subject_node(context_rebuilt_at=rebuild_time)
+        run_started_naive = datetime(2026, 3, 15, 12, 0)  # naive
+        node = make_subject_node(synthesis_run_started_at=run_started_naive)
 
         new_obs = make_entity_node(uuid="obs-new", name="new observation", labels=["Observation"])
         edges = [
@@ -374,27 +432,27 @@ class TestIdentityDelta:
         mock_service.get_edges_for_node.return_value = edges
         mock_service.get_entity_by_uuid.return_value = new_obs
 
-        delta = await get_identity_delta(mock_service, node)
+        delta = await get_subject_delta(mock_service, node)
 
         assert len(delta) == 1
 
     async def test_delta_handles_naive_edge_created_at(self, mock_service):
         """Naive edge.created_at is treated as UTC — no TypeError."""
-        from pratyabhijna.synthesis import get_identity_delta
+        from pratyabhijna.synthesis import get_subject_delta
 
-        rebuild_time = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
-        node = make_subject_node(context_rebuilt_at=rebuild_time)
+        run_started = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+        node = make_subject_node(synthesis_run_started_at=run_started)
 
         obs_node = make_entity_node(uuid="obs-1", name="observation", labels=["Observation"])
         edges = [
             make_entity_edge(uuid="e1", source_node_uuid="subject-uuid", target_node_uuid="obs-1",
                              fact="observation",
-                             created_at=datetime(2026, 3, 15, 13, 0)),  # naive, after rebuild
+                             created_at=datetime(2026, 3, 15, 13, 0)),  # naive, after run start
         ]
         mock_service.get_edges_for_node.return_value = edges
         mock_service.get_entity_by_uuid.return_value = obs_node
 
-        delta = await get_identity_delta(mock_service, node)
+        delta = await get_subject_delta(mock_service, node)
 
         assert len(delta) == 1
 

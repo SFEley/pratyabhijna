@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 from pratyabhijna.log import get_logger
 from pratyabhijna.synthesis import (
     IDENTITY_FILES,
-    get_identity_delta,
+    get_subject_delta,
     get_subject_node,
     is_stale,
     read_identity_files,
@@ -82,7 +82,7 @@ async def bootstrap(
             ),
         }
 
-    delta = await get_identity_delta(service, node)
+    delta = await get_subject_delta(service, node)
 
     if queue is not None and await is_stale(node, service):
         delay = service.config.synthesis.rebuild_delay_hours

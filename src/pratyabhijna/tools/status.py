@@ -81,12 +81,12 @@ async def _collect_synthesis(service: PratyabhijnaService) -> dict:
     last_run = None
     delta_count = None
     try:
-        from pratyabhijna.synthesis import get_identity_delta, get_subject_node
+        from pratyabhijna.synthesis import get_subject_delta, get_subject_node
 
         node = await get_subject_node(service)
         if node is not None:
             last_run = node.attributes.get("context_rebuilt_at")
-            delta = await get_identity_delta(service, node)
+            delta = await get_subject_delta(service, node)
             delta_count = len(delta)
     except Exception:  # noqa: BLE001
         _log.warning("collect_synthesis failed", exc_info=True)

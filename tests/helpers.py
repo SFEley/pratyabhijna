@@ -79,6 +79,7 @@ def make_subject_node(
     identity=None,
     context=None,
     context_rebuilt_at=None,
+    synthesis_run_started_at=None,
     **extra_attrs,
 ):
     """Create a subject Person node with optional three-tier bootstrap fields.
@@ -97,6 +98,8 @@ def make_subject_node(
         attrs["context"] = context
     if context_rebuilt_at is not None:
         attrs["context_rebuilt_at"] = context_rebuilt_at.isoformat()
+    if synthesis_run_started_at is not None:
+        attrs["synthesis_run_started_at"] = synthesis_run_started_at.isoformat()
     attrs.update(extra_attrs)
     return make_entity_node(
         uuid=uuid,
