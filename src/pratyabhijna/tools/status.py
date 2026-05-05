@@ -8,8 +8,8 @@ Returns system orientation as a nested dict with three blocks:
   without instantiating a second ``WorkQueue``.
 - ``graph`` — node and edge counts (total and by label/type), plus a
   supersession count (edges with ``invalid_at`` set).
-- ``synthesis`` — when the context was last rebuilt and the current delta
-  size.
+- ``synthesis`` — when the last synthesis run started and the current
+  delta size (atoms accumulated since that run started).
 
 Plus top-level ``version``, ``db_connected``, and ``subject_name``.
 
@@ -85,7 +85,13 @@ async def _collect_synthesis(service: PratyabhijnaService) -> dict:
 
         node = await get_subject_node(service)
         if node is not None:
-            last_run = node.attributes.get("context_rebuilt_at")
+            # ``last_run`` mirrors the delta's reference timestamp so
+            # callers can read both fields against the same instant.
+            # Falls back to ``context_rebuilt_at`` for legacy nodes
+            # written before the run-start attribute landed.
+            last_run = node.attributes.get(
+                "synthesis_run_started_at"
+            ) or node.attributes.get("context_rebuilt_at")
             delta = await get_subject_delta(service, node)
             delta_count = len(delta)
     except Exception:  # noqa: BLE001
