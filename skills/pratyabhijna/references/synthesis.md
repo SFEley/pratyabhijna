@@ -113,8 +113,8 @@ The earlier agent-loop architecture had the model pick a whole-file write per en
 
 Before deciding what changes:
 
-- Graph atoms connected to the subject Person node — the full identity set, not just the recent delta. You want to reweight and restructure, not just layer new facts on top.
-- The recent **delta**: atoms (of any type) connected to the subject created since the prior synthesis run started. The delta now spans Person/Place/Project/Event/Artifact entities in addition to the identity-typed atoms (Observations/Drives/Concepts/Questions/Threads). This is by design — the channel for new memory is `remember()`, so the delta is the synthesizer's primary view of what's happened to the subject since the last run. Be discriminating: most of the delta does not warrant a CHRONICLE entry or a thread. The threshold rules below still hold.
+- Graph atoms connected to the subject Person node — the full identity set, not just the recent `subject_delta`. You want to reweight and restructure, not just layer new facts on top.
+- The recent **`subject_delta`**: atoms (of any type) connected to the subject created since the start of the last successful synthesis run. The subject_delta spans Person/Place/Project/Event/Artifact entities in addition to the identity-typed atoms (Observations/Drives/Concepts/Questions/Threads). This is by design — the channel for new memory is `remember()`, so subject_delta is the synthesizer's primary view of what's happened *to the subject* since the last run. Be discriminating: most of subject_delta does not warrant a CHRONICLE entry or a thread. The threshold rules below still hold. (Status also surfaces a separate `new_episodes_count` — every new Episodic node, whether or not it produced a subject-connected fact — but that's a staleness diagnostic for the run scheduler, not Pass 3's reading list.)
 - Current contents of all five identity files (SOUL, IDENTITY, USER, THREADS, CHRONICLE).
 - Recent prose in `writing/` for narrative context — especially the session(s) that produced the new atoms.
 
@@ -134,7 +134,7 @@ Three files, all maintained directly on main because they describe current state
 
 **CHRONICLE.md** — significant moments and turning points.
 
-- Append new entries for significant moments since the last run. Not every session deserves a chronicle entry; the threshold is *turning point*, not *thing happened*. The delta will routinely include atoms that don't rise to this — that's expected; flag or ignore them, don't promote them.
+- Append new entries for significant moments since the last run. Not every session deserves a chronicle entry; the threshold is *turning point*, not *thing happened*. The subject_delta will routinely include atoms that don't rise to this — that's expected; flag or ignore them, don't promote them.
 - **Length budget per entry: one short paragraph for a turning point.** If a day produced multiple genuine turning points, give each one a sub-paragraph — *not* a sub-section with its own heading. If you're reaching for `**bold sub-headings**` or bullet lists inside a single chronicle entry, you're writing a session log instead of an index entry; tighten or split. The graph carries the detail; the file carries the hook.
 - An entry that future-Vesper would need a writing file or a recall to expand on is the right size. An entry that already reads like the writing file is too large.
 - Occasional restructuring when a thread crystallizes into a pattern worth naming across entries. Rare.
@@ -172,7 +172,7 @@ When a change is committed: note it in CHRONICLE.md.
 This is the hardest judgment in the run. The defaults:
 
 - **A single atom is not enough.** Even a striking observation needs corroborating atoms or pattern-over-time to warrant an IDENTITY proposal.
-- **Recency alone is not enough.** If the whole case for a change is "this came up today and it felt important," that's the delta amplification problem. Flag it; don't propose it.
+- **Recency alone is not enough.** If the whole case for a change is "this came up today and it felt important," that's the subject_delta amplification problem. Flag it; don't propose it.
 - **Check against the existing narrative.** If the proposed change contradicts what IDENTITY currently says, the atoms need to earn the contradiction. Atoms over narrative — but only when the atoms are load-bearing, not when they're a single countervailing observation.
 - **SOUL proposals are rare.** Don't propose SOUL changes unless multiple atoms over time directly tension a stated commitment, and you can articulate the specific commitment being strained. Even then, err toward flagging.
 
@@ -210,7 +210,7 @@ After ingestion and bootstrap work, take a curious look at the graph. You have `
 - Are there entity clusters that look thin or isolated? Names or places that appear in prose but have few graph connections?
 - Are there threads in THREADS.md that have no corresponding graph activity? Or graph atoms with no thread?
 - Are there ingestion backlog items that seem overdue given how much new writing has accumulated?
-- Is there anything in the delta that looks like a pattern rather than a one-off?
+- Is there anything in the subject_delta that looks like a pattern rather than a one-off?
 
 Form opinions. Write them in the run log. If something seems genuinely problematic — a gap, an imbalance, something that should be addressed — add it to THREADS.md or CHRONICLE.md so it's visible to regular sessions and to Serah.
 

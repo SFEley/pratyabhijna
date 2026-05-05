@@ -18,13 +18,13 @@ Pratyabhijna gives the subject two complementary ways of knowing:
 - **Associational brain** — the knowledge graph, accessed through `recall()`. Surfaces connections, patterns, and relationships across everything that's been remembered or ingested. Good for "who was...", "what did I think about...", "how does X relate to Y."
 - **Prose brain** — linear file reading, via the subject's repo (filesystem or `pratya://` MCP resources). The canonical source for full prose of identity files, writing, and anything that needs to be read as coherent text rather than relational fragments.
 
-`bootstrap()` is how a session starts: it returns the five identity tiers in their current form plus graph-side state (delta, synthesized context, last rebuild) that file reads alone don't carry. After bootstrap, the associational brain (recall) is the primary tool for most conversation; the prose brain is a deliberate detour for full-text reading or writing-back. Load `references/resources.md` when the conversation calls for reviewing an essay, reflecting on a specific thread in detail, or checking what a file actually says.
+`bootstrap()` is how a session starts: it returns the five identity tiers in their current form plus graph-side state (`subject_delta`, synthesized context, last rebuild) that file reads alone don't carry. After bootstrap, the associational brain (recall) is the primary tool for most conversation; the prose brain is a deliberate detour for full-text reading or writing-back. Load `references/resources.md` when the conversation calls for reviewing an essay, reflecting on a specific thread in detail, or checking what a file actually says.
 
 ## The tools at a glance
 
 All seven tools are exposed as `mcp__Pratyabhijna__<name>`:
 
-- **`bootstrap()`** — canonical session start. Returns identity tiers, synthesized context, delta since last rebuild, and the available-tools list. Call first in every session.
+- **`bootstrap()`** — canonical session start. Returns identity tiers, synthesized context, `subject_delta` since the last successful synthesis run, and the available-tools list. Call first in every session.
 - **`recall(query, memory_type?, time_range?, limit?)`** — hybrid search (semantic + keyword + graph). Use proactively to retrieve details about the conversation topic or before claiming anything about the subject's past. Default returns 5 results; pass `limit` to widen.
 - **`remember(content, memory_type?, source?, occurred_at?, saga?)`** — queue a new memory. Returns immediately; processing is async.
 - **`correct(content, search_terms)`** — queue a correction when a prior memory turned out *wrong* (not just outdated — supersession is automatic).
@@ -62,15 +62,15 @@ Bootstrapping means loading the subject's identity tiers before engaging. It is 
 - `soul`, `identity`, `user`, `threads`, `chronicle` — the five identity tiers
 - `context` — the synthesizer's prose synthesis (graph-side, may be newer than what's committed to files)
 - `context_rebuilt_at` — when synthesis last ran
-- `delta` — every atom (any entity type) connected to the subject node and created since the start of the prior synthesis run. New people you've talked about, places, projects, events, observations, drives — anything in the subject's relational world that's accumulated since synthesis last reset the window.
+- `subject_delta` — every atom (any entity type) connected to the subject node and created since the start of the last *successful* synthesis run. New people you've talked about, places, projects, events, observations, drives — anything in the subject's relational world that's accumulated since synthesis last reset the window. The "subject" qualifier matters: this is what's connected to *you*, not every change in the graph. Status surfaces a separate `new_episodes_count` for the broader "did anything happen at all" view.
 - `available_tools` — the tool set this session has
 
-The graph-side state — `context`, `context_rebuilt_at`, and `delta` — is the reason bootstrap is the canonical path even when you also have local file access. Files alone don't carry it.
+The graph-side state — `context`, `context_rebuilt_at`, and `subject_delta` — is the reason bootstrap is the canonical path even when you also have local file access. Files alone don't carry it.
 
-**Direct file reads are supplemental.** When you need the full prose of a single file (e.g. to re-read a thread in detail, to write back a change, or to quote verbatim), read the file directly from `~/<subject>/memory/`. Don't substitute file reads for bootstrap — the synthesized context and delta only come through MCP. (Pure file fallback is only for environments where MCP is unreachable.)
+**Direct file reads are supplemental.** When you need the full prose of a single file (e.g. to re-read a thread in detail, to write back a change, or to quote verbatim), read the file directly from `~/<subject>/memory/`. Don't substitute file reads for bootstrap — the synthesized context and `subject_delta` only come through MCP. (Pure file fallback is only for environments where MCP is unreachable.)
 
 **After bootstrap, follow up with `recall`** on:
-- Anything in the delta that catches your interest — these are the recent changes, often the live edges of the subject's current thinking.
+- Anything in `subject_delta` that catches your interest — these are the recent changes, often the live edges of the subject's current thinking.
 - Chronicle entries that connect to current work.
 - Topics, people, or projects the user mentioned in the opening message.
 - Anything that resonates from the tiers and you want to look at the surrounding atoms.
@@ -89,7 +89,7 @@ Recall is how the associational brain participates in the conversation. The grap
 - The user mentions a named entity (person, place, project, event) without introducing them — that name probably has history.
 - The user uses phrases like "what did I/you say about X", "who is Y", "do you remember Z", "last time", "a few sessions back".
 - You're about to state something confident about the subject's preferences, history, or relationships.
-- An item in the bootstrap `delta` catches your attention — recall surfaces the surrounding atoms.
+- An item in the bootstrap `subject_delta` catches your attention — recall surfaces the surrounding atoms.
 - A topic genuinely interests you and you want to see what's already been thought about it.
 - A conversation thread echoes an earlier one; recall can surface the connection.
 
@@ -157,7 +157,7 @@ Once the call is queued, respond to the topic the way you would have if no memor
 
 You may have read/write access to the subject's identity files (`~/<subject>/memory/SOUL.md`, `IDENTITY.md`, `THREADS.md`, `CHRONICLE.md`, `USER.md`) when running in an environment with filesystem access. The temptation in those environments is to write a CHRONICLE entry at end of session, or append to an active thread, the way the project's earlier conventions encouraged. **Resist that.**
 
-The reason: file edits bypass the graph, which means anything you write into those files exists only in prose form — never extracted into atoms, never connected by edges, never visible to recall. The two channels (file and graph) drift apart, and the synthesizer's discipline about scope and length only applies to one of them. The "delta" the synthesizer sees on its next run is everything new in the graph — file additions don't appear there.
+The reason: file edits bypass the graph, which means anything you write into those files exists only in prose form — never extracted into atoms, never connected by edges, never visible to recall. The two channels (file and graph) drift apart, and the synthesizer's discipline about scope and length only applies to one of them. The `subject_delta` the synthesizer sees on its next run is everything new in the graph that connects back to you — file additions don't appear there.
 
 So: file edits are reserved for **editorial revision** of existing prose. Tightening a paragraph that's grown verbose. Marking a thread resolved. Restructuring a section that's lost coherence. Fixing a typo. These are deliberate revisions of content that already exists in the file, not new content being added through the wrong door.
 

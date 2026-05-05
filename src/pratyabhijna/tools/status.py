@@ -8,8 +8,10 @@ Returns system orientation as a nested dict with three blocks:
   without instantiating a second ``WorkQueue``.
 - ``graph`` — node and edge counts (total and by label/type), plus a
   supersession count (edges with ``invalid_at`` set).
-- ``synthesis`` — when the last synthesis run started and the current
-  delta size (atoms accumulated since that run started).
+- ``synthesis`` — when the last successful synthesis run started, the
+  current ``subject_delta_count`` (subject-connected atoms accumulated
+  since), and ``new_episodes_count`` (every Episodic node since,
+  whether or not it produced a subject-connected fact).
 
 Plus top-level ``version``, ``db_connected``, and ``subject_name``.
 
@@ -77,26 +79,48 @@ async def _collect_graph(service: PratyabhijnaService) -> dict:
 
 
 async def _collect_synthesis(service: PratyabhijnaService) -> dict:
-    """Subject-node driven synthesis stats."""
+    """Subject-node driven synthesis stats.
+
+    Both counts use ``synthesis_run_started_at`` as their reference,
+    which is now only stamped on a fully completed run. Failed or
+    partial runs leave the prior successful timestamp intact, so
+    these counts keep showing everything a failed run didn't
+    integrate.
+    """
     last_run = None
-    delta_count = None
+    subject_delta_count = None
+    new_episodes_count = None
     try:
+        from datetime import datetime, timezone
+
         from pratyabhijna.synthesis import get_subject_delta, get_subject_node
 
         node = await get_subject_node(service)
         if node is not None:
-            # ``last_run`` mirrors the delta's reference timestamp so
-            # callers can read both fields against the same instant.
-            # Falls back to ``context_rebuilt_at`` for legacy nodes
-            # written before the run-start attribute landed.
+            # ``last_run`` mirrors the delta references so callers can
+            # read all three fields against the same instant. Falls
+            # back to ``context_rebuilt_at`` for legacy nodes written
+            # before the run-start attribute landed.
             last_run = node.attributes.get(
                 "synthesis_run_started_at"
             ) or node.attributes.get("context_rebuilt_at")
+
             delta = await get_subject_delta(service, node)
-            delta_count = len(delta)
+            subject_delta_count = len(delta)
+
+            since: datetime | None = None
+            if last_run is not None:
+                since = datetime.fromisoformat(last_run)
+                if since.tzinfo is None:
+                    since = since.replace(tzinfo=timezone.utc)
+            new_episodes_count = await service.count_episodes_since(since)
     except Exception:  # noqa: BLE001
         _log.warning("collect_synthesis failed", exc_info=True)
-    return {"last_run": last_run, "delta_count": delta_count}
+    return {
+        "last_run": last_run,
+        "subject_delta_count": subject_delta_count,
+        "new_episodes_count": new_episodes_count,
+    }
 
 
 async def _safe(coro_fn, default=None):

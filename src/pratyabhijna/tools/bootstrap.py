@@ -1,7 +1,8 @@
 """The ``bootstrap`` MCP tool.
 
 Returns the subject's identity tiers from repo files plus synthesis
-metadata (context_rebuilt_at, delta) from the Person node.
+metadata (``context_rebuilt_at``, ``subject_delta``) from the Person
+node.
 
 The tier text itself lives only in the subject's repo — the graph no
 longer duplicates SOUL/IDENTITY/USER/THREADS/CHRONICLE as Person-node
@@ -40,7 +41,7 @@ async def bootstrap(
     service: PratyabhijnaService,
     queue: WorkQueue | None = None,
 ) -> dict:
-    """Return the subject's bootstrap tiers and identity delta.
+    """Return the subject's bootstrap tiers and subject delta.
 
     Reads identity files from the repo (``config.resources.repo_path``)
     and combines them with synthesis metadata from the Person node. All
@@ -73,30 +74,31 @@ async def bootstrap(
         return {
             **base,
             "context_rebuilt_at": None,
-            "delta": [],
+            "subject_delta": [],
             "available_tools": _available_tools,
             "message": (
                 f"No Person node found for '{service.config.subject_name}'. "
                 "The subject node must be created before bootstrap can "
-                "return synthesis metadata or delta."
+                "return synthesis metadata or subject_delta."
             ),
         }
 
-    delta = await get_subject_delta(service, node)
+    subject_delta = await get_subject_delta(service, node)
 
     if queue is not None and await is_stale(node, service):
         delay = service.config.synthesis.rebuild_delay_hours
         run_at = datetime.now(timezone.utc) + timedelta(hours=delay)
         await queue.reschedule_or_enqueue("synthesize", {}, run_at=run_at)
         _log.info(
-            "synthesis scheduled from bootstrap (delta=%d, context_rebuilt_at=%s)",
-            len(delta),
+            "synthesis scheduled from bootstrap "
+            "(subject_delta=%d, context_rebuilt_at=%s)",
+            len(subject_delta),
             node.attributes.get("context_rebuilt_at", "never"),
         )
 
     return {
         **base,
         "context_rebuilt_at": node.attributes.get("context_rebuilt_at"),
-        "delta": delta,
+        "subject_delta": subject_delta,
         "available_tools": _available_tools,
     }
