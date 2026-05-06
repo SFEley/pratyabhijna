@@ -8,6 +8,7 @@ and graphiti-core.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 
 from graphiti_core import Graphiti
 from graphiti_core.driver.neo4j_driver import Neo4jDriver
@@ -407,6 +408,30 @@ class PratyabhijnaService:
             "RETURN count(r) AS n",
             routing_="r",
         )
+        return records[0]["n"] if records else 0
+
+    async def count_episodes_since(self, since: datetime | None) -> int:
+        """Count Episodic nodes created strictly after ``since``.
+
+        Pairs with ``get_subject_delta`` for the synthesis staleness
+        signal: subject_delta is what Pass 3 should attend to (atoms
+        connected to the subject); this count is the broader "did
+        anything happen at all" view (every new episode, regardless of
+        whether it produced a subject-connected fact).
+
+        ``since`` of None counts all episodes in the graph.
+        """
+        if since is None:
+            records, _, _ = await self._graphiti.driver.execute_query(
+                "MATCH (e:Episodic) RETURN count(e) AS n", routing_="r"
+            )
+        else:
+            records, _, _ = await self._graphiti.driver.execute_query(
+                "MATCH (e:Episodic) WHERE e.created_at > $since "
+                "RETURN count(e) AS n",
+                since=since,
+                routing_="r",
+            )
         return records[0]["n"] if records else 0
 
     # --- General query execution (used by the query tool) --------------------

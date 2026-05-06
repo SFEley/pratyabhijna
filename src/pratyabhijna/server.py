@@ -211,7 +211,7 @@ def create_server(
 
     @server.tool()
     async def bootstrap() -> dict:
-        """Return identity tiers, synthesis delta, and available tools for session start.
+        """Return identity tiers, subject_delta, and available tools for session start.
 
         Call first at the beginning of every session. The response includes the full
         list of tools available during the session — notably `remember` (write a new

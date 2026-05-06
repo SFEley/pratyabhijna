@@ -193,7 +193,7 @@ class TestLiveBootstrap:
         Person/Place/Project as well as identity-typed atoms."""
         result = await bootstrap(service=service)
 
-        assert len(result["delta"]) > 0
-        atom = result["delta"][0]
+        assert len(result["subject_delta"]) > 0
+        atom = result["subject_delta"][0]
         assert "fact" in atom
         assert "node_type" in atom

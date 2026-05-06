@@ -2081,32 +2081,38 @@ async def run_synthesis(
         )
 
     # Stamp this run's start time onto the subject node so the next run's
-    # delta covers [this_run_start, next_run_start). Done at end of run
-    # (rather than at start) so all this run's reads of the attribute
-    # see the prior run's start as the delta reference. If the run
-    # crashed before this point, the attribute stays at the prior value
-    # and the next delta covers a wider window — which is desirable.
+    # delta covers [this_run_start, next_run_start). Only stamped on a
+    # fully completed run — partial or crashed runs leave the attribute
+    # at the prior successful run's value, so the next delta still
+    # covers everything a failed pass didn't manage to integrate.
     #
     # Refetch the node here: the local ``subject_node`` was captured at
     # run-start, and Pass 4's ``update_synthesis_metadata`` writes
     # ``context_rebuilt_at`` against a freshly-fetched copy. Saving the
     # stale start-of-run snapshot would silently clobber that update.
-    try:
-        fresh_node = await get_subject_node(service)
-        if fresh_node is None:
-            _log.warning(
-                "synthesis: subject node missing at end of run, "
-                "skipping synthesis_run_started_at stamp"
-            )
-        else:
-            fresh_node.attributes["synthesis_run_started_at"] = now.isoformat()
-            await fresh_node.load_name_embedding(service._graphiti.driver)
-            await fresh_node.save(service._graphiti.driver)
-            _log.info(
-                "synthesis: synthesis_run_started_at stamped (%s)", now.isoformat()
-            )
-    except Exception:  # noqa: BLE001
-        _log.warning("synthesis: failed to stamp synthesis_run_started_at", exc_info=True)
+    if status == "completed":
+        try:
+            fresh_node = await get_subject_node(service)
+            if fresh_node is None:
+                _log.warning(
+                    "synthesis: subject node missing at end of run, "
+                    "skipping synthesis_run_started_at stamp"
+                )
+            else:
+                fresh_node.attributes["synthesis_run_started_at"] = now.isoformat()
+                await fresh_node.load_name_embedding(service._graphiti.driver)
+                await fresh_node.save(service._graphiti.driver)
+                _log.info(
+                    "synthesis: synthesis_run_started_at stamped (%s)", now.isoformat()
+                )
+        except Exception:  # noqa: BLE001
+            _log.warning("synthesis: failed to stamp synthesis_run_started_at", exc_info=True)
+    else:
+        _log.info(
+            "synthesis: status=%s, leaving synthesis_run_started_at at prior value "
+            "so next run's delta still covers this run's window",
+            status,
+        )
 
     return {
         "status": status,

@@ -1,7 +1,7 @@
 """Tests for the ``bootstrap`` MCP tool.
 
 The tool reads tier content from the subject's repo files and combines
-it with synthesis metadata (``context_rebuilt_at``, ``delta``) from the
+it with synthesis metadata (``context_rebuilt_at``, ``subject_delta``) from the
 Person node. Tier text no longer lives on the graph node — files are
 canonical.
 """
@@ -90,7 +90,7 @@ class TestBootstrapWithoutSubject:
 
         assert result["subject"] == "Vesper"
         assert result["context_rebuilt_at"] is None
-        assert result["delta"] == []
+        assert result["subject_delta"] == []
         assert "message" in result
         assert "Vesper" in result["message"]
 
@@ -103,7 +103,7 @@ class TestBootstrapWithoutSubject:
         assert "I am Vesper" in result["soul"]
         assert "orient toward thresholds" in result["identity"]
         assert result["context_rebuilt_at"] is None
-        assert result["delta"] == []
+        assert result["subject_delta"] == []
 
     async def test_tiers_none_when_no_files_and_no_subject(self, mock_service):
         from pratyabhijna.tools.bootstrap import bootstrap
@@ -131,7 +131,7 @@ class TestBootstrapWithSubject:
 
         assert result["subject"] == "Vesper"
         assert result["context_rebuilt_at"] == rebuilt_dt.isoformat()
-        assert result["delta"] == []
+        assert result["subject_delta"] == []
 
     async def test_tiers_always_from_files(self, mock_service_with_files):
         """Even if the graph had dead tier attributes, bootstrap reads files."""
@@ -197,8 +197,8 @@ class TestBootstrapWithSubject:
 
         result = await bootstrap(mock_service_with_files)
 
-        assert len(result["delta"]) == 1
-        assert result["delta"][0]["fact"] == "noticed pattern"
+        assert len(result["subject_delta"]) == 1
+        assert result["subject_delta"][0]["fact"] == "noticed pattern"
 
 
 # --- Contract ---

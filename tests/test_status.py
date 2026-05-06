@@ -41,6 +41,7 @@ def _make_service(
     service.count_edges_total = AsyncMock(return_value=edges_total)
     service.count_edges_by_type = AsyncMock(return_value=edges_by_type or {})
     service.count_supersessions = AsyncMock(return_value=supersessions)
+    service.count_episodes_since = AsyncMock(return_value=0)
     service.get_entity_by_name = AsyncMock(return_value=None)
     return service
 
@@ -200,11 +201,12 @@ class TestStatusSynthesisBlock:
         )
         s = result["synthesis"]
         assert s["last_run"] is None
-        assert s["delta_count"] is None
+        assert s["subject_delta_count"] is None
+        assert s["new_episodes_count"] is None
 
     @pytest.mark.asyncio
     async def test_synthesis_block_with_subject(self, tmp_path, monkeypatch):
-        """With a subject node, synthesis surfaces last_run and delta count.
+        """With a subject node, synthesis surfaces last_run and both counts.
 
         Legacy nodes (no ``synthesis_run_started_at``) fall back to
         ``context_rebuilt_at`` for ``last_run``.
@@ -227,12 +229,16 @@ class TestStatusSynthesisBlock:
             "pratyabhijna.synthesis.get_subject_delta", fake_get_delta
         )
 
+        service = _make_service()
+        service.count_episodes_since = AsyncMock(return_value=7)
+
         result = await status(
-            service=_make_service(), queue_db_path=str(tmp_path / "q.db")
+            service=service, queue_db_path=str(tmp_path / "q.db")
         )
         s = result["synthesis"]
         assert s["last_run"] == "2026-04-13T12:00:00+00:00"
-        assert s["delta_count"] == 3
+        assert s["subject_delta_count"] == 3
+        assert s["new_episodes_count"] == 7
 
     @pytest.mark.asyncio
     async def test_synthesis_block_prefers_run_start_over_rebuilt_at(
@@ -266,3 +272,84 @@ class TestStatusSynthesisBlock:
             service=_make_service(), queue_db_path=str(tmp_path / "q.db")
         )
         assert result["synthesis"]["last_run"] == "2026-04-13T11:00:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_new_episodes_count_anchored_to_run_start(
+        self, tmp_path, monkeypatch
+    ):
+        """``new_episodes_count`` is computed against
+        ``synthesis_run_started_at`` (not ``context_rebuilt_at``), so
+        episodes added during a still-in-progress run are visible to
+        the next caller."""
+        from datetime import datetime, timezone
+
+        from pratyabhijna.tools.status import status
+
+        node = MagicMock()
+        node.attributes = {
+            "synthesis_run_started_at": "2026-04-13T11:00:00+00:00",
+            "context_rebuilt_at": "2026-04-13T12:00:00+00:00",
+        }
+
+        async def fake_get_subject_node(service):
+            return node
+
+        async def fake_get_delta(service, subject_node):
+            return []
+
+        monkeypatch.setattr(
+            "pratyabhijna.synthesis.get_subject_node", fake_get_subject_node
+        )
+        monkeypatch.setattr(
+            "pratyabhijna.synthesis.get_subject_delta", fake_get_delta
+        )
+
+        service = _make_service()
+        service.count_episodes_since = AsyncMock(return_value=5)
+
+        result = await status(
+            service=service, queue_db_path=str(tmp_path / "q.db")
+        )
+
+        # Reference timestamp is the run-start, not the rebuild-at.
+        service.count_episodes_since.assert_awaited_once()
+        called_with = service.count_episodes_since.await_args.args[0]
+        assert called_with == datetime(
+            2026, 4, 13, 11, 0, 0, tzinfo=timezone.utc
+        )
+        assert result["synthesis"]["new_episodes_count"] == 5
+
+    @pytest.mark.asyncio
+    async def test_new_episodes_count_when_run_never_stamped(
+        self, tmp_path, monkeypatch
+    ):
+        """A subject with no run-start and no rebuild timestamp passes
+        ``since=None`` to ``count_episodes_since`` — every episode in
+        the graph counts as new."""
+        from pratyabhijna.tools.status import status
+
+        node = MagicMock()
+        node.attributes = {}
+
+        async def fake_get_subject_node(service):
+            return node
+
+        async def fake_get_delta(service, subject_node):
+            return []
+
+        monkeypatch.setattr(
+            "pratyabhijna.synthesis.get_subject_node", fake_get_subject_node
+        )
+        monkeypatch.setattr(
+            "pratyabhijna.synthesis.get_subject_delta", fake_get_delta
+        )
+
+        service = _make_service()
+        service.count_episodes_since = AsyncMock(return_value=42)
+
+        result = await status(
+            service=service, queue_db_path=str(tmp_path / "q.db")
+        )
+
+        service.count_episodes_since.assert_awaited_once_with(None)
+        assert result["synthesis"]["new_episodes_count"] == 42

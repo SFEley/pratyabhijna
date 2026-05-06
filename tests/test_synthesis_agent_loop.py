@@ -812,3 +812,50 @@ async def test_end_of_run_stamp_uses_fresh_subject_node(
         "2026-04-13T12:00:00+00:00"
     )
     assert "synthesis_run_started_at" in fresh_node.attributes
+
+
+@pytest.mark.asyncio
+async def test_partial_run_does_not_stamp_run_start(
+    service, config, no_candidates
+):
+    """A partial run must not advance ``synthesis_run_started_at``.
+
+    The stamp is the cutoff for both subject_delta and new_episodes
+    counts in status/bootstrap. Stamping after a failed pass would
+    silently drop the content that pass didn't manage to integrate
+    out of the next run's window.
+    """
+    prior_stamp = "2026-04-13T11:00:00+00:00"
+
+    run_start_node = MagicMock()
+    run_start_node.attributes = {"synthesis_run_started_at": prior_stamp}
+    run_start_node.labels = ["Person"]
+    run_start_node.load_name_embedding = AsyncMock()
+    run_start_node.save = AsyncMock()
+
+    fresh_node = MagicMock()
+    fresh_node.attributes = {"synthesis_run_started_at": prior_stamp}
+    fresh_node.labels = ["Person"]
+    fresh_node.load_name_embedding = AsyncMock()
+    fresh_node.save = AsyncMock()
+
+    service.get_entity_by_name = AsyncMock(
+        side_effect=[run_start_node] + [fresh_node] * 10
+    )
+
+    # Pass 3 stops with no_finish (just thinking, never calls finish)
+    # → status="no_finish" → run-level status="partial".
+    client = FakeClient(script=[
+        [_text_block("just thinking")],     # Pass 3 — no_finish
+        _finish_call("p4"),                 # Pass 4 — completes
+    ])
+
+    result = await run_synthesis(service, config, client=client)
+
+    assert result["status"] == "partial"
+    # Neither node should have been saved with a new stamp.
+    run_start_node.save.assert_not_awaited()
+    fresh_node.save.assert_not_awaited()
+    # The prior stamp must be untouched on whichever node still holds it.
+    assert run_start_node.attributes["synthesis_run_started_at"] == prior_stamp
+    assert fresh_node.attributes["synthesis_run_started_at"] == prior_stamp
