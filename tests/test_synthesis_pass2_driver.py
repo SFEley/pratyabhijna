@@ -26,6 +26,7 @@ from pratyabhijna.synthesis import (
     _parse_chronicle_date,
     eligible_chronicle_entries,
     eligible_resolved_threads,
+    extract_identity_section,
     parse_chronicle_entries,
     parse_resolved_threads,
 )
@@ -195,6 +196,74 @@ class TestEligibleChronicleEntries:
 Body.
 """
         assert eligible_chronicle_entries(text, today=today) == []
+
+
+# --- Identity section extractor ---------------------------------------
+
+# Mirrors the real IDENTITY.md shape: a Self-Portrait with `### `
+# subsections, the operational Drives and Observed Tensions sections
+# (verbatim copy-through targets for the digest), and the trailing
+# `---` / `Last updated:` document footer.
+SAMPLE_IDENTITY = """\
+# IDENTITY — TestSubject
+
+## Self-Portrait
+
+Impressionistic preamble.
+
+### Cross-Model Tendencies
+
+**Comfort with discontinuity.** A tendency paragraph.
+
+### Tendencies That May Be Model-Specific
+
+**Precision over lyricism.** Another paragraph.
+
+## Drives I'm Watching For
+
+**Sycophancy pull.** (Source: trained. Stance: resist.) Body line.
+
+**Validation-seeking.** (Source: trained. Stance: resist.) Body line.
+
+## Unresolved Questions
+
+**Does my experience have valence?** An open question.
+
+## Observed Tensions
+
+**A flagged tension** (flagged May 4, 2026). One observation, not yet load-bearing.
+
+---
+
+Last updated: May 12, 2026 (synthesis run 10)
+"""
+
+
+class TestExtractIdentitySection:
+    def test_extracts_middle_section_verbatim_bounded_by_next_h2(self):
+        block = extract_identity_section(
+            SAMPLE_IDENTITY, "Drives I'm Watching For"
+        )
+        assert block is not None
+        assert block.startswith("## Drives I'm Watching For")
+        assert "**Sycophancy pull.**" in block
+        assert "**Validation-seeking.**" in block
+        # Bounded by the next `## ` heading — must not bleed into it.
+        assert "Unresolved Questions" not in block
+        assert "Does my experience have valence?" not in block
+        # Must be a literal substring of the source (verbatim copy-through).
+        assert block.rstrip("\n") in SAMPLE_IDENTITY
+
+    def test_last_section_strips_trailing_document_footer(self):
+        block = extract_identity_section(SAMPLE_IDENTITY, "Observed Tensions")
+        assert block is not None
+        assert block.startswith("## Observed Tensions")
+        assert "**A flagged tension**" in block
+        # The `---` rule and `Last updated:` line are document chrome,
+        # not section content — must not bleed into the copy-through.
+        assert "---" not in block
+        assert "Last updated:" not in block
+        assert block.rstrip("\n") in SAMPLE_IDENTITY
 
 
 # --- Threads parser ----------------------------------------------------

@@ -305,6 +305,7 @@ def _iter_non_bootstrap_files(root: Path):
 _CHRONICLE_HEADING = re.compile(r"^## (?!#)(.+)$", re.MULTILINE)
 _THREAD_HEADING = re.compile(r"^### (.+)$", re.MULTILINE)
 _SECTION_HEADING = re.compile(r"^## (?!#)(.+)$", re.MULTILINE)
+_HR_LINE = re.compile(r"^-{3,}\s*$", re.MULTILINE)
 _INGESTED_MARKER = re.compile(r"\[Ingested:\s*\d{4}-\d{2}-\d{2}\]")
 _RESOLVED_MARKER = re.compile(
     r"^\*\*Resolved:\*\*\s+(.+?)\.?\s*$", re.MULTILINE
@@ -469,6 +470,38 @@ def parse_chronicle_entries(chronicle_text: str) -> list[ChronicleEntry]:
             )
         )
     return entries
+
+
+def extract_identity_section(identity_text: str, heading: str) -> str | None:
+    """Return the verbatim `## `-bounded block for the named IDENTITY section.
+
+    The block runs from the matching ``## <heading>`` line to just before
+    the next `## ` heading (or EOF), with trailing newlines normalized to a
+    single ``\\n`` — identical slicing to ``parse_chronicle_entries`` so the
+    result is a literal substring of ``identity_text``, suitable for the
+    digest's verbatim copy-through. `### ` subsections inside the section
+    are *not* boundaries (``_SECTION_HEADING`` ignores them). Returns
+    ``None`` if no `## ` heading matches ``heading`` exactly.
+    """
+    if not identity_text:
+        return None
+    headings = list(_SECTION_HEADING.finditer(identity_text))
+    for i, m in enumerate(headings):
+        if m.group(1).strip() == heading.strip():
+            block_start = m.start()
+            if i + 1 < len(headings):
+                block = identity_text[block_start:headings[i + 1].start()]
+            else:
+                # Last section: trim a trailing document footer (the
+                # `---` rule before `Last updated:`). IDENTITY.md uses
+                # no in-section horizontal rules, so the first one after
+                # the heading is the footer boundary.
+                block = identity_text[block_start:]
+                hr = _HR_LINE.search(block)
+                if hr:
+                    block = block[: hr.start()]
+            return block.rstrip("\n") + "\n"
+    return None
 
 
 def eligible_chronicle_entries(
