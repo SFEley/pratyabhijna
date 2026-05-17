@@ -223,4 +223,38 @@ def create_server(
 
         return await _bootstrap(service=service, queue=queue)
 
+    # --- Bootstrap redesign PR2: on-demand tier reads ---
+
+    @server.tool()
+    async def read_tier(name: str) -> dict:
+        """Fetch one identity tier file in full, on demand.
+
+        `name` is one of soul/identity/user/threads/chronicle. Use when a
+        session needs the full prose of a tier the slimmed bootstrap no
+        longer inlines — reviewing a thread, quoting chronicle, working
+        with the full Self-Portrait. This is a file read, distinct from
+        `recall`'s graph-side associational retrieval.
+        """
+        if service is None:
+            raise RuntimeError("read_tier requires a connected service")
+        from pratyabhijna.tools.read_tier import read_tier as _read_tier
+
+        return await _read_tier(service, name)
+
+    @server.tool()
+    async def read_chronicle_range(start_date: str, end_date: str) -> dict:
+        """Fetch chronicle entries dated within [start_date, end_date].
+
+        Inclusive ISO-8601 dates (YYYY-MM-DD). The "what was happening
+        last week / last month" path — full chronicle prose the slimmed
+        bootstrap no longer inlines. A file read, distinct from `recall`.
+        """
+        if service is None:
+            raise RuntimeError("read_chronicle_range requires a connected service")
+        from pratyabhijna.tools.read_chronicle_range import (
+            read_chronicle_range as _read_chronicle_range,
+        )
+
+        return await _read_chronicle_range(service, start_date, end_date)
+
     return server

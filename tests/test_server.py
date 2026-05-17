@@ -17,6 +17,8 @@ EXPECTED_TOOLS = [
     "status",
     "communities",
     "query",
+    "read_tier",
+    "read_chronicle_range",
 ]
 
 
