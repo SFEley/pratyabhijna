@@ -601,6 +601,20 @@ async def test_compose_self_portrait_summary_uses_distinct_cached_prompt():
 
 
 @pytest.mark.asyncio
+async def test_compose_self_portrait_summary_accepts_system_prompt_override():
+    """The eval harness composes variants via THIS real production path,
+    parameterized by prompt — not a fork. Default stays canonical."""
+    client = _OneCallClient("ok")
+    await compose_self_portrait_summary(
+        client=client, model="m", self_portrait_text="x", soul_text="y",
+        system_prompt="VARIANT PROMPT UNDER TEST",
+    )
+    assert client.calls[0]["system"][0]["text"] == "VARIANT PROMPT UNDER TEST"
+    # Override is still cached (cohort of eval compositions shares prefix).
+    assert client.calls[0]["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+@pytest.mark.asyncio
 async def test_compose_self_portrait_summary_uses_low_temperature():
     """Anti-drift, call-config half: the summary recomposes every
     synthesis run from near-identical input; a low temperature keeps
