@@ -1821,6 +1821,7 @@ async def _drive_digest(
             )
             teasers = parse_chronicle_index(existing)
             composed = 0
+            teaser_failed = 0
             for entry in parse_chronicle_entries(chronicle_text):
                 have = teasers.get(entry.heading, "")
                 if have and have != "(teaser pending)":
@@ -1832,6 +1833,7 @@ async def _drive_digest(
                     )
                     composed += 1
                 except Exception as e:  # noqa: BLE001 — per-entry isolation
+                    teaser_failed += 1
                     _log.warning(
                         "synthesis: teaser failed for %s (%s)",
                         entry.heading, type(e).__name__, exc_info=True,
@@ -1841,17 +1843,35 @@ async def _drive_digest(
                         "label": entry.heading,
                         "error": f"{type(e).__name__}: {e}",
                     })
-            index = build_chronicle_index(
-                subject_name=config.subject_name,
-                chronicle_text=chronicle_text,
-                teasers=teasers,
-            )
-            idx_path.write_text(index, encoding="utf-8")
-            wrote.append("memory/CHRONICLE_INDEX.md")
-            _log.info(
-                "synthesis: chronicle index rebuilt (%d new teaser(s))",
-                composed,
-            )
+            if composed == 0 and teaser_failed and existing.strip():
+                # Compose outage: nothing new composed, every attempt
+                # failed, and a prior index exists. Rebuilding now can
+                # only equal or degrade it — carry-forward misses (e.g.
+                # an edited heading) would become "(teaser pending)",
+                # destroying real teasers. Preserve the good index and
+                # let a future successful run recompose. A skip, not a
+                # write: the good index stays on disk; the teaser
+                # failures stay recorded so the run reads as degraded.
+                skips.append(
+                    "index (compose outage; existing index preserved)"
+                )
+                _log.info(
+                    "synthesis: chronicle index preserved — 0 composed, "
+                    "%d teaser failure(s), existing index kept",
+                    teaser_failed,
+                )
+            else:
+                index = build_chronicle_index(
+                    subject_name=config.subject_name,
+                    chronicle_text=chronicle_text,
+                    teasers=teasers,
+                )
+                idx_path.write_text(index, encoding="utf-8")
+                wrote.append("memory/CHRONICLE_INDEX.md")
+                _log.info(
+                    "synthesis: chronicle index rebuilt (%d new teaser(s))",
+                    composed,
+                )
         except Exception as e:  # noqa: BLE001 — isolate; never fatal
             _log.warning(
                 "synthesis: chronicle-index composition failed (%s)",
@@ -2421,6 +2441,16 @@ async def run_synthesis(
         _log.warning("synthesis: %s — skipping Pass 4", pass4_blocked, exc_info=True)
 
     if pass4_blocked is not None:
+        # The digest runs on ratified main, just before Pass 4. A blocked
+        # checkout means it never ran — record it as a skip (not silently
+        # absent) so a stale IDENTITY_DIGEST.md is visible in the run-log.
+        # Keep passes-list order consistent with the happy path:
+        # digest_rebuild before pass4_maintenance.
+        _skip(
+            "digest_rebuild",
+            f"not attempted — {pass4_blocked} "
+            "(digest composes the ratified main IDENTITY/CHRONICLE)",
+        )
         _skip("pass4_maintenance", pass4_blocked)
     else:
         # Digest/index rebuild — deterministic, on ratified main, before

@@ -943,6 +943,43 @@ async def test_drive_digest_carries_forward_existing_teasers(repo, config):
 
 
 @pytest.mark.asyncio
+async def test_drive_digest_preserves_index_through_compose_outage(repo, config):
+    """A transient compose outage must not degrade a good index. When a
+    Pass-2 maturation edits chronicle headings (date labels expand into
+    ranges), carry-forward misses and every entry needs recomposition.
+    If the model is unreachable for the whole run (0 composed, all
+    failed) and a prior index exists, keep it verbatim — don't replace
+    real teasers with "(teaser pending)". It self-heals next run."""
+    good_index = (
+        "# CHRONICLE INDEX — TestSubject\n\n"
+        "*Heading :: one-line teaser.*\n\n"
+        "- May 1, 2026 — Entry One :: a good teaser worth keeping\n"
+        "- April 1, 2026 — Entry Two :: another good teaser worth keeping\n"
+    )
+    # Pass 2 expanded both date labels into ranges; the headings no
+    # longer match the index, so both entries look new and recompose.
+    edited_chronicle = (
+        "# Chronicle\n\n"
+        "## May 1–3, 2026 — Entry One\nBody one.\n\n"
+        "## April 1–2, 2026 — Entry Two\nBody two.\n"
+    )
+    _seed_memory(repo, chronicle=edited_chronicle, index=good_index)
+    # Summary composes; every teaser call returns "" → RuntimeError
+    # (empty) → per-entry failure. composed == 0, all teasers failed.
+    client = _SequencedClient(["portrait", "", ""])
+    result = await _drive_digest(
+        client=client, model="m", config=config, repo_path=str(repo),
+    )
+    # Existing good index preserved verbatim — not clobbered.
+    index = (repo / "memory" / "CHRONICLE_INDEX.md").read_text()
+    assert index == good_index
+    assert "(teaser pending)" not in index
+    # The outage is still a genuine failure of those teasers — visible,
+    # not silently swallowed.
+    assert result["status"] == "partial"
+
+
+@pytest.mark.asyncio
 async def test_drive_digest_skips_not_fails_when_self_portrait_absent(repo, config):
     """Absent inputs are a SKIP, not a FAILURE: a run without a
     Self-Portrait section is not degraded. The digest is skipped (no
