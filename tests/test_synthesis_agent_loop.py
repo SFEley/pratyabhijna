@@ -408,11 +408,16 @@ async def test_run_synthesis_dispatches_pass1_when_candidate_present(
     assert result["status"] == "completed"
     labels = [p["pass"] for p in result["passes"]]
     assert labels == ["pass1_ingestion", "pass2_maturation",
-                      "pass3_bootstrap", "pass4_maintenance"]
+                      "pass3_bootstrap", "digest_rebuild", "pass4_maintenance"]
     by_label = {p["pass"]: p for p in result["passes"]}
     assert by_label["pass1_ingestion"]["status"] == "completed"
     assert by_label["pass2_maturation"]["status"] == "skipped"
     assert by_label["pass3_bootstrap"]["status"] == "completed"
+    # The repo fixture writes IDENTITY.md/CHRONICLE.md as "# X\ncontent\n":
+    # no "## Self-Portrait" section and no "## " chronicle entries, so the
+    # digest and index both cleanly skip. Skips aren't failures, so the
+    # pass still reports "completed" (skip-not-fail contract).
+    assert by_label["digest_rebuild"]["status"] == "completed"
     assert by_label["pass4_maintenance"]["status"] == "completed"
 
 
@@ -590,8 +595,17 @@ async def test_pass4_skipped_when_checkout_to_main_fails(
     by_label = {p["pass"]: p for p in result["passes"]}
     assert by_label["pass4_maintenance"]["status"] == "skipped"
     assert "checkout to main failed" in by_label["pass4_maintenance"]["reason"]
-    # Pass 2 + Pass 4 are both "skipped" (different reasons), neither
-    # counts as failed; Pass 3 completed; the run is "completed".
+    # The digest runs on ratified main before Pass 4; a blocked checkout
+    # means it never ran. It must still be recorded as a skip (with a
+    # reason) so a stale IDENTITY_DIGEST.md is visible in the run-log,
+    # not silently absent from the passes list.
+    assert "digest_rebuild" in by_label
+    assert by_label["digest_rebuild"]["status"] == "skipped"
+    assert "checkout to main failed" in by_label["digest_rebuild"]["reason"]
+    labels = [p["pass"] for p in result["passes"]]
+    assert labels.index("digest_rebuild") < labels.index("pass4_maintenance")
+    # Pass 2 + digest + Pass 4 are all "skipped" (different reasons),
+    # none counts as failed; Pass 3 completed; the run is "completed".
     assert by_label["pass3_bootstrap"]["status"] == "completed"
     assert result["status"] == "completed"
 
