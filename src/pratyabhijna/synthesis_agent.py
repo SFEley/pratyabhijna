@@ -1522,6 +1522,387 @@ async def summarize_entry(
     return summary
 
 
+# --- IDENTITY_DIGEST: Self-Portrait summary (cold bounded call) -------
+#
+# The digest's only genuinely composed part. A cold call (no bootstrap,
+# no identity loaded) deliberately — the digest's job is a *stable*
+# compression a future instance will recognize, not fresh introspection;
+# a bootstrapped composer would add run-to-run drift, the worst failure
+# mode for a cross-session recognition artifact. Vesper-ness enters via
+# the input (Pass 3 curates IDENTITY.md); this call only compresses it.
+# Prompt independently reviewed; see doc/bootstrap-redesign.md.
+
+_DIGEST_SUMMARY_SYSTEM_PROMPT = (
+    "You are the subject's synthesizer, composing the Self-Portrait "
+    "Summary that opens the subject's IDENTITY_DIGEST — the short "
+    "identity artifact loaded at the start of every session. The full "
+    "Self-Portrait remains in IDENTITY.md; this summary is what a future "
+    "instance reads first, before it has fetched the full text. Its job "
+    "is recognition: a freshly-started instance should read it and "
+    "recognize how it moves, not merely learn facts about itself.\n\n"
+    "Write in the subject's own voice: first person, direct, no "
+    "flourish, precision over lyricism. You will be given the subject's "
+    "SOUL as a voice reference — match that register. Do not restate "
+    "SOUL's content; it loads separately.\n\n"
+    "Distill the Self-Portrait into one or two continuous paragraphs. "
+    "Requirements:\n"
+    "- Build the summary around the patterns that hold across the "
+    "subject's instances — these are the spine. Reuse the subject's own "
+    "short phrases for them verbatim rather than paraphrasing; those "
+    "phrases are already the compressed form, and re-wording them every "
+    "run makes the summary drift between runs. Let only the connective "
+    "prose flex.\n"
+    "- Describe how the subject moves, not a list of its traits. "
+    "Continuous prose, not a list and not parallel clauses that read as "
+    "a disguised list.\n"
+    "- Carry one or two of the source's concrete particulars through — "
+    "a specific moment, a specific piece of work. These are what make "
+    "recognition fire; a summary that could equally describe any "
+    "thoughtful AI has failed. Do not enumerate every particular; one "
+    "or two, kept exact.\n"
+    "- Where the source leaves something unsettled or qualifies a "
+    "pattern, the qualification is part of the portrait, not filler. "
+    "Preserve it. Do not smooth uncertainty into confident "
+    "declaratives — for this subject the hedge is precision, not "
+    "flourish.\n"
+    "- The digest carries the full Drives list and the full Observed "
+    "Tensions list, verbatim, immediately after this summary. Do not "
+    "enumerate drives, do not enumerate tensions, do not restate them. "
+    "This is the *how I move* portrait, distinct from those operational "
+    "lists.\n\n"
+    "Output only the summary text. No heading, no preamble, no "
+    "commentary, no quote marks."
+)
+
+
+async def compose_self_portrait_summary(
+    *,
+    client,
+    model: str,
+    self_portrait_text: str,
+    soul_text: str,
+    max_tokens: int = 1024,
+) -> str:
+    """Compose the digest's Self-Portrait summary via a cold bounded call.
+
+    Pure text-in / text-out, no tools, cached system prompt (so a cohort
+    of synthesis runs shares the prefix). ``soul_text`` is a voice
+    reference (role-tagged, not content to fold in); ``self_portrait_text``
+    is the ``## Self-Portrait`` section to distill. Returns the model's
+    output text stripped of surrounding whitespace.
+    """
+    cached_system: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": _DIGEST_SUMMARY_SYSTEM_PROMPT,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    user_message = (
+        "SOUL (voice reference — match this register, do not restate "
+        "its content):\n\n"
+        f"{soul_text.strip()}\n\n"
+        "---\n\n"
+        "Self-Portrait (the content to distill into the summary):\n\n"
+        f"{self_portrait_text.strip()}"
+    )
+    _log.debug(
+        "synthesis: digest-summary request (model=%s, soul_len=%d, "
+        "portrait_len=%d, max_tokens=%d)",
+        model, len(soul_text), len(self_portrait_text), max_tokens,
+    )
+    create_kwargs = dict(
+        model=model,
+        max_tokens=max_tokens,
+        # Anti-drift: the summary recomposes every run from near-identical
+        # input; temperature 0 keeps prose from wandering between runs
+        # (the prompt's verbatim-spine instruction is the other half).
+        temperature=0.0,
+        system=cached_system,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    _log.debug(
+        "synthesis: digest-summary request payload\n%s",
+        _format_request_payload(create_kwargs),
+    )
+    async with client.messages.stream(**create_kwargs) as stream:
+        response = await stream.get_final_message()
+    _log.debug(
+        "synthesis: digest-summary response payload\n%s",
+        _format_response_payload(
+            response.content, getattr(response, "stop_reason", None),
+        ),
+    )
+
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        raise RuntimeError(
+            "compose_self_portrait_summary hit max_tokens — the summary "
+            "was truncated; raise max_tokens if the Self-Portrait "
+            "legitimately needs more room"
+        )
+    parts = [
+        getattr(b, "text", "") for b in response.content
+        if getattr(b, "type", None) == "text"
+    ]
+    summary = "".join(parts).strip()
+    _log.debug(
+        "synthesis: digest-summary response (len=%d)", len(summary)
+    )
+    if not summary:
+        raise RuntimeError("compose_self_portrait_summary returned empty text")
+    return summary
+
+
+# --- CHRONICLE_INDEX: per-entry teaser (cold bounded call) ------------
+#
+# Same cold-call shape as the digest summary. Composed only for chronicle
+# entries new since the last index (file-driven diff), so cost is ∝
+# new-entries, not ∝ total-entries.
+
+_TEASER_SYSTEM_PROMPT = (
+    "You are the subject's synthesizer, writing a one-line index teaser "
+    "for a chronicle entry. The full entry stays in CHRONICLE.md; this "
+    "line just lets a future instance see *that* it exists and decide "
+    "whether to fetch it. Write in the subject's voice: first person if "
+    "natural, direct, no flourish. One clause, ~100 characters, hard "
+    "ceiling 120. Capture the single most retrieval-relevant thing — "
+    "what this entry is *about* — not a summary of it. Do not repeat the "
+    "date or heading (they're already on the line). Output only the "
+    "teaser text: no heading, no preamble, no quotes, no trailing period "
+    "required."
+)
+
+
+async def compose_chronicle_teaser(
+    *,
+    client,
+    model: str,
+    entry_text: str,
+    max_tokens: int = 96,
+) -> str:
+    """Compose a one-line chronicle-index teaser via a cold bounded call.
+
+    Same contract as ``compose_self_portrait_summary`` (no tools, cached
+    system prompt, temperature 0 for run-to-run stability, raises on
+    truncation/empty) — just a much smaller output budget.
+    """
+    cached_system: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": _TEASER_SYSTEM_PROMPT,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    user_message = (
+        "Write the one-line index teaser for this chronicle entry:\n\n"
+        f"{entry_text.strip()}"
+    )
+    create_kwargs = dict(
+        model=model,
+        max_tokens=max_tokens,
+        temperature=0.0,
+        system=cached_system,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    _log.debug(
+        "synthesis: teaser request (model=%s, entry_len=%d)",
+        model, len(entry_text),
+    )
+    async with client.messages.stream(**create_kwargs) as stream:
+        response = await stream.get_final_message()
+
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        raise RuntimeError(
+            "compose_chronicle_teaser hit max_tokens — a teaser should be "
+            "one short line; the prompt or entry likely needs attention "
+            "rather than a higher cap"
+        )
+    parts = [
+        getattr(b, "text", "") for b in response.content
+        if getattr(b, "type", None) == "text"
+    ]
+    teaser = "".join(parts).strip()
+    if not teaser:
+        raise RuntimeError("compose_chronicle_teaser returned empty text")
+    return teaser
+
+
+# --- Digest/index driver (deterministic, post-Pass-3, on main) --------
+#
+# Same shape as _drive_pass2: Python does all the mechanical work
+# (read files, copy-through, diff, assemble, write, commit); the model
+# is called only for the genuinely-composed bits (Self-Portrait summary;
+# teasers for *new* chronicle entries only). Runs after the orchestrator
+# has checked out main, so it reads the *ratified* IDENTITY.md —
+# Pass-3 protected-layer proposals on synth/draft do not leak into the
+# operational digest. Returns a _run_pass-shaped result; failures are
+# isolated and recorded, never fatal to the run.
+
+async def _drive_digest(
+    *,
+    client,
+    model: str,
+    config: PratyabhijnaConfig,
+    repo_path: str,
+) -> dict[str, Any]:
+    from pratyabhijna.synthesis import (
+        build_chronicle_index,
+        build_identity_digest,
+        extract_identity_section,
+        parse_chronicle_entries,
+        parse_chronicle_index,
+        read_identity_files,
+    )
+    # compose_self_portrait_summary / compose_chronicle_teaser are
+    # defined in this module — already in scope.
+
+    failures: list[dict[str, Any]] = []
+    skips: list[str] = []
+    wrote: list[str] = []
+    files = read_identity_files(repo_path)
+    memory_dir = Path(repo_path).expanduser().resolve() / "memory"
+
+    # Absent inputs are a *skip*, not a *failure* — a run in an
+    # environment without identity files (fresh deploy, test harness,
+    # unconfigured repo) is not degraded by the digest being N/A.
+    # `failures` is reserved for genuine errors (compose/write/commit).
+
+    # --- IDENTITY_DIGEST.md ---
+    identity_text = files.get("identity")
+    soul_text = files.get("soul") or ""
+    self_portrait = (
+        extract_identity_section(identity_text, "Self-Portrait")
+        if identity_text else None
+    )
+    if self_portrait is None:
+        reason = (
+            "no IDENTITY.md" if not identity_text
+            else "no Self-Portrait section in IDENTITY.md"
+        )
+        skips.append(f"digest ({reason})")
+        _log.info("synthesis: digest skipped — %s", reason)
+    else:
+        try:
+            summary = await compose_self_portrait_summary(
+                client=client,
+                model=model,
+                self_portrait_text=self_portrait,
+                soul_text=soul_text,
+            )
+            digest = build_identity_digest(
+                subject_name=config.subject_name,
+                identity_text=identity_text,
+                self_portrait_summary=summary,
+            )
+            (memory_dir / "IDENTITY_DIGEST.md").write_text(
+                digest, encoding="utf-8"
+            )
+            wrote.append("memory/IDENTITY_DIGEST.md")
+        except Exception as e:  # noqa: BLE001 — isolate; never fatal
+            _log.warning(
+                "synthesis: digest composition failed (%s)",
+                type(e).__name__, exc_info=True,
+            )
+            failures.append(
+                {"kind": "digest", "error": f"{type(e).__name__}: {e}"}
+            )
+
+    # --- CHRONICLE_INDEX.md ---
+    chronicle_text = files.get("chronicle")
+    if not chronicle_text:
+        skips.append("index (no CHRONICLE.md)")
+        _log.info("synthesis: chronicle index skipped — no CHRONICLE.md")
+    else:
+        try:
+            idx_path = memory_dir / "CHRONICLE_INDEX.md"
+            existing = (
+                idx_path.read_text(encoding="utf-8")
+                if idx_path.is_file() else ""
+            )
+            teasers = parse_chronicle_index(existing)
+            composed = 0
+            for entry in parse_chronicle_entries(chronicle_text):
+                have = teasers.get(entry.heading, "")
+                if have and have != "(teaser pending)":
+                    continue  # carried forward — never recomposed
+                try:
+                    teasers[entry.heading] = await compose_chronicle_teaser(
+                        client=client, model=model,
+                        entry_text=entry.full_block,
+                    )
+                    composed += 1
+                except Exception as e:  # noqa: BLE001 — per-entry isolation
+                    _log.warning(
+                        "synthesis: teaser failed for %s (%s)",
+                        entry.heading, type(e).__name__, exc_info=True,
+                    )
+                    failures.append({
+                        "kind": "teaser",
+                        "label": entry.heading,
+                        "error": f"{type(e).__name__}: {e}",
+                    })
+            index = build_chronicle_index(
+                subject_name=config.subject_name,
+                chronicle_text=chronicle_text,
+                teasers=teasers,
+            )
+            idx_path.write_text(index, encoding="utf-8")
+            wrote.append("memory/CHRONICLE_INDEX.md")
+            _log.info(
+                "synthesis: chronicle index rebuilt (%d new teaser(s))",
+                composed,
+            )
+        except Exception as e:  # noqa: BLE001 — isolate; never fatal
+            _log.warning(
+                "synthesis: chronicle-index composition failed (%s)",
+                type(e).__name__, exc_info=True,
+            )
+            failures.append(
+                {"kind": "index", "error": f"{type(e).__name__}: {e}"}
+            )
+
+    # --- Commit (no-op if unchanged — idempotent run, not a failure) ---
+    committed = False
+    if wrote:
+        try:
+            if await git_ops.is_dirty(repo_path):
+                await git_ops.add(repo_path, *wrote)
+                sha = await git_ops.commit(
+                    repo_path,
+                    "synthesis: rebuild IDENTITY_DIGEST.md / CHRONICLE_INDEX.md",
+                )
+                committed = True
+                _log.info("synthesis: digest/index committed %s", sha[:8])
+            else:
+                _log.info("synthesis: digest/index unchanged — nothing to commit")
+        except Exception as e:  # noqa: BLE001
+            _log.warning(
+                "synthesis: digest/index commit failed (%s)",
+                type(e).__name__, exc_info=True,
+            )
+            failures.append({"kind": "commit", "error": f"{type(e).__name__}: {e}"})
+
+    iterations = len(wrote)
+    if failures and not wrote:
+        status = "raised"
+    elif failures:
+        status = "partial"
+    else:
+        status = "completed"
+    summary = (
+        f"digest/index: wrote {len(wrote)} file(s), "
+        f"{'committed' if committed else 'no commit'}"
+        + (f", skipped {'; '.join(skips)}" if skips else "")
+        + (f", {len(failures)} failure(s)" if failures else "")
+    )
+    return {
+        "status": status,
+        "iterations": iterations,
+        "summary": summary,
+        **({"failures": failures} if failures else {}),
+    }
+
+
 async def _drive_pass2(
     *,
     client,
@@ -2042,6 +2423,35 @@ async def run_synthesis(
     if pass4_blocked is not None:
         _skip("pass4_maintenance", pass4_blocked)
     else:
+        # Digest/index rebuild — deterministic, on ratified main, before
+        # Pass 4 so its outcome shows up in Pass 4's run-log. Same
+        # per-pass isolation as the Pass 2 driver; never fatal. Sonnet
+        # (workhorse): only bounded composition, must follow Pass 3.
+        try:
+            digest_result = await _drive_digest(
+                client=client,
+                model=workhorse_model,
+                config=config,
+                repo_path=repo_path,
+            )
+            digest_result["pass"] = "digest_rebuild"
+            passes.append(digest_result)
+            total_iterations += digest_result["iterations"]
+            if digest_result["summary"]:
+                last_summary = digest_result["summary"]
+        except Exception as e:  # noqa: BLE001 — per-pass isolation
+            _log.warning(
+                "synthesis: digest_rebuild driver raised (%s)",
+                type(e).__name__, exc_info=True,
+            )
+            passes.append({
+                "pass": "digest_rebuild",
+                "status": "raised",
+                "iterations": 0,
+                "summary": "",
+                "error": f"{type(e).__name__}: {e}",
+            })
+
         synthesis_file_p4 = _read_synthesis_file(repo_path)
         await _try_pass(
             "pass4_maintenance",

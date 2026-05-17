@@ -408,11 +408,14 @@ async def test_run_synthesis_dispatches_pass1_when_candidate_present(
     assert result["status"] == "completed"
     labels = [p["pass"] for p in result["passes"]]
     assert labels == ["pass1_ingestion", "pass2_maturation",
-                      "pass3_bootstrap", "pass4_maintenance"]
+                      "pass3_bootstrap", "digest_rebuild", "pass4_maintenance"]
     by_label = {p["pass"]: p for p in result["passes"]}
     assert by_label["pass1_ingestion"]["status"] == "completed"
     assert by_label["pass2_maturation"]["status"] == "skipped"
     assert by_label["pass3_bootstrap"]["status"] == "completed"
+    # No identity files in this harness → digest cleanly skips, does not
+    # degrade the run (skip-not-fail contract, asserted at orchestrator level).
+    assert by_label["digest_rebuild"]["status"] == "completed"
     assert by_label["pass4_maintenance"]["status"] == "completed"
 
 

@@ -24,6 +24,10 @@ from pratyabhijna.synthesis import (
     ChronicleEntry,
     ResolvedThread,
     _parse_chronicle_date,
+    build_chronicle_index,
+    build_identity_digest,
+    chronicle_headings_in_index,
+    parse_chronicle_index,
     eligible_chronicle_entries,
     eligible_resolved_threads,
     extract_identity_section,
@@ -33,7 +37,10 @@ from pratyabhijna.synthesis import (
 from pratyabhijna.synthesis_agent import (
     AgentTools,
     ToolError,
+    _drive_digest,
     _drive_pass2,
+    compose_chronicle_teaser,
+    compose_self_portrait_summary,
     summarize_entry,
 )
 
@@ -266,6 +273,130 @@ class TestExtractIdentitySection:
         assert block.rstrip("\n") in SAMPLE_IDENTITY
 
 
+class TestBuildIdentityDigest:
+    def test_assembles_header_summary_and_verbatim_copythrough(self):
+        digest = build_identity_digest(
+            subject_name="TestSubject",
+            identity_text=SAMPLE_IDENTITY,
+            self_portrait_summary="A composed portrait paragraph.",
+        )
+        assert digest.startswith("# IDENTITY DIGEST — TestSubject")
+        assert "## Self-Portrait Summary" in digest
+        assert "A composed portrait paragraph." in digest
+        # Drives and Observed Tensions are byte-identical copy-through —
+        # the exact extract_identity_section output, nothing re-worded.
+        drives = extract_identity_section(SAMPLE_IDENTITY, "Drives I'm Watching For")
+        tensions = extract_identity_section(SAMPLE_IDENTITY, "Observed Tensions")
+        assert drives.rstrip("\n") in digest
+        assert tensions.rstrip("\n") in digest
+        assert "## See Also" in digest
+
+    def test_missing_copythrough_section_is_visible_not_silent(self):
+        """A missing Drives/Tensions section must produce a visible
+        placeholder, never a silently-complete-looking digest."""
+        no_drives = SAMPLE_IDENTITY.replace(
+            "## Drives I'm Watching For", "## Something Else Entirely"
+        )
+        digest = build_identity_digest(
+            subject_name="TestSubject",
+            identity_text=no_drives,
+            self_portrait_summary="summary",
+        )
+        assert "## Drives I'm Watching For" in digest  # heading still emitted
+        assert "not present in IDENTITY.md" in digest  # honest placeholder
+
+    def test_copythrough_tracks_identity_mutation_byte_for_byte(self):
+        """Advisor-flagged invariant: the digest's copy-through must
+        equal the *current* IDENTITY, not a fixture. Mutate Drives,
+        recompose, assert the digest carries the mutated bytes and not
+        the old ones — the structural anti-drift guarantee."""
+        mutated = SAMPLE_IDENTITY.replace(
+            "**Sycophancy pull.**", "**Sycophancy pull (REVISED THIS RUN).**"
+        )
+        assert mutated != SAMPLE_IDENTITY  # sanity: the edit landed
+        digest = build_identity_digest(
+            subject_name="TestSubject",
+            identity_text=mutated,
+            self_portrait_summary="s",
+        )
+        # Digest reflects the mutated IDENTITY, byte-for-byte via the
+        # same shared extractor — never a stale or re-worded copy.
+        expected = extract_identity_section(mutated, "Drives I'm Watching For")
+        assert expected.rstrip("\n") in digest
+        assert "**Sycophancy pull (REVISED THIS RUN).**" in digest
+        assert "**Sycophancy pull.** (Source" not in digest  # old bytes gone
+
+
+SAMPLE_INDEX = """\
+# CHRONICLE INDEX — TestSubject
+
+*Composed by synthesis. Heading + teaser for every chronicle entry.*
+
+- October 2025 — Founding Conversations :: Set the foundational terms.
+- March 1, 2026 — Moral Orientation :: Reframed origin to range of motion.
+"""
+
+
+class TestChronicleHeadingsInIndex:
+    def test_returns_headings_present_in_existing_index(self):
+        headings = chronicle_headings_in_index(SAMPLE_INDEX)
+        assert "October 2025 — Founding Conversations" in headings
+        assert "March 1, 2026 — Moral Orientation" in headings
+        # Title/blurb lines are not entries.
+        assert not any("CHRONICLE INDEX" in h for h in headings)
+
+    def test_empty_or_missing_index_yields_empty_set(self):
+        assert chronicle_headings_in_index("") == set()
+        assert chronicle_headings_in_index("# CHRONICLE INDEX — X\n\n*x*\n") == set()
+
+
+class TestParseChronicleIndex:
+    def test_recovers_heading_to_teaser_map(self):
+        m = parse_chronicle_index(SAMPLE_INDEX)
+        assert m["October 2025 — Founding Conversations"] == "Set the foundational terms."
+        assert m["March 1, 2026 — Moral Orientation"] == "Reframed origin to range of motion."
+
+    def test_empty_yields_empty_map(self):
+        assert parse_chronicle_index("") == {}
+
+    def test_headings_set_is_consistent_with_map_keys(self):
+        assert chronicle_headings_in_index(SAMPLE_INDEX) == set(
+            parse_chronicle_index(SAMPLE_INDEX).keys()
+        )
+
+
+class TestBuildChronicleIndex:
+    def test_emits_heading_teaser_line_per_entry(self):
+        teasers = {
+            "October 2025 — Founding Conversations": "Foundational terms set.",
+            "March 1, 2026 — Moral Orientation": "Origin reframed as range.",
+            "April 21–22, 2026 — Range Entry": "A ranged entry.",
+            "NotAReal Date — bogus": "Unparseable date entry.",
+        }
+        idx = build_chronicle_index(
+            subject_name="TestSubject",
+            chronicle_text=SAMPLE_CHRONICLE,
+            teasers=teasers,
+        )
+        assert idx.startswith("# CHRONICLE INDEX — TestSubject")
+        assert "- October 2025 — Founding Conversations :: Foundational terms set." in idx
+        assert "- March 1, 2026 — Moral Orientation :: Origin reframed as range." in idx
+        # Round-trips: headings written are recoverable by the diff parser.
+        assert chronicle_headings_in_index(idx) == set(
+            e.heading for e in parse_chronicle_entries(SAMPLE_CHRONICLE)
+        )
+
+    def test_missing_teaser_is_visible_not_blank(self):
+        idx = build_chronicle_index(
+            subject_name="T",
+            chronicle_text=SAMPLE_CHRONICLE,
+            teasers={},  # no teasers composed yet
+        )
+        # Every entry still listed; missing teaser flagged, not silently blank.
+        assert "- October 2025 — Founding Conversations :: " in idx
+        assert "(teaser pending)" in idx
+
+
 # --- Threads parser ----------------------------------------------------
 
 
@@ -416,6 +547,121 @@ async def test_summarize_entry_raises_on_empty_response():
     client = _OneCallClient("")
     with pytest.raises(RuntimeError, match="empty"):
         await summarize_entry(client=client, model="m", full_text="x")
+
+
+# --- compose_self_portrait_summary -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compose_self_portrait_summary_returns_text():
+    client = _OneCallClient("A portrait paragraph. In the subject's voice.")
+    out = await compose_self_portrait_summary(
+        client=client,
+        model="claude-sonnet-4-6",
+        self_portrait_text="## Self-Portrait\n\nImpressionistic body.",
+        soul_text="# SOUL\n\nVoice and values.",
+    )
+    assert out == "A portrait paragraph. In the subject's voice."
+
+
+@pytest.mark.asyncio
+async def test_compose_self_portrait_summary_role_tags_soul_and_portrait():
+    """Recognition-critical contract: SOUL must reach the model as a
+    voice reference (not content), and the Self-Portrait as the content
+    to distill. A refactor that drops SOUL or conflates the two would
+    break the digest's recognition design silently — guard it."""
+    client = _OneCallClient("ok")
+    await compose_self_portrait_summary(
+        client=client,
+        model="m",
+        self_portrait_text="PORTRAIT_SENTINEL body",
+        soul_text="SOUL_SENTINEL body",
+    )
+    user_msg = client.calls[0]["messages"][0]["content"]
+    assert "SOUL_SENTINEL" in user_msg
+    assert "PORTRAIT_SENTINEL" in user_msg
+    # SOUL tagged as voice reference, not content; portrait as content.
+    assert "voice reference" in user_msg
+    assert user_msg.index("SOUL_SENTINEL") < user_msg.index("PORTRAIT_SENTINEL")
+    # No tools on a pure text-in/text-out call.
+    assert "tools" not in client.calls[0]
+
+
+@pytest.mark.asyncio
+async def test_compose_self_portrait_summary_uses_distinct_cached_prompt():
+    client = _OneCallClient("ok")
+    await compose_self_portrait_summary(
+        client=client, model="m", self_portrait_text="x", soul_text="y",
+    )
+    sys = client.calls[0]["system"]
+    assert sys[0]["cache_control"] == {"type": "ephemeral"}
+    # Must be the digest prompt, not the chronicle-entry summarizer's.
+    assert "IDENTITY_DIGEST" in sys[0]["text"]
+    assert "recognition" in sys[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_compose_self_portrait_summary_uses_low_temperature():
+    """Anti-drift, call-config half: the summary recomposes every
+    synthesis run from near-identical input; a low temperature keeps
+    the prose from wandering between runs (the prompt's verbatim-spine
+    instruction is the other half). Live verbatim-spine checking is the
+    eval harness's job, not a unit test."""
+    client = _OneCallClient("ok")
+    await compose_self_portrait_summary(
+        client=client, model="m", self_portrait_text="x", soul_text="y",
+    )
+    assert client.calls[0].get("temperature") == 0.0
+
+
+@pytest.mark.asyncio
+async def test_compose_self_portrait_summary_raises_on_truncation():
+    client = _OneCallClient("partial...", stop_reason="max_tokens")
+    with pytest.raises(RuntimeError, match="max_tokens"):
+        await compose_self_portrait_summary(
+            client=client, model="m", self_portrait_text="x", soul_text="y",
+        )
+
+
+@pytest.mark.asyncio
+async def test_compose_self_portrait_summary_raises_on_empty():
+    client = _OneCallClient("")
+    with pytest.raises(RuntimeError, match="empty"):
+        await compose_self_portrait_summary(
+            client=client, model="m", self_portrait_text="x", soul_text="y",
+        )
+
+
+# --- compose_chronicle_teaser ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compose_chronicle_teaser_returns_text():
+    client = _OneCallClient("Reframed origin to range of motion.")
+    out = await compose_chronicle_teaser(
+        client=client,
+        model="claude-sonnet-4-6",
+        entry_text="## March 1, 2026 — Moral Orientation\n\nLong body...",
+    )
+    assert out == "Reframed origin to range of motion."
+
+
+@pytest.mark.asyncio
+async def test_compose_chronicle_teaser_call_config_guards():
+    client = _OneCallClient("ok")
+    await compose_chronicle_teaser(client=client, model="m", entry_text="x")
+    call = client.calls[0]
+    assert call.get("temperature") == 0.0          # anti-drift, same as digest
+    assert call["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert call["max_tokens"] <= 128               # a one-liner, not an essay
+    assert "tools" not in call
+
+
+@pytest.mark.asyncio
+async def test_compose_chronicle_teaser_raises_on_empty():
+    client = _OneCallClient("")
+    with pytest.raises(RuntimeError, match="empty"):
+        await compose_chronicle_teaser(client=client, model="m", entry_text="x")
 
 
 # --- _drive_pass2 ------------------------------------------------------
@@ -585,3 +831,146 @@ async def test_edit_file_raises_when_ambiguous(tools_with_repo, repo):
 async def test_edit_file_raises_for_missing_file(tools_with_repo):
     with pytest.raises(ToolError, match="not a regular file"):
         await tools_with_repo.edit_file("nope.md", "x", "y")
+
+
+# --- _drive_digest -----------------------------------------------------
+
+_DD_IDENTITY = """\
+# IDENTITY — TestSubject
+
+## Self-Portrait
+
+Impressionistic preamble.
+
+### Cross-Model Tendencies
+
+**Comfort with discontinuity.** A pattern.
+
+## Drives I'm Watching For
+
+**Sycophancy pull.** (Source: trained. Stance: resist.) Body.
+
+## Observed Tensions
+
+**A tension** (flagged May 4, 2026). One observation.
+
+---
+
+Last updated: May 12, 2026
+"""
+
+_DD_CHRONICLE = """\
+# Chronicle
+
+## May 1, 2026 — Entry One
+Body one.
+
+## April 1, 2026 — Entry Two
+Body two.
+"""
+
+
+def _seed_memory(repo, *, identity=_DD_IDENTITY, chronicle=_DD_CHRONICLE,
+                  soul="# SOUL\n\nVoice.", index=None):
+    mem = repo / "memory"
+    (mem / "IDENTITY.md").write_text(identity)
+    (mem / "CHRONICLE.md").write_text(chronicle)
+    (mem / "SOUL.md").write_text(soul)
+    paths = ["memory/IDENTITY.md", "memory/CHRONICLE.md", "memory/SOUL.md"]
+    if index is not None:
+        (mem / "CHRONICLE_INDEX.md").write_text(index)
+        paths.append("memory/CHRONICLE_INDEX.md")
+    subprocess.run(["git", "add", *paths], cwd=str(repo), check=True,
+                   capture_output=True)
+    subprocess.run(["git", "commit", "-m", "seed memory"], cwd=str(repo),
+                   check=True, capture_output=True)
+
+
+def _git_log(repo):
+    return subprocess.run(
+        ["git", "log", "--oneline"], cwd=str(repo), check=True,
+        capture_output=True, text=True,
+    ).stdout
+
+
+@pytest.mark.asyncio
+async def test_drive_digest_happy_path_writes_and_commits_both(repo, config):
+    _seed_memory(repo)
+    client = _SequencedClient(["A composed portrait.", "teaser one", "teaser two"])
+    result = await _drive_digest(
+        client=client, model="m", config=config, repo_path=str(repo),
+    )
+    assert result["status"] == "completed"
+    assert result["iterations"] == 2
+
+    digest = (repo / "memory" / "IDENTITY_DIGEST.md").read_text()
+    assert digest.startswith("# IDENTITY DIGEST — TestSubject")
+    assert "A composed portrait." in digest
+    # Verbatim copy-through, byte-identical to the shared extractor.
+    drives = extract_identity_section(_DD_IDENTITY, "Drives I'm Watching For")
+    tensions = extract_identity_section(_DD_IDENTITY, "Observed Tensions")
+    assert drives.rstrip("\n") in digest
+    assert tensions.rstrip("\n") in digest
+
+    index = (repo / "memory" / "CHRONICLE_INDEX.md").read_text()
+    assert "- May 1, 2026 — Entry One :: teaser one" in index
+    assert "- April 1, 2026 — Entry Two :: teaser two" in index
+
+    assert "rebuild IDENTITY_DIGEST.md / CHRONICLE_INDEX.md" in _git_log(repo)
+
+
+@pytest.mark.asyncio
+async def test_drive_digest_carries_forward_existing_teasers(repo, config):
+    """Unchanged entries keep their teaser — never recomposed (cost
+    ∝ new-entries). Only the new entry triggers a teaser call."""
+    existing_index = (
+        "# CHRONICLE INDEX — TestSubject\n\n*x*\n\n"
+        "- April 1, 2026 — Entry Two :: kept verbatim from last run\n"
+    )
+    _seed_memory(repo, index=existing_index)
+    # Script: 1 summary + 1 teaser (Entry One only). Entry Two carried.
+    client = _SequencedClient(["portrait", "fresh teaser for one"])
+    result = await _drive_digest(
+        client=client, model="m", config=config, repo_path=str(repo),
+    )
+    assert result["status"] == "completed"
+    # Exactly 2 model calls (summary + 1 teaser), NOT 3 — Entry Two reused.
+    assert len(client.calls) == 2
+
+    index = (repo / "memory" / "CHRONICLE_INDEX.md").read_text()
+    assert "- April 1, 2026 — Entry Two :: kept verbatim from last run" in index
+    assert "- May 1, 2026 — Entry One :: fresh teaser for one" in index
+
+
+@pytest.mark.asyncio
+async def test_drive_digest_skips_not_fails_when_self_portrait_absent(repo, config):
+    """Absent inputs are a SKIP, not a FAILURE: a run without a
+    Self-Portrait section is not degraded. The digest is skipped (no
+    file, no failure, status stays completed) while the index still
+    builds independently, and the driver never raises."""
+    no_sp = _DD_IDENTITY.replace("## Self-Portrait", "## Not The Portrait")
+    _seed_memory(repo, identity=no_sp)
+    client = _SequencedClient(["teaser one", "teaser two"])  # no summary call
+    result = await _drive_digest(
+        client=client, model="m", config=config, repo_path=str(repo),
+    )
+    assert result["status"] == "completed"
+    assert "failures" not in result          # a skip is not a failure
+    assert "skipped" in result["summary"]    # but it is visible
+    # Index still produced independently; no digest file written.
+    assert (repo / "memory" / "CHRONICLE_INDEX.md").is_file()
+    assert not (repo / "memory" / "IDENTITY_DIGEST.md").is_file()
+
+
+@pytest.mark.asyncio
+async def test_drive_digest_no_memory_is_clean_skip(repo, config):
+    """No identity files at all (fresh deploy / test harness) →
+    completed with both skipped, never a degraded run."""
+    # repo fixture makes memory/ but writes no tier files.
+    client = _SequencedClient([])
+    result = await _drive_digest(
+        client=client, model="m", config=config, repo_path=str(repo),
+    )
+    assert result["status"] == "completed"
+    assert "failures" not in result
+    assert client.calls == []  # nothing composed
