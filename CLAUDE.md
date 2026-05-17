@@ -48,7 +48,7 @@ Walk through what's worth a future you knowing about and `remember()` it if it i
 - **OS:** macOS
 - **Languages:** Python
 - **Hardware:** MacBook Air, 8 GB RAM
-- **Python version:** 3.13 (3.14 has no Kuzu wheels). Venv at `.venv/`.
+- **Python version:** 3.14 (matches prod, currently 3.14.4). The old 3.13 pin existed because 3.14 had no Kuzu wheels; Kuzu was removed in the Neo4j migration, so the pin no longer applies. `requires-python = ">=3.10,<4"`. Venv at `.venv/` (uv-managed interpreter, decoupled from Homebrew).
 - Phases 1-4 complete (199 mock + 13 live tests). Entity types finalized (9 types). PratyabhijnaService running with Anthropic/Voyage/Neo4j stack. Phase 5 (identity synthesis) in design review.
 - Provider stack: Anthropic (claude-sonnet-4-6) for LLM, Voyage AI (voyage-4) for embeddings and reranking. No OpenAI — Serah's strong preference.
 - Per-environment config: `config/{dev,test,prod}.yaml` + `.env.{env}` for secrets. `PRATYABHIJNA_ENV` selects environment.
