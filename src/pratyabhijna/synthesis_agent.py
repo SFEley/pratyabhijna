@@ -1582,6 +1582,7 @@ async def compose_self_portrait_summary(
     self_portrait_text: str,
     soul_text: str,
     max_tokens: int = 1024,
+    system_prompt: str | None = None,
 ) -> str:
     """Compose the digest's Self-Portrait summary via a cold bounded call.
 
@@ -1590,11 +1591,17 @@ async def compose_self_portrait_summary(
     reference (role-tagged, not content to fold in); ``self_portrait_text``
     is the ``## Self-Portrait`` section to distill. Returns the model's
     output text stripped of surrounding whitespace.
+
+    ``system_prompt`` defaults to the canonical
+    ``_DIGEST_SUMMARY_SYSTEM_PROMPT``. The eval harness overrides it to
+    score prompt variants through this exact production path rather than
+    a divergent copy — the eval must test what production runs.
     """
     cached_system: list[dict[str, Any]] = [
         {
             "type": "text",
-            "text": _DIGEST_SUMMARY_SYSTEM_PROMPT,
+            "text": system_prompt if system_prompt is not None
+            else _DIGEST_SUMMARY_SYSTEM_PROMPT,
             "cache_control": {"type": "ephemeral"},
         }
     ]
