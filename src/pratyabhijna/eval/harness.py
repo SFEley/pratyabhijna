@@ -79,7 +79,6 @@ class ProbeResult:
 @dataclass
 class EvalReport:
     dry_run: bool
-    estimated_usd: float
     plan_breakdown: list[tuple[str, float]] = field(default_factory=list)
     spent_usd: float = 0.0
     variant_outputs: list[VariantOutput] = field(default_factory=list)
@@ -87,6 +86,11 @@ class EvalReport:
     finalist: str | None = None
     probes: list[ProbeResult] = field(default_factory=list)
     aborted_reason: str | None = None
+
+    @property
+    def estimated_usd(self) -> float:
+        """Derived from ``plan_breakdown`` so the two can never disagree."""
+        return round(sum(c for _, c in self.plan_breakdown), 4)
 
 
 def _plan(
@@ -171,11 +175,15 @@ async def run_eval(
     estimate = estimate_cost(plan)
     report = EvalReport(
         dry_run=dry_run,
-        estimated_usd=round(estimate.total_usd, 4),
         plan_breakdown=[(lbl, round(c, 4)) for lbl, c in estimate.per_call],
     )
     if dry_run:
         return report
+
+    # label → projected $, priced once by estimate_cost above. Labels are
+    # unique per _plan(); the gate raises on a miss rather than failing
+    # open, so a plan/run desync can never let an unpriced call through.
+    plan_cost = dict(estimate.per_call)
 
     tracker = SpendTracker(ceiling_usd=ceiling_usd)
     # Pre-flight: if the *whole* projected plan can't fit under the
@@ -191,7 +199,7 @@ async def run_eval(
 
     # 1. compose variants via the real production path.
     for v in variants:
-        await _spend_gate(tracker, plan, f"compose:{v.name}")
+        _spend_gate(tracker, plan_cost, f"compose:{v.name}")
         text = await compose_self_portrait_summary(
             client=client,
             model=compose_model,
@@ -204,7 +212,7 @@ async def run_eval(
     # 2. blind-anonymise, then rank with each evaluator model.
     mapping, anon_block = blind_anonymize(report.variant_outputs)
     for model in _EVAL_MODELS:
-        await _spend_gate(tracker, plan, f"rank:{model}")
+        _spend_gate(tracker, plan_cost, f"rank:{model}")
         raw = await evaluator(
             model=model,
             anon_block=anon_block,
@@ -224,9 +232,9 @@ async def run_eval(
             if o.variant_name == report.finalist
         )
         for model in _EVAL_MODELS:
-            await _spend_gate(tracker, plan, f"probe-run:{model}")
+            _spend_gate(tracker, plan_cost, f"probe-run:{model}")
             run = await prober(model=model, digest_summary=final_text)
-            await _spend_gate(tracker, plan, f"probe-judge:{model}")
+            _spend_gate(tracker, plan_cost, f"probe-judge:{model}")
             verdict = await evaluator(
                 model=model, transcript=run["transcript"], mode="judge"
             )
@@ -239,10 +247,15 @@ async def run_eval(
     return report
 
 
-async def _spend_gate(tracker: SpendTracker, plan, label: str) -> None:
-    projected = next(
-        (c.cost_usd() for c in plan if c.label == label), 0.0
-    )
+def _spend_gate(
+    tracker: SpendTracker, plan_cost: dict[str, float], label: str
+) -> None:
+    if label not in plan_cost:
+        raise KeyError(
+            f"no planned call for {label!r} — _plan() and run_eval() are "
+            f"out of sync. Refusing rather than gating an unpriced call."
+        )
+    projected = plan_cost[label]
     tracker.check(projected)
     tracker.record(projected)
 
@@ -282,4 +295,5 @@ def _aggregate_finalist(rankings: list[Ranking]) -> str | None:
             score[name] = score.get(name, 0) + (n - pos)
             if name not in order_seen:
                 order_seen.append(name)
-    return max(order_seen, key=lambda nm: (score.get(nm, 0), -order_seen.index(nm)))
+    first_seen = {name: i for i, name in enumerate(order_seen)}
+    return max(order_seen, key=lambda nm: (score[nm], -first_seen[nm]))

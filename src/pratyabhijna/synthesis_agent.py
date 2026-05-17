@@ -1597,11 +1597,14 @@ async def compose_self_portrait_summary(
     score prompt variants through this exact production path rather than
     a divergent copy — the eval must test what production runs.
     """
+    prompt_text = (
+        system_prompt if system_prompt is not None
+        else _DIGEST_SUMMARY_SYSTEM_PROMPT
+    )
     cached_system: list[dict[str, Any]] = [
         {
             "type": "text",
-            "text": system_prompt if system_prompt is not None
-            else _DIGEST_SUMMARY_SYSTEM_PROMPT,
+            "text": prompt_text,
             "cache_control": {"type": "ephemeral"},
         }
     ]

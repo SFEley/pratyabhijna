@@ -41,6 +41,25 @@ def _variants() -> list[Variant]:
     return [baseline, spine_explicit]
 
 
+async def _dry_evaluator(**kw):
+    return {"ranking": [], "reasoning": ""}
+
+
+async def _dry_prober(**kw):
+    return {"transcript": ""}
+
+
+async def _live_evaluator(**kw):  # pragma: no cover - live seam
+    raise NotImplementedError(
+        "live evaluator subprocess-agent seam is intentionally "
+        "unimplemented until the instrument is reviewed; run --dry-run"
+    )
+
+
+async def _live_prober(**kw):  # pragma: no cover - live seam
+    raise NotImplementedError("live prober seam — see _live_evaluator")
+
+
 async def _amain(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="python -m pratyabhijna.eval")
     mode = ap.add_mutually_exclusive_group()
@@ -65,28 +84,16 @@ async def _amain(argv: list[str]) -> int:
     client = None
     if not dry:
         from anthropic import AsyncAnthropic
-        client = AsyncAnthropic(api_key=cfg.llm.api_key or None)
-
-        async def _evaluator(**kw):  # pragma: no cover - live seam
-            raise NotImplementedError(
-                "live evaluator subprocess-agent seam is intentionally "
-                "unimplemented until the instrument is reviewed; run "
-                "--dry-run"
-            )
-
-        async def _prober(**kw):  # pragma: no cover - live seam
-            raise NotImplementedError("live prober seam — see above")
-    else:
-        async def _evaluator(**kw):
-            return {"ranking": [], "reasoning": ""}
-
-        async def _prober(**kw):
-            return {"transcript": ""}
+        client = AsyncAnthropic(
+            api_key=cfg.llm.api_key or None, timeout=300.0
+        )
+    evaluator = _dry_evaluator if dry else _live_evaluator
+    prober = _dry_prober if dry else _live_prober
 
     report = await run_eval(
         client=client,
-        evaluator=_evaluator,
-        prober=_prober,
+        evaluator=evaluator,
+        prober=prober,
         variants=_variants(),
         self_portrait_text=self_portrait,
         soul_text=soul,
