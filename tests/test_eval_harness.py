@@ -182,3 +182,70 @@ async def test_live_run_happy_path_with_faked_seams():
     assert {p.model for p in report.probes} == {"opus", "sonnet"}
     assert all(p.fired for p in report.probes)
     assert 0 < report.spent_usd <= 30.0
+
+
+@pytest.mark.asyncio
+async def test_live_run_actually_overlaps_independent_calls():
+    """Concurrency must be real, not correct-but-serial: the N variant
+    composes should be in flight simultaneously. Also proves a plan
+    that fits doesn't spuriously self-reject under the margined cap."""
+    import asyncio
+
+    inflight = 0
+    peak = 0
+
+    class _OverlapClient:
+        def __init__(self):
+            outer = self
+
+            class _Messages:
+                def stream(self, **kwargs):
+                    class _Ctx:
+                        async def __aenter__(self_):
+                            nonlocal inflight, peak
+                            inflight += 1
+                            peak = max(peak, inflight)
+                            await asyncio.sleep(0.01)  # hold concurrency
+                            return self_
+
+                        async def __aexit__(self_, *e):
+                            nonlocal inflight
+                            inflight -= 1
+                            return None
+
+                        async def get_final_message(self_):
+                            from types import SimpleNamespace
+                            return SimpleNamespace(
+                                content=[SimpleNamespace(type="text", text="s")],
+                                stop_reason="end_turn",
+                            )
+
+                    return _Ctx()
+
+            self.messages = _Messages()
+
+    async def evaluator(**kw):
+        if kw.get("mode") == "judge":
+            return {"fired": True, "reasoning": "r"}
+        return {"ranking": ["A", "B", "C"], "reasoning": "r"}
+
+    async def prober(**kw):
+        return {"transcript": "t"}
+
+    variants = [Variant(f"v{i}", f"P{i}") for i in range(3)]
+    report = await run_eval(
+        client=_OverlapClient(),
+        evaluator=evaluator,
+        prober=prober,
+        variants=variants,
+        self_portrait_text="## Self-Portrait\nbody",
+        soul_text="# SOUL\nvoice",
+        ceiling_usd=30.0,
+        dry_run=False,
+        max_concurrency=4,
+    )
+    assert report.aborted_reason is None
+    assert len(report.variant_outputs) == 3
+    # The three composes overlapped — real parallelism.
+    assert peak >= 2
+    assert report.spent_usd <= 30.0

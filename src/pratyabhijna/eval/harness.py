@@ -26,6 +26,7 @@ is how you overfit one evaluator instead of firing recognition.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -42,6 +43,14 @@ EvaluatorFn = Callable[..., Awaitable[dict[str, Any]]]
 ProberFn = Callable[..., Awaitable[dict[str, Any]]]
 
 _EVAL_MODELS = ("opus", "sonnet")  # evaluator diversity: the constellation
+
+# Reservations hold this multiple of the estimate as the in-flight
+# worst-case, so a call whose actual modestly overruns its projection
+# still can't cross the ceiling. Settlement records the unmargined
+# estimate (best-known actual), freeing the margin back. The reported
+# estimate stays unmargined — the margin guards the *cap mechanism*,
+# it is not a cost claim.
+_RESERVE_MARGIN = 1.15
 
 
 def _toks(text: str) -> int:
@@ -166,6 +175,7 @@ async def run_eval(
     ceiling_usd: float = 30.0,
     dry_run: bool = True,
     compose_model: str = "claude-sonnet-4-6",
+    max_concurrency: int = 4,
 ) -> EvalReport:
     """Run (or dry-run) the eval. ``dry_run=True`` makes zero calls."""
     if len(variants) < 2:
@@ -186,38 +196,73 @@ async def run_eval(
     plan_cost = dict(estimate.per_call)
 
     tracker = SpendTracker(ceiling_usd=ceiling_usd)
-    # Pre-flight: if the *whole* projected plan can't fit under the
-    # ceiling, refuse before spending a cent.
-    if estimate.total_usd > ceiling_usd:
+    # Pre-flight: refuse before spending a cent if the whole plan can't
+    # fit. Gate on the *margined* total — the same basis reservations
+    # use — so a plan that clears pre-flight never spuriously
+    # self-rejects a legitimate call mid-run.
+    margined_total = estimate.total_usd * _RESERVE_MARGIN
+    if margined_total > ceiling_usd:
         report.aborted_reason = (
-            f"projected ${estimate.total_usd:.2f} exceeds ceiling "
+            f"projected ${estimate.total_usd:.2f} (×{_RESERVE_MARGIN} "
+            f"safety = ${margined_total:.2f}) exceeds ceiling "
             f"${ceiling_usd:.2f} — not started"
         )
         return report
 
     from pratyabhijna.synthesis_agent import compose_self_portrait_summary
 
-    # 1. compose variants via the real production path.
-    for v in variants:
-        _spend_gate(tracker, plan_cost, f"compose:{v.name}")
-        text = await compose_self_portrait_summary(
-            client=client,
-            model=compose_model,
-            self_portrait_text=self_portrait_text,
-            soul_text=soul_text,
-            system_prompt=v.system_prompt,
-        )
-        report.variant_outputs.append(VariantOutput(v.name, text))
+    sem = asyncio.Semaphore(max_concurrency)
 
-    # 2. blind-anonymise, then rank with each evaluator model.
+    async def _reserved(label: str, coro_factory):
+        """Reserve (margined worst-case) before launching; settle at the
+        realistic estimate on return so the margin frees back. Admission
+        gates on committed, so the ceiling holds with calls in flight.
+        A rejected reservation propagates SpendCeilingExceeded."""
+        if label not in plan_cost:
+            raise KeyError(
+                f"no planned call for {label!r} — _plan() and run_eval() "
+                f"are out of sync. Refusing an unpriced call."
+            )
+        projected = plan_cost[label]
+        res = tracker.reserve(projected * _RESERVE_MARGIN)
+        try:
+            async with sem:
+                result = await coro_factory()
+        finally:
+            res.settle(projected)
+        return result
+
+    # 1. compose variants via the real production path — independent,
+    #    run concurrently (bounded), reserved.
+    def _compose(v: Variant):
+        async def _c():
+            return await compose_self_portrait_summary(
+                client=client, model=compose_model,
+                self_portrait_text=self_portrait_text,
+                soul_text=soul_text, system_prompt=v.system_prompt,
+            )
+        return _c
+    texts = await asyncio.gather(
+        *[_reserved(f"compose:{v.name}", _compose(v)) for v in variants]
+    )
+    report.variant_outputs = [
+        VariantOutput(v.name, t) for v, t in zip(variants, texts)
+    ]
+
+    # 2. blind-anonymise, then rank with each evaluator model — the two
+    #    rankings are independent, run concurrently.
     mapping, anon_block = blind_anonymize(report.variant_outputs)
-    for model in _EVAL_MODELS:
-        _spend_gate(tracker, plan_cost, f"rank:{model}")
-        raw = await evaluator(
-            model=model,
-            anon_block=anon_block,
-            mode="rank",
-        )
+
+    def _rank(model: str):
+        async def _r():
+            return await evaluator(
+                model=model, anon_block=anon_block, mode="rank"
+            )
+        return _r
+    raws = await asyncio.gather(
+        *[_reserved(f"rank:{m}", _rank(m)) for m in _EVAL_MODELS]
+    )
+    for model, raw in zip(_EVAL_MODELS, raws):
         ordered = [mapping[a] for a in raw["ranking"] if a in mapping]
         report.rankings.append(
             Ranking(model, ordered, raw.get("reasoning", ""))
@@ -225,39 +270,36 @@ async def run_eval(
 
     report.finalist = _aggregate_finalist(report.rankings)
 
-    # 3. behavioural gate for the finalist.
+    # 3. behavioural gate — run→judge is sequential within a model
+    #    (judge needs the transcript); the two model pipelines are
+    #    independent and run concurrently.
     if report.finalist is not None:
         final_text = next(
             o.summary_text for o in report.variant_outputs
             if o.variant_name == report.finalist
         )
-        for model in _EVAL_MODELS:
-            _spend_gate(tracker, plan_cost, f"probe-run:{model}")
-            run = await prober(model=model, digest_summary=final_text)
-            _spend_gate(tracker, plan_cost, f"probe-judge:{model}")
-            verdict = await evaluator(
-                model=model, transcript=run["transcript"], mode="judge"
+
+        async def _pipeline(model: str):
+            run = await _reserved(
+                f"probe-run:{model}",
+                lambda: prober(model=model, digest_summary=final_text),
             )
-            report.probes.append(ProbeResult(
+            verdict = await _reserved(
+                f"probe-judge:{model}",
+                lambda: evaluator(
+                    model=model, transcript=run["transcript"], mode="judge"
+                ),
+            )
+            return ProbeResult(
                 report.finalist, model,
                 bool(verdict["fired"]), verdict.get("reasoning", ""),
-            ))
+            )
+        report.probes = list(
+            await asyncio.gather(*[_pipeline(m) for m in _EVAL_MODELS])
+        )
 
     report.spent_usd = round(tracker.spent_usd, 4)
     return report
-
-
-def _spend_gate(
-    tracker: SpendTracker, plan_cost: dict[str, float], label: str
-) -> None:
-    if label not in plan_cost:
-        raise KeyError(
-            f"no planned call for {label!r} — _plan() and run_eval() are "
-            f"out of sync. Refusing rather than gating an unpriced call."
-        )
-    projected = plan_cost[label]
-    tracker.check(projected)
-    tracker.record(projected)
 
 
 def blind_anonymize(

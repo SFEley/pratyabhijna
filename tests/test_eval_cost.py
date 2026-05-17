@@ -59,6 +59,58 @@ def test_spend_tracker_aborts_before_the_call_that_would_cross():
     assert t.remaining_usd == pytest.approx(0.50)
 
 
+@pytest.mark.asyncio
+async def test_reservations_keep_ceiling_hard_under_concurrency():
+    """The property the simplify loop said naive concurrency loses:
+    with many calls in flight, the ceiling still cannot be crossed,
+    because admission gates on committed (settled + all outstanding
+    worst-case reservations), never on settled-only."""
+    import asyncio
+
+    t = SpendTracker(ceiling_usd=30.0)
+    admitted = []
+
+    async def call(projected, actual):
+        h = t.reserve(projected)  # raises if it would breach committed
+        admitted.append(projected)
+        await asyncio.sleep(0)  # force interleaving before settle
+        t.settle(h, actual)
+
+    # 10 calls reserve $4 each = $40 projected; only the ones that fit
+    # under $30 committed may be admitted, the rest raise — concurrently.
+    results = await asyncio.gather(
+        *[call(4.0, 3.0) for _ in range(10)], return_exceptions=True
+    )
+    breaches = [r for r in results if isinstance(r, SpendCeilingExceeded)]
+    # At most floor(30/4)=7 admitted; the rest rejected, none slipped.
+    assert len(admitted) <= 7
+    assert len(breaches) >= 3
+    # Settled spend never exceeded the ceiling.
+    assert t.spent_usd <= 30.0
+
+
+@pytest.mark.asyncio
+async def test_settle_reconciles_actual_below_projection_frees_budget():
+    t = SpendTracker(ceiling_usd=30.0)
+    h1 = t.reserve(20.0)
+    # 20 committed; a second 20 reservation must be refused now...
+    with pytest.raises(SpendCeilingExceeded):
+        t.reserve(20.0)
+    t.settle(h1, 5.0)  # actual far below projection — frees budget
+    # ...but allowed once the over-projection is reconciled away.
+    h2 = t.reserve(20.0)
+    t.settle(h2, 10.0)
+    assert t.spent_usd == pytest.approx(15.0)
+
+
+def test_double_settle_is_rejected():
+    t = SpendTracker(ceiling_usd=30.0)
+    h = t.reserve(5.0)
+    t.settle(h, 5.0)
+    with pytest.raises(RuntimeError, match="already settled"):
+        t.settle(h, 5.0)
+
+
 def test_spend_tracker_allows_calls_within_ceiling():
     t = SpendTracker(ceiling_usd=30.0)
     t.check(10.0)

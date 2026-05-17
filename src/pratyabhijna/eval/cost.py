@@ -106,6 +106,8 @@ class SpendTracker:
             raise ValueError("ceiling_usd must be positive")
         self.ceiling_usd = float(ceiling_usd)
         self.spent_usd = 0.0
+        self._outstanding: dict[int, float] = {}
+        self._next_id = 0
 
     @property
     def remaining_usd(self) -> float:
@@ -128,3 +130,67 @@ class SpendTracker:
                 f"${self.ceiling_usd:.2f} ceiling after a call whose "
                 f"actual cost (${actual_cost:.2f}) overran its estimate"
             )
+
+    # --- Reservation model: keeps the ceiling hard under concurrency ---
+    #
+    # The sequential check/record pair gates on settled spend, which is
+    # stale the moment calls run in parallel. reserve/settle gate on
+    # *committed* = settled + every outstanding reservation's worst-case
+    # projection, so `settled + all-in-flight-projections <= ceiling`
+    # holds at every instant. The only breach path is a single call's
+    # actual exceeding its reserved projection; callers reserve at a
+    # margin (projections already assume near-max output tokens) and the
+    # per-call abort backstops the absolute ceiling. reserve/settle do no
+    # awaiting, so they're atomic on the asyncio loop — no lock needed.
+
+    @property
+    def committed_usd(self) -> float:
+        return self.spent_usd + sum(self._outstanding.values())
+
+    def reserve(self, projected_cost: float) -> "Reservation":
+        if projected_cost < 0:
+            raise ValueError("projected_cost must be non-negative")
+        if self.committed_usd + projected_cost > self.ceiling_usd:
+            raise SpendCeilingExceeded(
+                f"reserving ~${projected_cost:.2f} would bring committed "
+                f"spend to ${self.committed_usd + projected_cost:.2f}, "
+                f"over the ${self.ceiling_usd:.2f} ceiling — call not "
+                f"admitted (committed ${self.committed_usd:.2f} = settled "
+                f"${self.spent_usd:.2f} + in-flight reservations)"
+            )
+        self._next_id += 1
+        rid = self._next_id
+        self._outstanding[rid] = projected_cost
+        return Reservation(_tracker=self, _rid=rid, projected=projected_cost)
+
+    def _settle(self, rid: int, actual_cost: float) -> None:
+        if rid not in self._outstanding:
+            raise RuntimeError("reservation already settled or unknown")
+        del self._outstanding[rid]
+        self.spent_usd += actual_cost
+        if self.spent_usd > self.ceiling_usd:
+            raise SpendCeilingExceeded(
+                f"spend ${self.spent_usd:.2f} exceeded the "
+                f"${self.ceiling_usd:.2f} ceiling — a call's actual cost "
+                f"(${actual_cost:.2f}) overran its reserved projection"
+            )
+
+    def settle(self, reservation: "Reservation", actual_cost: float) -> None:
+        reservation.settle(actual_cost)
+
+
+@dataclass
+class Reservation:
+    """Handle for one admitted-but-unsettled call. Settle exactly once
+    with the actual cost when the call returns."""
+
+    _tracker: SpendTracker
+    _rid: int
+    projected: float
+    _settled: bool = False
+
+    def settle(self, actual_cost: float) -> None:
+        if self._settled:
+            raise RuntimeError("reservation already settled")
+        self._settled = True
+        self._tracker._settle(self._rid, actual_cost)
