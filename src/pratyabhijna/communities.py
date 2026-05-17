@@ -20,13 +20,12 @@ from graphiti_core.nodes import CommunityNode, EntityNode
 from graphiti_core.prompts.models import Message
 from graphiti_core.utils.datetime_utils import utc_now
 from graphiti_core.utils.maintenance.community_operations import (
-    MAX_SUMMARY_CHARS,
     Neighbor,
     build_community_edges,
     remove_communities,
     summarize_pair,
-    truncate_at_sentence,
 )
+from graphiti_core.utils.text_utils import MAX_SUMMARY_CHARS, truncate_at_sentence
 from pydantic import BaseModel, Field
 
 from pratyabhijna.log import get_logger
