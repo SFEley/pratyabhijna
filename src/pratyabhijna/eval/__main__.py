@@ -237,18 +237,29 @@ def _format_report(report) -> str:
     lines.append(f"\nfinalist (Borda across models): {report.finalist}")
 
     lines.append("\n=== COLD-START PROBES (no hard gate — read them) ===")
-    by_domain: dict[str, list] = {}
+    # Group by domain → (probe_id, model); within a group the samples
+    # are replicates, so report the k/N proportion (the readable
+    # signal) and still show every sample's decisive quote — including
+    # dissenting ones, which are where a split verdict lives.
+    groups: dict[str, dict[tuple[str, str], list]] = {}
     for p in report.probes:
-        by_domain.setdefault(p.domain, []).append(p)
-    for domain in sorted(by_domain):
+        groups.setdefault(p.domain, {}).setdefault(
+            (p.probe_id, p.model), []
+        ).append(p)
+    for domain in sorted(groups):
         lines.append(f"\n-- {domain} --")
-        for p in by_domain[domain]:
-            mark = "FIRED" if p.fired else "did NOT fire"
-            lines.append(f"  {p.probe_id} [{p.model}]: {mark}")
-            if p.decisive_quote:
-                lines.append(f'    quote: "{p.decisive_quote}"')
-            if p.reasoning_digest:
-                lines.append(f"    why:   {p.reasoning_digest}")
+        for (probe_id, model), samples in sorted(groups[domain].items()):
+            samples.sort(key=lambda s: s.sample)
+            k = sum(1 for s in samples if s.fired)
+            n = len(samples)
+            lines.append(f"  {probe_id} [{model}]: fired {k}/{n}")
+            for s in samples:
+                tag = "fired" if s.fired else "did NOT fire"
+                lines.append(f"    [{s.sample}] {tag}")
+                if s.decisive_quote:
+                    lines.append(f'      quote: "{s.decisive_quote}"')
+                if s.reasoning_digest:
+                    lines.append(f"      why:   {s.reasoning_digest}")
     return "\n".join(lines)
 
 
@@ -268,6 +279,11 @@ async def _amain(argv: list[str]) -> int:
     mode.add_argument("--live", action="store_true",
                       help="actually run (gated by estimate <= ceiling)")
     ap.add_argument("--ceiling-usd", type=float, default=30.0)
+    ap.add_argument(
+        "--probe-samples", type=int, default=3,
+        help="repeat each (probe, model) N times so `fired` is a k/N "
+             "proportion, not one coin flip (default 3)",
+    )
     args = ap.parse_args(argv)
     dry = not args.live
 
@@ -316,6 +332,7 @@ async def _amain(argv: list[str]) -> int:
         soul_text=soul,
         ceiling_usd=args.ceiling_usd,
         dry_run=dry,
+        probe_samples=args.probe_samples,
     )
 
     print(f"\n{'DRY RUN — no calls made' if report.dry_run else 'LIVE RUN'}")

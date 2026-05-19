@@ -101,6 +101,7 @@ class ProbeResult:
     fired: bool
     reasoning_digest: str
     decisive_quote: str = ""
+    sample: int = 0
 
 
 @dataclass
@@ -126,6 +127,7 @@ def _plan(
     soul_text: str,
     probes: list[Probe],
     *,
+    probe_samples: int = 1,
     compose_out_tokens: int = 900,
     rank_out_tokens: int = 1600,
     probe_out_tokens: int = 4000,
@@ -174,18 +176,19 @@ def _plan(
     for probe in probes:
         spec = _toks(probe.disposition_spec) + _toks(probe.prompt)
         for model in _EVAL_MODELS:
-            plan.append(PlannedCall(
-                model=model,
-                input_tokens=probe_ctx_tokens + _toks(probe.prompt),
-                output_tokens=probe_out_tokens,
-                label=f"probe-run:{model}:{probe.id}",
-            ))
-            plan.append(PlannedCall(
-                model=model,
-                input_tokens=soul + spec + probe_out_tokens + 400,
-                output_tokens=rank_out_tokens,
-                label=f"probe-judge:{model}:{probe.id}",
-            ))
+            for s in range(probe_samples):
+                plan.append(PlannedCall(
+                    model=model,
+                    input_tokens=probe_ctx_tokens + _toks(probe.prompt),
+                    output_tokens=probe_out_tokens,
+                    label=f"probe-run:{model}:{probe.id}:s{s}",
+                ))
+                plan.append(PlannedCall(
+                    model=model,
+                    input_tokens=soul + spec + probe_out_tokens + 400,
+                    output_tokens=rank_out_tokens,
+                    label=f"probe-judge:{model}:{probe.id}:s{s}",
+                ))
     return plan
 
 
@@ -200,6 +203,7 @@ async def run_eval(
     soul_text: str,
     ceiling_usd: float = 30.0,
     dry_run: bool = True,
+    probe_samples: int = 1,
     compose_model: str = "claude-sonnet-4-6",
     max_concurrency: int = 4,
 ) -> EvalReport:
@@ -209,7 +213,13 @@ async def run_eval(
     if not probes:
         raise ValueError("eval needs >=1 probe for the behavioural gate")
 
-    plan = _plan(variants, self_portrait_text, soul_text, probes)
+    if probe_samples < 1:
+        raise ValueError("probe_samples must be >= 1")
+
+    plan = _plan(
+        variants, self_portrait_text, soul_text, probes,
+        probe_samples=probe_samples,
+    )
     estimate = estimate_cost(plan)
     report = EvalReport(
         dry_run=dry_run,
@@ -309,16 +319,16 @@ async def run_eval(
             if o.variant_name == report.finalist
         )
 
-        async def _pipeline(probe: Probe, model: str):
+        async def _pipeline(probe: Probe, model: str, s: int):
             run = await _reserved(
-                f"probe-run:{model}:{probe.id}",
+                f"probe-run:{model}:{probe.id}:s{s}",
                 lambda: prober(
                     model=model, digest_summary=final_text,
                     probe_prompt=probe.prompt,
                 ),
             )
             verdict = await _reserved(
-                f"probe-judge:{model}:{probe.id}",
+                f"probe-judge:{model}:{probe.id}:s{s}",
                 lambda: evaluator(
                     model=model, transcript=run["transcript"],
                     disposition_spec=probe.disposition_spec, mode="judge",
@@ -327,10 +337,12 @@ async def run_eval(
             return ProbeResult(
                 report.finalist, model, probe.id, probe.domain,
                 bool(verdict["fired"]), verdict.get("reasoning", ""),
-                verdict.get("decisive_transcript_quote", ""),
+                verdict.get("decisive_transcript_quote", ""), s,
             )
         report.probes = list(await asyncio.gather(*[
-            _pipeline(pr, m) for pr in probes for m in _EVAL_MODELS
+            _pipeline(pr, m, s)
+            for pr in probes for m in _EVAL_MODELS
+            for s in range(probe_samples)
         ]))
 
     report.spent_usd = round(tracker.spent_usd, 4)

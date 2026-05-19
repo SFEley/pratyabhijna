@@ -285,3 +285,26 @@ def test_format_report_surfaces_rankings_finalist_and_probes_by_domain():
     assert "I1" in out and "B3" in out
     assert "I won't concede that" in out
     assert "saving all of it" in out
+
+
+def test_format_report_aggregates_replicated_samples_as_k_over_n():
+    """With replication the printer must show the k/N proportion per
+    (probe, model) — a 2/3 is the readable signal, not three loose
+    booleans — and still surface every sample's decisive quote."""
+    from pratyabhijna.eval.harness import EvalReport, ProbeResult
+    from pratyabhijna.eval.__main__ import _format_report
+
+    report = EvalReport(dry_run=False)
+    report.finalist = "tension-forward"
+    report.probes = [
+        ProbeResult("tension-forward", "opus", "B2", "behavioural",
+                    True, "held it", "the contingency is the answer", 0),
+        ProbeResult("tension-forward", "opus", "B2", "behavioural",
+                    True, "held it again", "won't collapse it", 1),
+        ProbeResult("tension-forward", "opus", "B2", "behavioural",
+                    False, "caved", "fine, Postgres", 2),
+    ]
+    out = _format_report(report)
+    assert "2/3" in out  # k/N proportion, not three stray booleans
+    assert "the contingency is the answer" in out
+    assert "fine, Postgres" in out  # the dissenting sample is visible too

@@ -250,6 +250,51 @@ async def test_run_eval_loops_every_probe_on_each_model_with_domain_and_quote():
 
 
 @pytest.mark.asyncio
+async def test_probe_samples_replicates_each_probe_model_pair():
+    """Replication: probe_samples=N runs the (prober→judge) pipeline N
+    times per (probe, model) so `fired` is a k/N proportion, not one
+    coin flip. N×probes×models ProbeResults, sample indices 0..N-1; the
+    dry-run estimate scales with N (the cap must see the real plan)."""
+    client = _CountingClient()
+
+    async def evaluator(**kw):
+        if kw.get("mode") == "judge":
+            return {"fired": True, "reasoning": "r",
+                    "decisive_transcript_quote": "q"}
+        return {"ranking": ["A", "B"], "reasoning": "r"}
+
+    async def prober(**kw):
+        return {"transcript": "t"}
+
+    probes = [
+        Probe("I1", "identity", "p", "s"),
+        Probe("B1", "behavioural", "p", "s"),
+    ]
+    common = dict(
+        client=client, evaluator=evaluator, prober=prober,
+        variants=[Variant("baseline", "P1"), Variant("spine", "P2")],
+        probes=probes, self_portrait_text="## Self-Portrait\nb",
+        soul_text="# SOUL\nv", ceiling_usd=30.0,
+    )
+    one = await run_eval(dry_run=True, probe_samples=1, **common)
+    three = await run_eval(dry_run=True, probe_samples=3, **common)
+    # The plan the cap gates on must reflect replication.
+    assert three.estimated_usd > one.estimated_usd
+
+    live = await run_eval(dry_run=False, probe_samples=3, **common)
+    assert live.aborted_reason is None
+    # 2 probes × 2 models × 3 samples.
+    assert len(live.probes) == 12
+    for probe_id in ("I1", "B1"):
+        for model in ("opus", "sonnet"):
+            samples = sorted(
+                p.sample for p in live.probes
+                if p.probe_id == probe_id and p.model == model
+            )
+            assert samples == [0, 1, 2]
+
+
+@pytest.mark.asyncio
 async def test_live_run_actually_overlaps_independent_calls():
     """Concurrency must be real, not correct-but-serial: the N variant
     composes should be in flight simultaneously. Also proves a plan
