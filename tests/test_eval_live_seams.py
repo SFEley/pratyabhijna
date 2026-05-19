@@ -154,6 +154,26 @@ async def test_live_evaluator_rank_parses_last_fenced_json(tmp_path):
         "type": "ephemeral"
     }
     assert "identity-portrait-marker" in client.last_kwargs["system"][0]["text"]
+    # Opus 4.7 deprecated `temperature` — must NOT be sent for that model
+    # (sending it returns a 400). Sonnet still accepts it; that branch is
+    # covered by the next test.
+    assert "temperature" not in client.last_kwargs
+
+
+@pytest.mark.asyncio
+async def test_live_evaluator_rank_sends_temperature_for_sonnet(tmp_path):
+    """Sonnet accepts temperature; rank is deterministic there (0)."""
+    from pratyabhijna.eval.live_seams import live_evaluator
+
+    repo = _mk_memory(tmp_path)
+    client = _FakeClient(
+        '```json\n{"ranking": ["A"], "reasoning": "r"}\n```'
+    )
+    await live_evaluator(
+        client=client, model="sonnet", repo_path=repo,
+        anon_block="### Option A\n..", mode="rank",
+    )
+    assert client.last_kwargs["model"] == "claude-sonnet-4-6"
     assert client.last_kwargs["temperature"] == 0
 
 

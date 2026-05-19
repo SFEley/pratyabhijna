@@ -201,13 +201,19 @@ async def _call(
     where set, no tools). Raise EvalSeamError on truncation/empty: a
     cut-off response can't be trusted to parse."""
     model_id = _MODEL_IDS.get(model, model)
-    create_kwargs = dict(
+    create_kwargs: dict[str, Any] = dict(
         model=model_id,
         max_tokens=max_tokens,
-        temperature=temperature,
         system=system,
         messages=[{"role": "user", "content": user}],
     )
+    # Opus 4.7 deprecated `temperature` (sending it 400s). Sonnet 4.6
+    # still accepts it, and the rank/judge determinism we want there is
+    # real, so keep it for non-Opus-4.7 models. The Opus rank is then
+    # somewhat stochastic; Sonnet's deterministic rank + Borda across
+    # the two models cushions that, and replication absorbs the rest.
+    if not model_id.startswith("claude-opus-4-7"):
+        create_kwargs["temperature"] = temperature
     async with client.messages.stream(**create_kwargs) as stream:
         response = await stream.get_final_message()
     if getattr(response, "stop_reason", None) == "max_tokens":
