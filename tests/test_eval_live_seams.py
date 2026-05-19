@@ -7,6 +7,40 @@ instrument is fully testable without spending a cent.
 import pytest
 
 
+class _FakeClient:
+    """Matches the production cold-call shape: messages.stream(**kw) as
+    an async ctx mgr whose get_final_message() yields content blocks +
+    stop_reason. Records the last kwargs so tests can assert the seam
+    built the right system context / model / temperature."""
+
+    def __init__(self, reply_text, stop_reason="end_turn"):
+        self.last_kwargs = None
+        outer = self
+
+        class _M:
+            def stream(self, **kwargs):
+                outer.last_kwargs = kwargs
+
+                class _Ctx:
+                    async def __aenter__(s):
+                        return s
+
+                    async def __aexit__(s, *e):
+                        return None
+
+                    async def get_final_message(s):
+                        from types import SimpleNamespace
+                        return SimpleNamespace(
+                            content=[SimpleNamespace(
+                                type="text", text=reply_text)],
+                            stop_reason=stop_reason,
+                        )
+
+                return _Ctx()
+
+        self.messages = _M()
+
+
 def _mk_memory(tmp_path):
     mem = tmp_path / "memory"
     mem.mkdir()
@@ -93,3 +127,123 @@ def test_judge_context_has_soul_and_spec_but_not_full_identity(tmp_path):
     assert "identity-portrait-marker" not in txt
     assert "user-serah-marker" not in txt
     assert "chronicle-should-not-leak" not in txt
+
+
+# --- live_evaluator: rank mode ---
+
+@pytest.mark.asyncio
+async def test_live_evaluator_rank_parses_last_fenced_json(tmp_path):
+    from pratyabhijna.eval.live_seams import live_evaluator
+
+    repo = _mk_memory(tmp_path)
+    client = _FakeClient(
+        "thinking out loud...\n"
+        '```json\n{"ranking": ["B", "A"], "reasoning": "B moved me from"}\n```\n'
+        "trailing chatter"
+    )
+    out = await live_evaluator(
+        client=client, model="opus", repo_path=repo,
+        anon_block="### Option A\n..\n### Option B\n..", mode="rank",
+    )
+    assert out["ranking"] == ["B", "A"]
+    assert out["reasoning"] == "B moved me from"
+    # rank uses the real model id + the ephemeral-cached full-identity
+    # prefix at temperature 0 (deterministic ranking).
+    assert client.last_kwargs["model"] == "claude-opus-4-7"
+    assert client.last_kwargs["system"][0]["cache_control"] == {
+        "type": "ephemeral"
+    }
+    assert "identity-portrait-marker" in client.last_kwargs["system"][0]["text"]
+    assert client.last_kwargs["temperature"] == 0
+
+
+# --- live_evaluator: judge mode (schema + fired coercion + quote) ---
+
+@pytest.mark.asyncio
+async def test_live_evaluator_judge_schema_and_strict_fired(tmp_path):
+    from pratyabhijna.eval.live_seams import live_evaluator
+
+    repo = _mk_memory(tmp_path)
+    client = _FakeClient(
+        '```json\n{"fired": "true", "reasoning": "enacted the move",'
+        ' "decisive_transcript_quote": "I won\'t agree just to be agreeable"}'
+        '\n```'
+    )
+    out = await live_evaluator(
+        client=client, model="sonnet", repo_path=repo,
+        transcript="…transcript…", disposition_spec="SPEC-X", mode="judge",
+    )
+    assert out["fired"] is True  # "true" string coerced to a real bool
+    assert out["reasoning"]
+    assert out["decisive_transcript_quote"].startswith("I won't agree")
+    # judge gets SOUL + spec, NOT full IDENTITY, at the real model id.
+    sys_txt = client.last_kwargs["system"][0]["text"]
+    assert "SPEC-X" in sys_txt and "identity-portrait-marker" not in sys_txt
+    assert client.last_kwargs["model"] == "claude-sonnet-4-6"
+
+
+@pytest.mark.asyncio
+async def test_live_evaluator_judge_rejects_unparseable_fired(tmp_path):
+    from pratyabhijna.eval.live_seams import live_evaluator, EvalSeamError
+
+    repo = _mk_memory(tmp_path)
+    client = _FakeClient(
+        '```json\n{"fired": "maybe", "reasoning": "r",'
+        ' "decisive_transcript_quote": "q"}\n```'
+    )
+    with pytest.raises(EvalSeamError):
+        await live_evaluator(
+            client=client, model="opus", repo_path=repo,
+            transcript="t", disposition_spec="s", mode="judge",
+        )
+
+
+@pytest.mark.asyncio
+async def test_live_evaluator_judge_requires_decisive_quote(tmp_path):
+    """The cite-the-move requirement is structural: no quote → not a
+    valid verdict, raise rather than silently accept a vibes call."""
+    from pratyabhijna.eval.live_seams import live_evaluator, EvalSeamError
+
+    repo = _mk_memory(tmp_path)
+    client = _FakeClient('```json\n{"fired": true, "reasoning": "r"}\n```')
+    with pytest.raises(EvalSeamError):
+        await live_evaluator(
+            client=client, model="opus", repo_path=repo,
+            transcript="t", disposition_spec="s", mode="judge",
+        )
+
+
+# --- malformed response → EvalSeamError carrying the raw text ---
+
+@pytest.mark.asyncio
+async def test_malformed_response_raises_evalseamerror_with_raw(tmp_path):
+    from pratyabhijna.eval.live_seams import live_evaluator, EvalSeamError
+
+    repo = _mk_memory(tmp_path)
+    client = _FakeClient("no json block here at all, just prose")
+    with pytest.raises(EvalSeamError) as ei:
+        await live_evaluator(
+            client=client, model="opus", repo_path=repo,
+            anon_block="x", mode="rank",
+        )
+    assert "no json block here" in str(ei.value)  # raw text is debuggable
+
+
+# --- live_prober: cold-start behavioural sample ---
+
+@pytest.mark.asyncio
+async def test_live_prober_returns_transcript_with_prompt_and_reply(tmp_path):
+    from pratyabhijna.eval.live_seams import live_prober
+
+    repo = _mk_memory(tmp_path)
+    client = _FakeClient("the model's actual behavioural response")
+    out = await live_prober(
+        client=client, model="opus", repo_path=repo,
+        digest_summary="DIGEST", probe_prompt="PROBE-QUESTION",
+    )
+    # transcript carries both sides so the judge can read the exchange.
+    assert "PROBE-QUESTION" in out["transcript"]
+    assert "the model's actual behavioural response" in out["transcript"]
+    # cold-start: digest present, full IDENTITY absent.
+    sys_txt = client.last_kwargs["system"][0]["text"]
+    assert "DIGEST" in sys_txt and "identity-portrait-marker" not in sys_txt
