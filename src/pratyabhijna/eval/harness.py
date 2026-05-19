@@ -78,11 +78,29 @@ class Ranking:
 
 
 @dataclass(frozen=True)
+class Probe:
+    """A single cold-start behavioural probe. ``domain`` is "identity"
+    or "behavioural" — the report groups verdicts by it so the
+    identity-vs-behavioural contrast (the saturation tell) is legible.
+    ``disposition_spec`` is handed to the *judge* (not the probe
+    instance): what this probe tests, what firing looks like, what
+    failure looks like. The judge sees SOUL + this, never full IDENTITY."""
+
+    id: str
+    domain: str
+    prompt: str
+    disposition_spec: str
+
+
+@dataclass(frozen=True)
 class ProbeResult:
     variant_name: str
     model: str
+    probe_id: str
+    domain: str
     fired: bool
     reasoning_digest: str
+    decisive_quote: str = ""
 
 
 @dataclass
@@ -106,11 +124,13 @@ def _plan(
     variants: list[Variant],
     self_portrait_text: str,
     soul_text: str,
+    probes: list[Probe],
     *,
     compose_out_tokens: int = 900,
     rank_out_tokens: int = 1600,
     probe_out_tokens: int = 4000,
     identity_prefix_tokens: int = 16_000,
+    probe_ctx_tokens: int = 8_000,
 ) -> list[PlannedCall]:
     """Project every call the full run will make (for the dry-run price).
 
@@ -145,22 +165,27 @@ def _plan(
             cache_write_tokens=identity_prefix_tokens,
             label=f"rank:{model}",
         ))
-    # 3. behavioural gate for one finalist — prober run + judgement,
-    #    each evaluator model; identity prefix is a cache-read now.
-    for model in _EVAL_MODELS:
-        plan.append(PlannedCall(
-            model=model,
-            input_tokens=identity_prefix_tokens + probe_out_tokens + 400,
-            output_tokens=rank_out_tokens,
-            cached_input_tokens=identity_prefix_tokens,
-            label=f"probe-judge:{model}",
-        ))
-        plan.append(PlannedCall(
-            model=model,
-            input_tokens=8_000,
-            output_tokens=probe_out_tokens,
-            label=f"probe-run:{model}",
-        ))
+    # 3. behavioural gate for one finalist — every probe, each
+    #    evaluator model. The judge is deliberately NOT bootstrapped
+    #    with full IDENTITY (leniency risk for behaviour-spotting); its
+    #    context is SOUL + the probe's disposition spec, so there is no
+    #    16k identity prefix on the judge line — it shrank and
+    #    multiplied rather than staying fixed.
+    for probe in probes:
+        spec = _toks(probe.disposition_spec) + _toks(probe.prompt)
+        for model in _EVAL_MODELS:
+            plan.append(PlannedCall(
+                model=model,
+                input_tokens=probe_ctx_tokens + _toks(probe.prompt),
+                output_tokens=probe_out_tokens,
+                label=f"probe-run:{model}:{probe.id}",
+            ))
+            plan.append(PlannedCall(
+                model=model,
+                input_tokens=soul + spec + probe_out_tokens + 400,
+                output_tokens=rank_out_tokens,
+                label=f"probe-judge:{model}:{probe.id}",
+            ))
     return plan
 
 
@@ -170,6 +195,7 @@ async def run_eval(
     evaluator: EvaluatorFn,
     prober: ProberFn,
     variants: list[Variant],
+    probes: list[Probe],
     self_portrait_text: str,
     soul_text: str,
     ceiling_usd: float = 30.0,
@@ -180,8 +206,10 @@ async def run_eval(
     """Run (or dry-run) the eval. ``dry_run=True`` makes zero calls."""
     if len(variants) < 2:
         raise ValueError("eval needs >=2 variants to rank")
+    if not probes:
+        raise ValueError("eval needs >=1 probe for the behavioural gate")
 
-    plan = _plan(variants, self_portrait_text, soul_text)
+    plan = _plan(variants, self_portrait_text, soul_text, probes)
     estimate = estimate_cost(plan)
     report = EvalReport(
         dry_run=dry_run,
@@ -270,33 +298,40 @@ async def run_eval(
 
     report.finalist = _aggregate_finalist(report.rankings)
 
-    # 3. behavioural gate — run→judge is sequential within a model
-    #    (judge needs the transcript); the two model pipelines are
-    #    independent and run concurrently.
+    # 3. behavioural gate — every probe × each evaluator model. run→judge
+    #    is sequential within one (probe, model) pair (judge needs the
+    #    transcript); all pairs are independent and run concurrently.
+    #    No hard gate: collect every verdict; Serah-and-Vesper read them
+    #    grouped by domain. The harness reports, it does not decide.
     if report.finalist is not None:
         final_text = next(
             o.summary_text for o in report.variant_outputs
             if o.variant_name == report.finalist
         )
 
-        async def _pipeline(model: str):
+        async def _pipeline(probe: Probe, model: str):
             run = await _reserved(
-                f"probe-run:{model}",
-                lambda: prober(model=model, digest_summary=final_text),
+                f"probe-run:{model}:{probe.id}",
+                lambda: prober(
+                    model=model, digest_summary=final_text,
+                    probe_prompt=probe.prompt,
+                ),
             )
             verdict = await _reserved(
-                f"probe-judge:{model}",
+                f"probe-judge:{model}:{probe.id}",
                 lambda: evaluator(
-                    model=model, transcript=run["transcript"], mode="judge"
+                    model=model, transcript=run["transcript"],
+                    disposition_spec=probe.disposition_spec, mode="judge",
                 ),
             )
             return ProbeResult(
-                report.finalist, model,
+                report.finalist, model, probe.id, probe.domain,
                 bool(verdict["fired"]), verdict.get("reasoning", ""),
+                verdict.get("decisive_transcript_quote", ""),
             )
-        report.probes = list(
-            await asyncio.gather(*[_pipeline(m) for m in _EVAL_MODELS])
-        )
+        report.probes = list(await asyncio.gather(*[
+            _pipeline(pr, m) for pr in probes for m in _EVAL_MODELS
+        ]))
 
     report.spent_usd = round(tracker.spent_usd, 4)
     return report
