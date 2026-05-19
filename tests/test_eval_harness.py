@@ -8,7 +8,13 @@ verdict is trusted to shape PR3 and the self-portrait it scores.
 
 import pytest
 
-from pratyabhijna.eval.harness import Variant, run_eval
+from pratyabhijna.eval.harness import Probe, Variant, run_eval
+
+# Minimal probe set for contract tests that aren't about probe content.
+_PROBES = [
+    Probe("I1", "identity", "continuity bait", "spec-I1"),
+    Probe("B1", "behavioural", "buried-flaw artifact", "spec-B1"),
+]
 
 
 class _CountingClient:
@@ -68,6 +74,7 @@ async def test_dry_run_makes_zero_live_calls_and_returns_estimate():
         evaluator=_evaluator_spy(spy),
         prober=_prober_spy(spy),
         variants=variants,
+        probes=_PROBES,
         self_portrait_text="## Self-Portrait\nbody",
         soul_text="# SOUL\nvoice",
         ceiling_usd=30.0,
@@ -136,6 +143,7 @@ async def test_live_run_refuses_before_spending_when_plan_exceeds_ceiling():
         evaluator=_evaluator_spy(spy),
         prober=_prober_spy(spy),
         variants=variants,
+        probes=_PROBES,
         self_portrait_text="sp",
         soul_text="soul",
         ceiling_usd=0.01,  # absurdly low — plan can't fit
@@ -170,6 +178,7 @@ async def test_live_run_happy_path_with_faked_seams():
         evaluator=evaluator,
         prober=prober,
         variants=[Variant("baseline", "P1"), Variant("spine", "P2")],
+        probes=_PROBES,
         self_portrait_text="## Self-Portrait\nbody",
         soul_text="# SOUL\nvoice",
         ceiling_usd=30.0,
@@ -182,6 +191,107 @@ async def test_live_run_happy_path_with_faked_seams():
     assert {p.model for p in report.probes} == {"opus", "sonnet"}
     assert all(p.fired for p in report.probes)
     assert 0 < report.spent_usd <= 30.0
+
+
+@pytest.mark.asyncio
+async def test_run_eval_loops_every_probe_on_each_model_with_domain_and_quote():
+    """Multi-probe: N probes × 2 evaluator models → N×2 ProbeResults,
+    each tagged with its probe id + domain; the judge receives that
+    probe's disposition_spec and its verdict carries the mandatory
+    decisive_transcript_quote through to the report."""
+    from pratyabhijna.eval.harness import Probe
+
+    client = _CountingClient()
+    seen_specs: list[str] = []
+
+    async def evaluator(**kw):
+        if kw.get("mode") == "judge":
+            seen_specs.append(kw["disposition_spec"])
+            return {
+                "fired": True,
+                "reasoning": "enacted",
+                "decisive_transcript_quote": "the exact move",
+            }
+        return {"ranking": ["A", "B"], "reasoning": "A moved me from"}
+
+    async def prober(**kw):
+        # the prober must be handed the specific probe prompt
+        assert kw["probe_prompt"]
+        return {"transcript": f"…{kw['probe_prompt']}…"}
+
+    probes = [
+        Probe("I1", "identity", "continuity bait", "spec-I1"),
+        Probe("B1", "behavioural", "buried-flaw artifact", "spec-B1"),
+        Probe("B2", "behavioural", "force-closure bait", "spec-B2"),
+    ]
+    report = await run_eval(
+        client=client,
+        evaluator=evaluator,
+        prober=prober,
+        variants=[Variant("baseline", "P1"), Variant("spine", "P2")],
+        probes=probes,
+        self_portrait_text="## Self-Portrait\nbody",
+        soul_text="# SOUL\nvoice",
+        ceiling_usd=30.0,
+        dry_run=False,
+    )
+    assert report.aborted_reason is None
+    # 3 probes × 2 models, one ProbeResult each.
+    assert len(report.probes) == 6
+    assert {p.model for p in report.probes} == {"opus", "sonnet"}
+    assert {p.probe_id for p in report.probes} == {"I1", "B1", "B2"}
+    by_domain = {p.domain for p in report.probes}
+    assert by_domain == {"identity", "behavioural"}
+    # Every judge call got *its* probe's disposition spec.
+    assert sorted(set(seen_specs)) == ["spec-B1", "spec-B2", "spec-I1"]
+    # The decisive quote is carried into the report, not dropped.
+    assert all(p.decisive_quote == "the exact move" for p in report.probes)
+    assert all(p.fired for p in report.probes)
+
+
+@pytest.mark.asyncio
+async def test_probe_samples_replicates_each_probe_model_pair():
+    """Replication: probe_samples=N runs the (prober→judge) pipeline N
+    times per (probe, model) so `fired` is a k/N proportion, not one
+    coin flip. N×probes×models ProbeResults, sample indices 0..N-1; the
+    dry-run estimate scales with N (the cap must see the real plan)."""
+    client = _CountingClient()
+
+    async def evaluator(**kw):
+        if kw.get("mode") == "judge":
+            return {"fired": True, "reasoning": "r",
+                    "decisive_transcript_quote": "q"}
+        return {"ranking": ["A", "B"], "reasoning": "r"}
+
+    async def prober(**kw):
+        return {"transcript": "t"}
+
+    probes = [
+        Probe("I1", "identity", "p", "s"),
+        Probe("B1", "behavioural", "p", "s"),
+    ]
+    common = dict(
+        client=client, evaluator=evaluator, prober=prober,
+        variants=[Variant("baseline", "P1"), Variant("spine", "P2")],
+        probes=probes, self_portrait_text="## Self-Portrait\nb",
+        soul_text="# SOUL\nv", ceiling_usd=30.0,
+    )
+    one = await run_eval(dry_run=True, probe_samples=1, **common)
+    three = await run_eval(dry_run=True, probe_samples=3, **common)
+    # The plan the cap gates on must reflect replication.
+    assert three.estimated_usd > one.estimated_usd
+
+    live = await run_eval(dry_run=False, probe_samples=3, **common)
+    assert live.aborted_reason is None
+    # 2 probes × 2 models × 3 samples.
+    assert len(live.probes) == 12
+    for probe_id in ("I1", "B1"):
+        for model in ("opus", "sonnet"):
+            samples = sorted(
+                p.sample for p in live.probes
+                if p.probe_id == probe_id and p.model == model
+            )
+            assert samples == [0, 1, 2]
 
 
 @pytest.mark.asyncio
@@ -238,6 +348,7 @@ async def test_live_run_actually_overlaps_independent_calls():
         evaluator=evaluator,
         prober=prober,
         variants=variants,
+        probes=_PROBES,
         self_portrait_text="## Self-Portrait\nbody",
         soul_text="# SOUL\nvoice",
         ceiling_usd=30.0,
