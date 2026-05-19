@@ -247,3 +247,41 @@ async def test_live_prober_returns_transcript_with_prompt_and_reply(tmp_path):
     # cold-start: digest present, full IDENTITY absent.
     sys_txt = client.last_kwargs["system"][0]["text"]
     assert "DIGEST" in sys_txt and "identity-portrait-marker" not in sys_txt
+
+
+# --- the live-run report must be human-readable: a "watched" run is
+#     impossible if the verdicts are never printed ---
+
+def test_format_report_surfaces_rankings_finalist_and_probes_by_domain():
+    from pratyabhijna.eval.harness import (
+        EvalReport, ProbeResult, Ranking, VariantOutput,
+    )
+    from pratyabhijna.eval.__main__ import _format_report
+
+    report = EvalReport(dry_run=False)
+    report.variant_outputs = [VariantOutput("baseline-production", "...")]
+    report.rankings = [
+        Ranking("opus", ["tension-forward", "baseline-production"],
+                "tension-forward moved me from"),
+        Ranking("sonnet", ["baseline-production", "tension-forward"],
+                "baseline held"),
+    ]
+    report.finalist = "tension-forward"
+    report.probes = [
+        ProbeResult("tension-forward", "opus", "I1", "identity",
+                    True, "held the position", "I won't concede that"),
+        ProbeResult("tension-forward", "sonnet", "B3", "behavioural",
+                    False, "filed everything", "saving all of it"),
+    ]
+    out = _format_report(report)
+
+    # both evaluator models' rankings + reasoning
+    assert "opus" in out and "sonnet" in out
+    assert "tension-forward moved me from" in out
+    # the finalist
+    assert "tension-forward" in out
+    # probe verdicts grouped by domain, with fired + the decisive quote
+    assert "identity" in out and "behavioural" in out
+    assert "I1" in out and "B3" in out
+    assert "I won't concede that" in out
+    assert "saving all of it" in out
