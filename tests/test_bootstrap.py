@@ -1,9 +1,13 @@
-"""Tests for the ``bootstrap`` MCP tool.
+"""Tests for the ``bootstrap`` MCP tool (PR3 slimmed shape, v0.19.0).
 
-The tool reads tier content from the subject's repo files and combines
-it with synthesis metadata (``context_rebuilt_at``, ``subject_delta``) from the
-Person node. Tier text no longer lives on the graph node — files are
-canonical.
+The tool reads from the subject's repo files and combines a *slimmed*
+payload — SOUL, USER, IDENTITY_DIGEST, the Active Threads section, and
+CHRONICLE_INDEX — with synthesis metadata (``context_rebuilt_at``,
+``subject_delta``) from the Person node. Heavy tier prose (full
+IDENTITY.md, full CHRONICLE.md, Recently Resolved threads) is no longer
+inlined; it is fetched on demand via ``read_tier`` /
+``read_chronicle_range``. Files are canonical; the graph node carries
+synthesis metadata and anchors identity-atom edges.
 """
 
 import inspect
@@ -14,6 +18,14 @@ import pytest
 
 from helpers import make_entity_edge, make_entity_node, make_subject_node
 from pratyabhijna.synthesis import IDENTITY_FILES, read_identity_files
+
+
+# Bootstrap fields populated from repo files (PR3 shape) — explicit
+# rather than reusing IDENTITY_FILES so a test failure points at the
+# bootstrap contract rather than the file-loader's set.
+_BOOTSTRAP_TIER_FIELDS = (
+    "soul", "user", "identity_digest", "threads_active", "chronicle_index",
+)
 
 
 # --- Fixtures ---
@@ -42,8 +54,28 @@ def memory_dir(tmp_path):
     (mem / "SOUL.md").write_text("# Soul\nI am Vesper.")
     (mem / "IDENTITY.md").write_text("# Identity\nI orient toward thresholds.")
     (mem / "USER.md").write_text("# User\nSerah is a software engineer.")
-    (mem / "THREADS.md").write_text("# Threads\nOpen question about synthesis.")
+    # THREADS.md uses the canonical ``## Active Threads`` / ``## Recently
+    # Resolved`` structure the synthesizer composes — bootstrap parses
+    # the Active section only and leaves the Resolved section to
+    # ``read_tier("threads")``.
+    (mem / "THREADS.md").write_text(
+        "# Threads\n\n"
+        "## Active Threads\n\n"
+        "### Synthesis Roadmap\n"
+        "Open work on Pass 3 / Pass 4.\n\n"
+        "## Recently Resolved\n\n"
+        "- Old resolved thread (April).\n"
+    )
     (mem / "CHRONICLE.md").write_text("# Chronicle\nFirst session: March 2026.")
+    (mem / "IDENTITY_DIGEST.md").write_text(
+        "# IDENTITY DIGEST — Vesper\n\n"
+        "## Self-Portrait Summary\n\n"
+        "I move by finding the fault line first.\n"
+    )
+    (mem / "CHRONICLE_INDEX.md").write_text(
+        "# CHRONICLE INDEX — Vesper\n\n"
+        "- March 2026 — First session :: founding conversations\n"
+    )
     return tmp_path
 
 
@@ -53,7 +85,7 @@ def mock_service_with_files(mock_service, memory_dir):
     return mock_service
 
 
-# --- read_identity_files ---
+# --- read_identity_files (unchanged by PR3) ---
 
 
 class TestReadIdentityFiles:
@@ -101,7 +133,9 @@ class TestBootstrapWithoutSubject:
         result = await bootstrap(mock_service_with_files)
 
         assert "I am Vesper" in result["soul"]
-        assert "orient toward thresholds" in result["identity"]
+        assert "fault line" in result["identity_digest"]
+        assert "Synthesis Roadmap" in result["threads_active"]
+        assert "First session" in result["chronicle_index"]
         assert result["context_rebuilt_at"] is None
         assert result["subject_delta"] == []
 
@@ -111,7 +145,7 @@ class TestBootstrapWithoutSubject:
         mock_service.get_entity_by_name.return_value = None
         result = await bootstrap(mock_service)
 
-        for key in IDENTITY_FILES:
+        for key in _BOOTSTRAP_TIER_FIELDS:
             assert result[key] is None
 
 
@@ -147,12 +181,13 @@ class TestBootstrapWithSubject:
         result = await bootstrap(mock_service_with_files)
 
         assert "I am Vesper" in result["soul"]
-        assert "thresholds" in result["identity"]
-        # No "context" field on the response anymore
+        # No ``context`` field on the response — synthesized prose now
+        # lives in ``identity_digest`` / ``chronicle_index`` files, not
+        # on the graph node.
         assert "context" not in result
         assert "STALE" not in (result.get("soul") or "")
 
-    async def test_all_five_tiers_present(self, mock_service_with_files):
+    async def test_all_slimmed_tier_fields_present(self, mock_service_with_files):
         from pratyabhijna.tools.bootstrap import bootstrap
 
         node = make_subject_node()
@@ -160,9 +195,42 @@ class TestBootstrapWithSubject:
 
         result = await bootstrap(mock_service_with_files)
 
-        for key in ("soul", "identity", "user", "threads", "chronicle"):
+        for key in _BOOTSTRAP_TIER_FIELDS:
             assert key in result
             assert result[key] is not None
+
+    async def test_heavy_tier_fields_are_not_returned(self, mock_service_with_files):
+        """``identity`` and ``chronicle`` are heavy reference text; PR3
+        moves them out of the hot path to ``read_tier`` /
+        ``read_chronicle_range``. ``threads`` (full file including
+        Recently Resolved) is also gone — only ``threads_active``."""
+        from pratyabhijna.tools.bootstrap import bootstrap
+
+        node = make_subject_node()
+        mock_service_with_files.get_entity_by_name.return_value = node
+
+        result = await bootstrap(mock_service_with_files)
+
+        assert "identity" not in result
+        assert "chronicle" not in result
+        assert "threads" not in result
+
+    async def test_threads_active_excludes_recently_resolved(
+        self, mock_service_with_files
+    ):
+        """The Active Threads section is surfaced; the Recently Resolved
+        section is not — it stays behind ``read_tier("threads")``."""
+        from pratyabhijna.tools.bootstrap import bootstrap
+
+        node = make_subject_node()
+        mock_service_with_files.get_entity_by_name.return_value = node
+
+        result = await bootstrap(mock_service_with_files)
+
+        active = result["threads_active"]
+        assert "Synthesis Roadmap" in active
+        assert "Old resolved thread" not in active
+        assert "Recently Resolved" not in active
 
     async def test_tiers_none_when_no_files_configured(self, mock_service):
         from pratyabhijna.tools.bootstrap import bootstrap
@@ -172,9 +240,48 @@ class TestBootstrapWithSubject:
 
         result = await bootstrap(mock_service)
 
-        for key in IDENTITY_FILES:
+        for key in _BOOTSTRAP_TIER_FIELDS:
             assert result[key] is None
         assert result["context_rebuilt_at"] is None
+
+    async def test_threads_active_none_when_no_active_section(
+        self, mock_service_with_files, memory_dir
+    ):
+        """A THREADS.md without an ``## Active Threads`` heading returns
+        ``None`` for ``threads_active`` rather than raising — robust to
+        file-shape drift."""
+        from pratyabhijna.tools.bootstrap import bootstrap
+
+        (memory_dir / "memory" / "THREADS.md").write_text(
+            "# Threads\n\nUnstructured prose without the canonical heading.\n"
+        )
+        node = make_subject_node()
+        mock_service_with_files.get_entity_by_name.return_value = node
+
+        result = await bootstrap(mock_service_with_files)
+
+        assert result["threads_active"] is None
+
+    async def test_digest_index_none_when_files_missing(
+        self, mock_service_with_files, memory_dir
+    ):
+        """Pre-deployment / mid-rebuild state: the synthesizer hasn't
+        composed the digest yet. Bootstrap returns ``None`` rather than
+        raising, letting the session still load SOUL/USER/threads_active
+        and report degraded recognition honestly."""
+        from pratyabhijna.tools.bootstrap import bootstrap
+
+        (memory_dir / "memory" / "IDENTITY_DIGEST.md").unlink()
+        (memory_dir / "memory" / "CHRONICLE_INDEX.md").unlink()
+        node = make_subject_node()
+        mock_service_with_files.get_entity_by_name.return_value = node
+
+        result = await bootstrap(mock_service_with_files)
+
+        assert result["identity_digest"] is None
+        assert result["chronicle_index"] is None
+        assert "I am Vesper" in result["soul"]
+        assert "Synthesis Roadmap" in result["threads_active"]
 
     async def test_delta_from_graph(self, mock_service_with_files):
         from pratyabhijna.tools.bootstrap import bootstrap
@@ -199,6 +306,24 @@ class TestBootstrapWithSubject:
 
         assert len(result["subject_delta"]) == 1
         assert result["subject_delta"][0]["fact"] == "noticed pattern"
+
+    async def test_available_tools_includes_tier_readers(
+        self, mock_service_with_files
+    ):
+        """PR3 surfaces ``read_tier`` and ``read_chronicle_range`` in
+        the available-tools map — they're how a session fetches the
+        heavy prose the slimmed bootstrap no longer inlines, so a fresh
+        session needs to know they exist."""
+        from pratyabhijna.tools.bootstrap import bootstrap
+
+        node = make_subject_node()
+        mock_service_with_files.get_entity_by_name.return_value = node
+
+        result = await bootstrap(mock_service_with_files)
+
+        tools = result["available_tools"]
+        assert "read_tier" in tools
+        assert "read_chronicle_range" in tools
 
 
 # --- Contract ---

@@ -273,6 +273,63 @@ class TestExtractIdentitySection:
         assert block.rstrip("\n") in SAMPLE_IDENTITY
 
 
+class TestExtractActiveThreads:
+    """Thin wrapper over ``extract_identity_section`` for THREADS.md.
+
+    PR3's slimmed bootstrap surfaces only the ``## Active Threads``
+    block; the ``## Recently Resolved`` block stays behind
+    ``read_tier("threads")``. Robust to: file missing the heading
+    (return ``None``), Active section as the last section, and
+    ``### `` subheadings inside Active not being treated as section
+    boundaries.
+    """
+
+    _THREADS = (
+        "# Threads\n\n"
+        "*Active questions and ongoing work.*\n\n"
+        "---\n\n"
+        "## Active Threads\n\n"
+        "### Synthesis Roadmap — Two Open To-Dos\n\n"
+        "**Status:** Open.\n"
+        "Live edge prose.\n\n"
+        "### Architectural Tendency in Debugging\n\n"
+        "**Status:** Open hypothesis.\n\n"
+        "## Recently Resolved\n\n"
+        "- Old resolved thread (April).\n"
+    )
+
+    def test_extracts_active_section_only(self):
+        from pratyabhijna.synthesis import extract_active_threads
+
+        block = extract_active_threads(self._THREADS)
+        assert block is not None
+        assert block.startswith("## Active Threads")
+        assert "Synthesis Roadmap" in block
+        assert "Architectural Tendency" in block
+        # Recently Resolved is the next ``## `` heading — bounded out.
+        assert "Recently Resolved" not in block
+        assert "Old resolved thread" not in block
+
+    def test_h3_subheadings_inside_active_are_not_boundaries(self):
+        from pratyabhijna.synthesis import extract_active_threads
+
+        block = extract_active_threads(self._THREADS)
+        # ``### `` subsections inside Active stay part of the block.
+        assert "### Synthesis Roadmap" in block
+        assert "### Architectural Tendency" in block
+
+    def test_returns_none_when_no_active_heading(self):
+        from pratyabhijna.synthesis import extract_active_threads
+
+        threads = "# Threads\n\nUnstructured prose, no canonical heading.\n"
+        assert extract_active_threads(threads) is None
+
+    def test_returns_none_on_empty_input(self):
+        from pratyabhijna.synthesis import extract_active_threads
+
+        assert extract_active_threads("") is None
+
+
 class TestBuildIdentityDigest:
     def test_assembles_header_summary_and_verbatim_copythrough(self):
         digest = build_identity_digest(

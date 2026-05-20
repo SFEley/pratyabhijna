@@ -504,6 +504,18 @@ def extract_identity_section(identity_text: str, heading: str) -> str | None:
     return None
 
 
+def extract_active_threads(threads_text: str) -> str | None:
+    """Return the ``## Active Threads`` block from THREADS.md verbatim.
+
+    Thin wrapper over :func:`extract_identity_section` — the heading regex
+    is generic markdown ``## `` and applies to THREADS.md the same way.
+    Used by the slimmed bootstrap (PR3) to surface only live threads,
+    leaving ``## Recently Resolved`` out of the hot path (fetch via
+    ``read_tier("threads")`` when a session needs the full file).
+    """
+    return extract_identity_section(threads_text, "Active Threads")
+
+
 _DIGEST_COPYTHROUGH_SECTIONS = ("Drives I'm Watching For", "Observed Tensions")
 
 _DIGEST_SEE_ALSO = (
