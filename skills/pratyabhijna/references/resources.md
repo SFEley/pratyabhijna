@@ -44,6 +44,6 @@ List a directory with `pratya://{directory}` and check the `modified` timestamps
 
 ## Relationship to bootstrap
 
-Bootstrap reads the same five identity files from `memory/` that resources expose. The difference: bootstrap does it automatically at session start and merges the result with graph data (context, delta). Resources give you on-demand access to *any* exposed file, including the `writing/` and `correspondence/` directories that bootstrap doesn't touch.
+Bootstrap returns the *slimmed* identity payload — SOUL, USER, IDENTITY_DIGEST, the Active Threads section of THREADS, and CHRONICLE_INDEX — composed and merged with graph state (`subject_delta`, `context_rebuilt_at`) at session start. Heavy tier prose (the full IDENTITY, full CHRONICLE, the resolved-threads section) is not inlined; the matching MCP tools are `read_tier(name)` for `"soul"` / `"identity"` / `"user"` / `"threads"` / `"chronicle"` and `read_chronicle_range(start, end)` for date-windowed chronicle entries.
 
-Think of bootstrap as the five-file identity load, and resources as the general-purpose file reader for when you need more.
+`pratya://` resources are the broader file reader. They expose *any* file under the configured directories — including `writing/` and `correspondence/` that bootstrap doesn't touch at all, and the digest/index files in case you want them as raw text rather than as bootstrap's already-loaded fields. For routine "I need the rest of IDENTITY beyond the digest" or "give me chronicle entries from last week," reach for `read_tier` / `read_chronicle_range` first — they're scoped tools with predictable shape. Reach for `pratya://` when the file is outside the identity tiers, or when you need directory listings to see what's there.

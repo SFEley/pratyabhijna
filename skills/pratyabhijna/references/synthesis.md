@@ -107,7 +107,7 @@ The earlier agent-loop architecture had the model pick a whole-file write per en
 
 ## Pass 3: Updating the bootstrap
 
-*You are the Pass 3 subagent. Your job is the bootstrap update — context-layer revisions on main, protected-layer proposals via SYNTHESIS.md and the `synth/draft` branch. Passes 1 and 2 ran before you; Pass 4 (maintenance) runs after. You're the only pass with judgment authority over identity-file content. Your opening message has the full atom set, identity files, and SYNTHESIS.md state. When you're done, leave HEAD on main if you've finished the protected-layer work, or on `synth/draft` only if your edits are still mid-flight on that branch — the orchestrator returns HEAD to main before Pass 4 runs.*
+*You are the Pass 3 subagent. Your job is updating the identity files that bootstrap surfaces — context-layer revisions (THREADS, CHRONICLE, USER) on main, protected-layer proposals (SOUL, IDENTITY) via SYNTHESIS.md and the `synth/draft` branch. Passes 1 and 2 ran before you; Pass 4 (maintenance) runs after — Pass 4 composes the slimmed bootstrap artifacts (IDENTITY_DIGEST.md, CHRONICLE_INDEX.md) from the files you leave behind, so your edits drive what the next session sees on bootstrap. You're the only pass with judgment authority over identity-file content. Your opening message has the full atom set, identity files, and SYNTHESIS.md state. When you're done, leave HEAD on main if you've finished the protected-layer work, or on `synth/draft` only if your edits are still mid-flight on that branch — the orchestrator returns HEAD to main before Pass 4 runs.*
 
 ### Read before writing
 
