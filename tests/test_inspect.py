@@ -48,6 +48,7 @@ def mock_service():
     """
     service = MagicMock()
     service.is_connected = True
+    service.config.subject_name = "vesper"
     service.get_entity_by_uuid = AsyncMock(
         side_effect=NodeNotFoundError(UUID_UNKNOWN),
     )
@@ -380,6 +381,9 @@ class TestInspectByName:
 
         assert result["type"] == "community"
         assert result["uuid"] == UUID_COMMUNITY
+        mock_service.get_community_by_name.assert_awaited_once_with(
+            "Phase-7 work", "vesper"
+        )
 
     async def test_name_not_found(self, mock_service):
         from pratyabhijna.tools.inspect import inspect

@@ -141,9 +141,13 @@ async def _inspect_by_name(service, name: str) -> dict:
             )
         return formatted
 
-    # Community — exact name. ``get_community_by_name`` returns None on
-    # miss rather than raising, so check directly.
-    community = await service.get_community_by_name(name)
+    # Community — exact name, scoped to the configured group.
+    # ``get_community_by_name`` requires ``group_id`` (kept required so
+    # multi-tenant deployments can't accidentally cross-leak) and returns
+    # None on miss rather than raising, so check directly.
+    community = await service.get_community_by_name(
+        name, service.config.subject_name
+    )
     if community is not None:
         return _format_community(community)
 
