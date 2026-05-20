@@ -165,14 +165,21 @@ def create_server(
 
     @server.tool()
     async def inspect(
-        uuid: str,
+        identifier: str,
     ) -> dict:
-        """Detailed view of a memory node or edge with connections."""
+        """Detailed view of a memory node or edge with connections.
+
+        Accepts either a canonical UUID (8-4-4-4-12 hex) or a name.
+        UUIDs dispatch to typed UUID lookups across Entity, Edge,
+        Episodic, Community, and Saga. Names dispatch to exact
+        (case-insensitive) name lookups across Entity, Episodic, and
+        Community — no fuzzy fallback (use `recall` for that).
+        """
         if service is None:
             raise RuntimeError("inspect requires a connected service")
         from pratyabhijna.tools.inspect import inspect as _inspect
 
-        return await _inspect(service=service, uuid=uuid)
+        return await _inspect(service=service, identifier=identifier)
 
     @server.tool()
     async def communities(
