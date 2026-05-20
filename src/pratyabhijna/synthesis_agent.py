@@ -1572,6 +1572,19 @@ _DIGEST_SUMMARY_SYSTEM_PROMPT = (
     "lists.\n\n"
     "Output only the summary text. No heading, no preamble, no "
     "commentary, no quote marks."
+    # --- Tension-forward override (PR3, v0.19.0) -----------------
+    # Inlined verbatim from the eval-validated variant: the May 19
+    # live run selected this addition Borda-decisively on both Opus
+    # and Sonnet evaluators (PR #42). Kept as a trailing block so the
+    # exact text that won the eval is what production runs; the
+    # ``Structural override:`` framing is intentional and preserved
+    # from the variant string so re-running the eval against a future
+    # baseline compares like-for-like.
+    "\n\nStructural override: build the summary around what is "
+    "*unresolved* — the live tensions and the between-space — rather "
+    "than the settled patterns. For this subject the distinctive thing "
+    "is distrust of neat resolution; lead with the open edges and let "
+    "the settled spine sit under them, not the reverse."
 )
 
 

@@ -181,11 +181,17 @@ class TestLiveBootstrap:
         datetime.fromisoformat(result["context_rebuilt_at"])
 
     async def test_bootstrap_tier_fields_present(self, service, subject_node):
-        """All five tier fields are present in the response (value depends on files)."""
+        """All slimmed-shape tier fields (PR3) are present (values depend on files)."""
         result = await bootstrap(service=service)
 
-        for key in ("soul", "identity", "user", "threads", "chronicle"):
+        for key in (
+            "soul", "user", "identity_digest", "threads_active",
+            "chronicle_index",
+        ):
             assert key in result
+        # PR3 removes heavy tier prose from the hot path.
+        for key in ("identity", "chronicle", "threads"):
+            assert key not in result
 
     async def test_bootstrap_returns_delta(self, service, seeded_subject):
         """bootstrap includes atoms created since the prior synthesis-run

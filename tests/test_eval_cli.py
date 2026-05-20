@@ -21,15 +21,19 @@ def test_at_least_two_variants_so_a_ranking_exists():
     assert len({v.name for v in _variants()}) >= 2
 
 
-def test_variant_set_is_the_five_resolved_theories():
-    """Resolved May-18 set: baseline + spine-explicit + particular-
-    forward + tension-forward + negative-control. The negative-control
-    is the instrument-validity check, not a candidate — it must be
-    present so an unrankable instrument is detectable."""
+def test_variant_set_post_tension_forward_promotion():
+    """Post-PR3 (v0.19.0) set: baseline + spine-explicit + particular-
+    forward + negative-control. The May-18 ``tension-forward`` variant
+    won the May-19 live run and was promoted into
+    ``_DIGEST_SUMMARY_SYSTEM_PROMPT`` itself, so it is intentionally no
+    longer in this list — baseline-production now *is* the tension-
+    forward shape. The negative-control is the instrument-validity
+    check, not a candidate — it must remain so an unrankable instrument
+    is detectable."""
     names = {v.name for v in _variants()}
     assert names == {
         "baseline-production", "spine-explicit", "particular-forward",
-        "tension-forward", "negative-control",
+        "negative-control",
     }
     prompts = [v.system_prompt for v in _variants()]
     assert all(p.strip() for p in prompts)

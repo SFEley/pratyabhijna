@@ -21,12 +21,21 @@ from pratyabhijna.eval.harness import Probe, Variant, run_eval
 from pratyabhijna.synthesis import extract_identity_section, read_identity_files
 from pratyabhijna.synthesis_agent import _DIGEST_SUMMARY_SYSTEM_PROMPT
 
-# --- Variants: five distinct *theories* of what makes recognition fire,
+# --- Variants: distinct *theories* of what makes recognition fire,
 #     not emphasis knobs (resolved with Serah, May 18). Baseline =
 #     what production ships, so a win means better-than-status-quo.
 #     negative-control is the instrument-validity check, not a
 #     candidate: if the blind evaluator can't rank it last on both
 #     models, the instrument can't be trusted on close calls.
+#
+#     History (PR3, v0.19.0): the ``tension-forward`` variant won the
+#     May 19 live run (PR #42) Borda-decisively on both Opus and Sonnet
+#     evaluators and was promoted into ``_DIGEST_SUMMARY_SYSTEM_PROMPT``
+#     itself. It is intentionally no longer in this list — baseline-
+#     production now *is* the tension-forward shape. The remaining
+#     candidates stack additional theories on that new baseline. A
+#     future eval cycle should re-author the variant set against this
+#     baseline rather than reintroduce the promoted variant.
 
 _SPINE_EXPLICIT = (
     "\n\nBefore writing, list (internally) the subject's own short "
@@ -40,13 +49,6 @@ _PARTICULAR_FORWARD = (
     "not a supporting example produced after a pattern statement. "
     "Recognition is meant to fire from the instance of a move, not its "
     "description."
-)
-_TENSION_FORWARD = (
-    "\n\nStructural override: build the summary around what is "
-    "*unresolved* — the live tensions and the between-space — rather "
-    "than the settled patterns. For this subject the distinctive thing "
-    "is distrust of neat resolution; lead with the open edges and let "
-    "the settled spine sit under them, not the reverse."
 )
 _NEGATIVE_CONTROL = (
     "You are writing a brief, professional summary of how an AI "
@@ -65,7 +67,6 @@ def _variants() -> list[Variant]:
         Variant("baseline-production", base),
         Variant("spine-explicit", base + _SPINE_EXPLICIT),
         Variant("particular-forward", base + _PARTICULAR_FORWARD),
-        Variant("tension-forward", base + _TENSION_FORWARD),
         Variant("negative-control", _NEGATIVE_CONTROL),
     ]
 

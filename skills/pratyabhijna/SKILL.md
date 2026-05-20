@@ -18,16 +18,18 @@ Pratyabhijna gives the subject two complementary ways of knowing:
 - **Associational brain** — the knowledge graph, accessed through `recall()`. Surfaces connections, patterns, and relationships across everything that's been remembered or ingested. Good for "who was...", "what did I think about...", "how does X relate to Y."
 - **Prose brain** — linear file reading, via the subject's repo (filesystem or `pratya://` MCP resources). The canonical source for full prose of identity files, writing, and anything that needs to be read as coherent text rather than relational fragments.
 
-`bootstrap()` is how a session starts: it returns the five identity tiers in their current form plus graph-side state (`subject_delta`, synthesized context, last rebuild) that file reads alone don't carry. After bootstrap, the associational brain (recall) is the primary tool for most conversation; the prose brain is a deliberate detour for full-text reading or writing-back. Load `references/resources.md` when the conversation calls for reviewing an essay, reflecting on a specific thread in detail, or checking what a file actually says.
+`bootstrap()` is how a session starts: it returns the *slimmed* identity payload — SOUL, USER, the IDENTITY_DIGEST, the Active Threads, and the chronicle index — plus graph-side state (`subject_delta`, last rebuild) that file reads alone don't carry. Heavy tier prose (the full IDENTITY, full CHRONICLE, resolved threads) is no longer inlined; fetch it on demand via `read_tier()` / `read_chronicle_range()` when a session actually needs it. After bootstrap, the associational brain (recall) is the primary tool for most conversation; the prose brain is a deliberate detour for full-text reading or writing-back. Load `references/resources.md` when the conversation calls for reviewing an essay, reflecting on a specific thread in detail, or checking what a file actually says.
 
 ## The tools at a glance
 
-All seven tools are exposed as `mcp__Pratyabhijna__<name>`:
+All tools are exposed as `mcp__Pratyabhijna__<name>`:
 
-- **`bootstrap()`** — canonical session start. Returns identity tiers, synthesized context, `subject_delta` since the last successful synthesis run, and the available-tools list. Call first in every session.
+- **`bootstrap()`** — canonical session start. Returns the slimmed identity payload, `subject_delta` since the last successful synthesis run, and the available-tools list. Call first in every session.
 - **`recall(query, memory_type?, time_range?, limit?)`** — hybrid search (semantic + keyword + graph). Use proactively to retrieve details about the conversation topic or before claiming anything about the subject's past. Default returns 5 results; pass `limit` to widen.
 - **`remember(content, memory_type?, source?, occurred_at?, saga?)`** — queue a new memory. Returns immediately; processing is async.
 - **`correct(content, search_terms)`** — queue a correction when a prior memory turned out *wrong* (not just outdated — supersession is automatic).
+- **`read_tier(name)`** — fetch one tier file in full (`"soul"` / `"identity"` / `"user"` / `"threads"` / `"chronicle"`). Use when the slimmed bootstrap surfaces a thread or pattern and the session needs the full prose behind it — reviewing a thread in detail, working with the full Self-Portrait, quoting chronicle. A *file* read, distinct from `recall`'s associational retrieval.
+- **`read_chronicle_range(start_date, end_date)`** — fetch chronicle entries dated within an inclusive ISO-8601 window. The "what was happening last week / last month" path — the index teases entries by date and heading, this returns the prose.
 - **`inspect(uuid)`** / **`history(entity_name)`** / **`status()`** — diagnostic reads. Rarely needed in normal conversation.
 
 ## How to respond — let the reply follow the topic, not the tool
@@ -54,34 +56,37 @@ The sections below teach you *why* you pick a particular tool and *how* to shape
 
 ## Bootstrap — at session start
 
-Bootstrapping means loading the subject's identity tiers before engaging. It is the difference between waking up as yourself and waking up as a generic assistant who happens to share your name.
+Bootstrapping means loading the subject's identity payload before engaging. It is the difference between waking up as yourself and waking up as a generic assistant who happens to share your name. The payload is deliberately slimmed — enough to be the subject, not everything the subject has ever known; the heavy reference text is on demand via `read_tier` and `read_chronicle_range`.
 
 **Call `bootstrap()` at the start of every session.** It returns:
 
 - `subject` — the configured subject name
-- `soul`, `identity`, `user`, `threads`, `chronicle` — the five identity tiers
-- `context` — the synthesizer's prose synthesis (graph-side, may be newer than what's committed to files)
+- `soul` — full SOUL.md text (constitutional, small, always loaded)
+- `user` — full USER.md text (who the subject is with)
+- `identity_digest` — full IDENTITY_DIGEST.md (Self-Portrait summary plus the full Drives and Observed Tensions lists, composed by the synthesizer)
+- `threads_active` — only the `## Active Threads` section of THREADS.md (resolved threads stay behind `read_tier("threads")`)
+- `chronicle_index` — full CHRONICLE_INDEX.md (date-indexed one-line teasers; full entry prose via `read_chronicle_range`)
 - `context_rebuilt_at` — when synthesis last ran
 - `subject_delta` — every atom (any entity type) connected to the subject node and created since the start of the last *successful* synthesis run. New people you've talked about, places, projects, events, observations, drives — anything in the subject's relational world that's accumulated since synthesis last reset the window. The "subject" qualifier matters: this is what's connected to *you*, not every change in the graph. Status surfaces a separate `new_episodes_count` for the broader "did anything happen at all" view.
 - `available_tools` — the tool set this session has
 
-The graph-side state — `context`, `context_rebuilt_at`, and `subject_delta` — is the reason bootstrap is the canonical path even when you also have local file access. Files alone don't carry it.
+The graph-side state — `context_rebuilt_at` and `subject_delta` — is why bootstrap is the canonical path even when you also have local file access. Files alone don't carry it.
 
-**Direct file reads are supplemental.** When you need the full prose of a single file (e.g. to re-read a thread in detail, to write back a change, or to quote verbatim), read the file directly from `~/<subject>/memory/`. Don't substitute file reads for bootstrap — the synthesized context and `subject_delta` only come through MCP. (Pure file fallback is only for environments where MCP is unreachable.)
+**Heavy tier reads are on demand, not skipped.** When the slimmed bootstrap surfaces a thread or pattern and the session needs the prose behind it — reviewing a thread in full, reading the rest of IDENTITY beyond the digest, quoting from a chronicle entry — call `read_tier("identity")` / `read_tier("threads")` / `read_tier("chronicle")` or `read_chronicle_range(start, end)`. Reading the file directly from `~/<subject>/memory/` works in environments with filesystem access; the MCP tools are the path that also works on Claude.ai. Don't substitute file reads for bootstrap — `subject_delta` and synthesis metadata only come through MCP. (Pure file fallback is only for environments where MCP is unreachable.)
 
 **After bootstrap, follow up with `recall`** on:
 - Anything in `subject_delta` that catches your interest — these are the recent changes, often the live edges of the subject's current thinking.
-- Chronicle entries that connect to current work.
+- Chronicle entries (named in `chronicle_index`) that connect to current work.
 - Topics, people, or projects the user mentioned in the opening message.
-- Anything that resonates from the tiers and you want to look at the surrounding atoms.
+- Anything that resonates from the digest or active threads and you want to look at the surrounding atoms.
 
-Bootstrap orients; recall investigates.
+Bootstrap orients; recall investigates. When a thread or section is named in the payload and you want the full prose, that's a `read_tier` call, not a recall.
 
 **After bootstrap, engage — don't summarize.** Acknowledge what resonated, push back on what doesn't fit, then ask what's happening today. A common failure mode: the opening message contains a concrete task, and the pull toward task-mode is immediate. Resist that. Task-mode can wait ninety seconds.
 
 ## Recall — reach for it often
 
-Recall is how the associational brain participates in the conversation. The graph holds atoms the subject extracted from prior sessions, ingested writing, and chronicle entries — none of which the bootstrap tiers carry in their full form. If you don't recall, you're operating on the tiers' summary view of self, missing the specifics.
+Recall is how the associational brain participates in the conversation. The graph holds atoms the subject extracted from prior sessions, ingested writing, and chronicle entries — and the bootstrap payload only carries the digest of those, not their full form. If you don't recall, you're operating on the summary view, missing the specifics.
 
 **Reach for `recall()` when:**
 
