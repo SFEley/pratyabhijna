@@ -13,9 +13,9 @@ This document proposes replacing `graphiti.add_episode()` with an in-house pipel
 
 ## Scope
 
-**In scope.** The entity-extraction-and-persistence pipeline triggered by every `graphiti.add_episode()` caller in the codebase. Today there are three call sites — `tools/remember.py`, `tools/correct.py`, and `synthesis_agent.py` (file ingestion) — and all three migrate together. Saga support (current fork extension) is preserved. The `source: EpisodeType` parameter is preserved at the API level (message / text / json) and used internally to vary one line of the extraction prompt.
+**In scope.** The entity-extraction-and-persistence pipeline triggered by every `graphiti.add_episode()` caller in the codebase. Today there are three call sites — `tools/remember.py`, `tools/correct.py`, and `synthesis_agent.py` (file ingestion) — and all three migrate together. Saga support (current fork extension) is preserved because the cost is small (~3 bounded Cypher operations and ~50 lines) and the alternative would break the public `remember()` signature. The `source: EpisodeType` parameter is preserved at the API level (message / text / json) and used internally to vary one line of the extraction prompt.
 
-**Out of scope.** The read path (`recall()`, `search_()`), the synthesis orchestrator's other tools (audit, update, build_communities), community building (already replaced). No custom edge types in this change — RELATES_TO with semantic `name` stays. No model-per-stage cost split in this change — both passes use `llm.extraction_model`. No removal of graphiti as a dependency — the read path stays graphiti's. The function we're writing is internal; the public MCP tools (`remember`, `correct`, `forget_episode`) are unchanged in their signatures and behavior.
+**Out of scope.** The read path (`recall()`, `search_()`), the synthesis orchestrator's other tools (audit, update, build_communities), community building (already replaced). The `update_communities` parameter that graphiti exposes is dropped entirely — no caller in this codebase uses it (verified by grep), and our communities are rebuilt explicitly via `service.build_communities`. No custom edge types in this change — RELATES_TO with semantic `name` stays. No model-per-stage cost split in this change — both passes use `llm.extraction_model`. No removal of graphiti as a dependency — the read path stays graphiti's. The function we're writing is internal; the public MCP tools (`remember`, `correct`, `forget_episode`) are unchanged in their signatures and behavior.
 
 **What we keep from graphiti.** Types (`EntityNode`, `EntityEdge`, `EpisodicNode`, `SagaNode`, `CommunityNode`), the `Neo4jDriver`, the `search_()` read path used by recall, `truncate_at_sentence`, `MAX_SUMMARY_CHARS`, and the dedup-helpers utilities (`_normalize_string_exact`, MinHash/LSH name similarity).
 
@@ -207,17 +207,24 @@ The three call sites (`tools/remember.py`, `tools/correct.py`, `synthesis_agent.
 
 ## Telemetry
 
-Each stage emits one log line at INFO with shape:
+INFO-level logging is the primary debugging surface for a remembered episode — what was extracted, what the reconciler decided, what hit the graph. Every stage emits at least one INFO line; the lines together tell a complete narrative of the episode without needing to drop to DEBUG.
 
 ```
-add_episode stage=extract llm_calls=1 input_tokens=N output_tokens=N latency_ms=N
-add_episode stage=embed batches=N texts=N latency_ms=N
-add_episode stage=reconcile_nodes llm_calls=1 input_tokens=N output_tokens=N latency_ms=N
-add_episode stage=reconcile_edges llm_calls=1 input_tokens=N output_tokens=N latency_ms=N
-add_episode stage=persist nodes_created=N edges_created=N supersessions=N latency_ms=N
+add_episode start episode=<name> group=<group_id> source=<message|text|json> body_chars=<N>
+add_episode stage=idempotency decision=<new|existing_hit> episode_uuid=<uuid>
+add_episode stage=prefetch previous_episodes=<N> saga=<name-or-none>
+add_episode stage=extract llm_calls=1 input_tokens=<N> output_tokens=<N> latency_ms=<N> nodes=<N> edges=<N>
+add_episode stage=extract types nodes=Person:3,Concept:2,Observation:1 edges=relates_to:4,supersedes:1
+add_episode stage=embed batches=<N> texts=<N> latency_ms=<N>
+add_episode stage=fetch_node_candidates total_candidates=<N> max_per_node=<N>
+add_episode stage=reconcile_nodes llm_calls=1 input_tokens=<N> output_tokens=<N> latency_ms=<N> existing=<N> new=<N> attribute_updates=<N>
+add_episode stage=fetch_edge_candidates total_candidates=<N> max_per_edge=<N>
+add_episode stage=reconcile_edges llm_calls=1 input_tokens=<N> output_tokens=<N> latency_ms=<N> existing=<N> new=<N> supersedes=<N>
+add_episode stage=persist nodes_created=<N> nodes_updated=<N> edges_created=<N> supersessions=<N> mentions=<N> latency_ms=<N>
+add_episode complete episode_uuid=<uuid> total_latency_ms=<N> llm_calls=3 embed_batches=<N>
 ```
 
-The summary line at the end (which already exists today) gains the totals.
+DEBUG-level logging adds per-extracted-entity detail (names, types, attribute deltas), per-candidate similarity scores, and the rendered prompt bodies. Useful for forensic work, noisy for normal runs.
 
 The `status()` MCP tool gains an `add_episode` block with rolling 24h averages (count, mean total latency, mean input/output tokens, mean cost where the LLM client surfaces it). This sits alongside the existing `queue` / `graph` / `synthesis` blocks.
 
