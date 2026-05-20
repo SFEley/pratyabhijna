@@ -21,6 +21,16 @@ def test_at_least_two_variants_so_a_ranking_exists():
     assert len({v.name for v in _variants()}) >= 2
 
 
+def test_baseline_carries_tension_forward_override():
+    """Regression guard for the PR3/v0.19.0 promotion: the production
+    prompt must keep the tension-forward addition that won the May 19
+    live eval. A future edit that silently strips the override should
+    fail this assertion rather than ship a baseline that quietly drops
+    what the eval validated."""
+    assert "distrust of neat resolution" in _DIGEST_SUMMARY_SYSTEM_PROMPT
+    assert "lead with the open edges" in _DIGEST_SUMMARY_SYSTEM_PROMPT
+
+
 def test_variant_set_post_tension_forward_promotion():
     """Post-PR3 (v0.19.0) set: baseline + spine-explicit + particular-
     forward + negative-control. The May-18 ``tension-forward`` variant
