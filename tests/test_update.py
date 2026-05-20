@@ -820,6 +820,265 @@ class TestSyncContinue:
 
 
 # ---------------------------------------------------------------------------
+# forget_episode dispatch (v0.19.1)
+# ---------------------------------------------------------------------------
+
+
+class TestForgetEpisodeDispatch:
+    """`forget_episode` is the cascade-aware path for full Episodic removal.
+
+    These tests cover the three ways a `forget_episode` tool_use can reach
+    the dispatch layer:
+
+    1. Single-tool turn-1 fast path → `_execute_single_forget_outcome`.
+    2. Sync-continue dispatch via `_run_tool_calls`.
+    3. Error paths — NodeNotFoundError (already gone) and unexpected
+       exceptions — must not raise.
+    """
+
+    async def test_single_forget_executes_inline_via_fast_path(
+        self, monkeypatch
+    ):
+        """Single forget_episode tool_use → fast path, status Deleted, count 1."""
+        from pratyabhijna.tools.update import _handle_batched_message
+
+        msg = MagicMock()
+        tool_use = MagicMock()
+        tool_use.type = "tool_use"
+        tool_use.name = "forget_episode"
+        tool_use.input = {"uuid": "dup-uuid-1"}
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "Forgot the duplicate."
+        msg.content = [text_block, tool_use]
+
+        import pratyabhijna.tools.update as _u
+        run_forget_mock = AsyncMock(return_value=(
+            {"forgot_episode_uuid": "dup-uuid-1"},
+            {"mode": "forget_episode", "uuid": "dup-uuid-1",
+             "cypher": None, "params": {"uuid": "dup-uuid-1"},
+             "cypher_output": [{"nodes_deleted": 1}]},
+        ))
+        monkeypatch.setattr(_u, "_run_forget_episode", run_forget_mock)
+        # Sentinel: if a future refactor drops the fast-path branch and falls
+        # back to _sync_continue, this fails loudly. Without it, a fallthrough
+        # would only fail incidentally (sync_continue crashing on a MagicMock
+        # client) and that signal could be lost in test cleanup.
+        sync_continue_sentinel = AsyncMock(
+            side_effect=AssertionError("fast path bypassed — fell through to _sync_continue"),
+        )
+        monkeypatch.setattr(_u, "_sync_continue", sync_continue_sentinel)
+
+        outcome = await _handle_batched_message(
+            message=msg, request_text="Forget duplicate dup-uuid-1",
+            request_params={}, service=MagicMock(), client=MagicMock(),
+        )
+        assert outcome["status"] == "Deleted"
+        assert outcome["count"] == 1
+        assert outcome["response"] == "Forgot the duplicate."
+        assert len(outcome["queries"]) == 1
+        assert outcome["queries"][0]["mode"] == "forget_episode"
+        assert outcome["queries"][0]["uuid"] == "dup-uuid-1"
+        run_forget_mock.assert_awaited_once()
+        # Helper invoked with uuid as a kwarg (mirrors _run_write's shape).
+        assert run_forget_mock.await_args.kwargs == {"uuid": "dup-uuid-1"}
+
+    async def test_forget_dispatched_through_sync_continue(
+        self, monkeypatch
+    ):
+        """Mixed turn-1 (read + forget) → goes through _sync_continue path,
+        where _run_tool_calls dispatches `forget_episode` to its helper."""
+        import pratyabhijna.tools.update as _u
+        from pratyabhijna.tools.update import _sync_continue
+
+        # Turn-1 batched message: model called execute_cypher_read first.
+        batch_message = MagicMock()
+        batch_read = MagicMock()
+        batch_read.type = "tool_use"
+        batch_read.id = "tu-1"
+        batch_read.name = "execute_cypher_read"
+        batch_read.input = {"query": "MATCH (e:Episodic {uuid:'E1'}) RETURN e"}
+        batch_message.content = [batch_read]
+
+        run_read_mock = AsyncMock(return_value=(
+            {"rows": [{"uuid": "E1"}]},
+            {"mode": "read", "cypher": "MATCH ...", "params": {},
+             "cypher_output": [{"uuid": "E1"}]},
+        ))
+        run_forget_mock = AsyncMock(return_value=(
+            {"forgot_episode_uuid": "E1"},
+            {"mode": "forget_episode", "uuid": "E1",
+             "cypher": None, "params": {"uuid": "E1"},
+             "cypher_output": [{"nodes_deleted": 1}]},
+        ))
+        monkeypatch.setattr(_u, "_run_read", run_read_mock)
+        monkeypatch.setattr(_u, "_run_forget_episode", run_forget_mock)
+
+        client = MagicMock()
+        forget_tool_use = MagicMock()
+        forget_tool_use.type = "tool_use"
+        forget_tool_use.id = "tu-2"
+        forget_tool_use.name = "forget_episode"
+        forget_tool_use.input = {"uuid": "E1"}
+        turn2_response = MagicMock(content=[forget_tool_use], stop_reason="tool_use")
+        final_text_block = MagicMock(type="text", text="Forgot E1.")
+        turn3_response = MagicMock(content=[final_text_block], stop_reason="end_turn")
+
+        class FakeStream:
+            def __init__(self, response):
+                self.response = response
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def get_final_message(self):
+                return self.response
+
+        client.messages.stream = MagicMock(side_effect=[
+            FakeStream(turn2_response),
+            FakeStream(turn3_response),
+        ])
+
+        outcome = await _sync_continue(
+            client=client, message=batch_message,
+            request_params={"model": "m", "max_tokens": 100,
+                            "system": [], "messages": [{"role": "user", "content": "x"}],
+                            "tools": []},
+            request_text="Forget E1",
+            service=MagicMock(),
+        )
+
+        # Status is "Deleted" because forget_episode is structurally a deletion.
+        assert outcome["status"] == "Deleted"
+        assert outcome["count"] >= 1
+        assert outcome["response"] == "Forgot E1."
+        # Two queries: turn-1 read, turn-2 forget_episode.
+        assert len(outcome["queries"]) == 2
+        assert outcome["queries"][0]["mode"] == "read"
+        assert outcome["queries"][1]["mode"] == "forget_episode"
+        assert outcome["queries"][1]["uuid"] == "E1"
+        run_forget_mock.assert_awaited_once()
+
+    async def test_forget_node_not_found_returns_rejected_not_error(
+        self, monkeypatch
+    ):
+        """NodeNotFoundError from graphiti (episode already gone between
+        audit and update) is a no-op — status Rejected, count 0, no exception."""
+        from pratyabhijna.tools.update import _handle_batched_message
+
+        msg = MagicMock()
+        tool_use = MagicMock()
+        tool_use.type = "tool_use"
+        tool_use.name = "forget_episode"
+        tool_use.input = {"uuid": "already-gone"}
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "Episode was already gone."
+        msg.content = [text_block, tool_use]
+
+        import pratyabhijna.tools.update as _u
+        # _run_forget_episode returns the error-shape payload (UUID not found)
+        # rather than raising — matches the actual helper's behavior.
+        run_forget_mock = AsyncMock(return_value=(
+            {"error": "not_found", "uuid": "already-gone",
+             "message": "NodeNotFoundError: ..."},
+            {"mode": "forget_episode", "uuid": "already-gone",
+             "cypher": None, "params": {"uuid": "already-gone"},
+             "cypher_output": [], "error": "NodeNotFoundError: ..."},
+        ))
+        monkeypatch.setattr(_u, "_run_forget_episode", run_forget_mock)
+
+        outcome = await _handle_batched_message(
+            message=msg, request_text="Forget already-gone",
+            request_params={}, service=MagicMock(), client=MagicMock(),
+        )
+        # No-op deletion is Rejected, not Error — matches "MATCH returned
+        # nothing" semantics already enshrined in UPDATE_INSTRUCTIONS.
+        assert outcome["status"] == "Rejected"
+        assert outcome["count"] == 0
+        assert outcome["errors"] == []
+        assert outcome["queries"][0]["mode"] == "forget_episode"
+        assert "error" in outcome["queries"][0]
+
+    async def test_run_forget_episode_helper_calls_service_remove_episode(
+        self, service
+    ):
+        """The helper wraps service.remove_episode(uuid). Returns the
+        canonical (payload, record) pair with mode=forget_episode and
+        nodes_deleted=1 on success."""
+        from pratyabhijna.tools.update import _run_forget_episode
+
+        service.remove_episode = AsyncMock(return_value=None)
+
+        payload, record = await _run_forget_episode(service, uuid="ep-1")
+
+        service.remove_episode.assert_awaited_once_with("ep-1")
+        assert payload == {"forgot_episode_uuid": "ep-1"}
+        assert record["mode"] == "forget_episode"
+        assert record["uuid"] == "ep-1"
+        assert record["cypher_output"] == [{"nodes_deleted": 1}]
+        assert "error" not in record
+
+    async def test_run_forget_episode_helper_handles_not_found(self, service):
+        """When the underlying remove_episode raises NodeNotFoundError, the
+        helper returns the error-shape payload rather than propagating."""
+        from graphiti_core.errors import NodeNotFoundError
+
+        from pratyabhijna.tools.update import _run_forget_episode
+
+        service.remove_episode = AsyncMock(
+            side_effect=NodeNotFoundError("missing-uuid"),
+        )
+
+        payload, record = await _run_forget_episode(service, uuid="missing-uuid")
+
+        assert payload["error"] == "not_found"
+        assert payload["uuid"] == "missing-uuid"
+        assert record["mode"] == "forget_episode"
+        assert record["uuid"] == "missing-uuid"
+        assert record["cypher_output"] == []
+        assert "error" in record
+
+
+class TestForgetEpisodeSchema:
+    """The forget_episode schema must be present in update's TOOL_SCHEMAS so
+    the sub-agent sees it alongside execute_cypher_read / execute_cypher_write,
+    and the prompt must strongly steer toward it for Episodic-node removal."""
+
+    def test_schema_is_in_tool_schemas(self):
+        from pratyabhijna.tools.update import TOOL_SCHEMAS
+
+        names = {t["name"] for t in TOOL_SCHEMAS}
+        assert names == {
+            "execute_cypher_read", "execute_cypher_write", "forget_episode",
+        }
+        forget = next(t for t in TOOL_SCHEMAS if t["name"] == "forget_episode")
+        # Single required input: uuid.
+        assert forget["input_schema"]["required"] == ["uuid"]
+        assert "uuid" in forget["input_schema"]["properties"]
+
+    def test_update_instructions_strong_steer_for_episodic_removal(self):
+        """The prompt must mandate forget_episode for Episodic-node removal —
+        not just mention the tool as available. Regression guard against a
+        future edit weakening the steer to a passive mention."""
+        from pratyabhijna.tools.update import UPDATE_INSTRUCTIONS
+
+        # The tool must be listed alongside the others.
+        assert "forget_episode" in UPDATE_INSTRUCTIONS
+        # The strong-steer language must survive future edits.
+        assert "removes an entire Episodic node" in UPDATE_INSTRUCTIONS
+        assert "not `execute_cypher_write`" in UPDATE_INSTRUCTIONS
+        # And the steer must stay *scoped to removal* — raw Cypher remains
+        # right for property edits and edge surgery, otherwise the prompt
+        # would over-trigger on every Episodic-kind Update directive.
+        assert "property edits" in UPDATE_INSTRUCTIONS
+        assert "edge-level surgery" in UPDATE_INSTRUCTIONS
+
+
+# ---------------------------------------------------------------------------
 # _parse_update_args — new --input flag coverage
 # (additional tests beyond what test_main.py now covers)
 # ---------------------------------------------------------------------------

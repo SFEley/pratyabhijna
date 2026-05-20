@@ -30,6 +30,8 @@ from pathlib import Path
 from string import Template
 from typing import TYPE_CHECKING, Any
 
+from graphiti_core.errors import NodeNotFoundError
+
 from pratyabhijna.log import get_logger
 from pratyabhijna.synthesis import read_identity_files
 from pratyabhijna.tools.audit import (
@@ -110,6 +112,30 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "required": ["query"],
         },
     },
+    {
+        "name": "forget_episode",
+        "description": (
+            "Delete an episode from the graph by UUID. Use when an episode "
+            "was ingested incorrectly, duplicated, or needs to be replaced "
+            "(e.g. to re-ingest with saga support). Cascade-deletes entity "
+            "edges originated by the episode and entity nodes that were only "
+            "referenced by it. Irreversible — confirm the UUID before calling. "
+            "Prefer this over execute_cypher_write whenever the directive "
+            "removes a whole Episodic node — the cascade is what makes it "
+            "the right tool, and re-implementing it in hand-rolled Cypher is "
+            "a class of subtle wrongness (orphan entity nodes left behind)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "uuid": {
+                    "type": "string",
+                    "description": "UUID of the Episodic node to delete.",
+                },
+            },
+            "required": ["uuid"],
+        },
+    },
 ]
 
 
@@ -120,21 +146,35 @@ You will receive an update directive — a hygiene fix identified by the audit
 pass — and the UUID, name, and kind of the target object. The target may be
 a node (entity_node, episodic_node, community_node, saga_node) or an edge
 (entity_edge, episodic_edge, community_edge, has_episode_edge,
-next_episode_edge). You have two tools:
+next_episode_edge). You have three tools:
 
 - execute_cypher_read: query the graph for the object's current state if needed
-- execute_cypher_write: apply the change
+- execute_cypher_write: apply a Cypher mutation (property edits, edge surgery,
+  non-Episodic deletions)
+- forget_episode: cascade-delete an Episodic node by UUID — drops the
+  HAS_EPISODE / MENTIONS edges originated by the episode and any entity nodes
+  that were only referenced by it
 
 The audit already evaluated the object's source episodes and surrounding
 context to produce the directive. Treat the directive as the operative
-instruction. Most updates can be expressed as a single execute_cypher_write
-call against the target's UUID; use execute_cypher_read first only if you
-need to confirm current state before writing.
+instruction. Most updates can be expressed as a single tool call against the
+target's UUID; use execute_cypher_read first only if you need to confirm
+current state before writing.
+
+**When the directive removes an entire Episodic node, use `forget_episode`,
+not `execute_cypher_write`.** The cascade — dropping HAS_EPISODE / MENTIONS
+edges originated by the episode and entity nodes that were only referenced
+by it — is exactly the property `forget_episode` exists to provide;
+re-implementing it in hand-rolled Cypher (e.g. `DETACH DELETE` on the
+Episodic node) is a class of subtle wrongness that leaves orphan entity
+nodes behind. Raw `execute_cypher_write` stays the right tool for property
+edits, edge-level surgery, and deletions of non-Episodic kinds.
 
 Match by UUID, addressing the right kind:
 
 - entity_node: `MATCH (n:Entity {uuid: $u})`
-- episodic_node: `MATCH (n:Episodic {uuid: $u})`
+- episodic_node: `MATCH (n:Episodic {uuid: $u})` — *but* for full removal of an
+  Episodic node, call `forget_episode(uuid)` instead of `DETACH DELETE`
 - community_node: `MATCH (n:Community {uuid: $u})`
 - saga_node: `MATCH (n:Saga {uuid: $u})`
 - entity_edge: `MATCH ()-[r:RELATES_TO {uuid: $u}]->()`
@@ -144,7 +184,9 @@ Match by UUID, addressing the right kind:
 - next_episode_edge: `MATCH (:Episodic)-[r:NEXT_EPISODE {uuid: $u}]->(:Episodic)`
 
 If the MATCH returns nothing (the object was already removed between audit and
-update), say so and do not write.
+update), say so and do not write. `forget_episode` against a UUID that no
+longer exists returns an error payload rather than raising — treat it the
+same way.
 
 When done, respond briefly summarizing what changed (or why no change was made).
 """
@@ -457,6 +499,13 @@ async def _handle_batched_message(
             request_text=request_text,
             service=service,
         )
+    if len(tool_uses) == 1 and tool_uses[0].name == "forget_episode":
+        return await _execute_single_forget_outcome(
+            tool_use=tool_uses[0],
+            message=message,
+            request_text=request_text,
+            service=service,
+        )
 
     # Anything else (read, mixed, multiple) — sync continuation
     return await _sync_continue(
@@ -516,6 +565,67 @@ async def _execute_single_write_outcome(
     }
 
 
+async def _execute_single_forget_outcome(
+    *,
+    tool_use,
+    message,
+    request_text: str,
+    service,
+) -> dict:
+    """Single-turn forget_episode: execute client-side, synthesize a result dict.
+
+    Parallel to ``_execute_single_write_outcome`` but for the cascade-deletion
+    path. Status is "Deleted" on success (or "Rejected" if the UUID wasn't
+    found — the episode was already gone, so no work was done), "Error" on
+    unexpected exceptions.
+    """
+    inputs = tool_use.input or {}
+    uuid = inputs.get("uuid", "")
+    queries: list[dict] = []
+    errors: list[str] = []
+    text_blocks = [
+        b.text for b in message.content if getattr(b, "type", None) == "text"
+    ]
+    final_text = "\n".join(text_blocks).strip()
+    thinking = _capture_thinking(message.content)
+
+    try:
+        payload, record = await _run_forget_episode(service, uuid=uuid)
+        record = {"turn": 1, "thinking": thinking, **record}
+        queries.append(record)
+        if "error" in record:
+            # NodeNotFoundError — the episode was already gone between audit
+            # and update. Not a failure; nothing to do. Match _sync_continue's
+            # "no write executed" → Rejected semantics.
+            status = "Rejected"
+            count = 0
+        else:
+            status = "Deleted"
+            count = _count_from_record(record)
+    except Exception as e:  # noqa: BLE001
+        err = f"{type(e).__name__}: {e}"
+        errors.append(err)
+        status = "Error"
+        count = 0
+        queries.append({
+            "turn": 1, "thinking": thinking,
+            "mode": "forget_episode", "uuid": uuid,
+            "cypher": None, "params": {"uuid": uuid},
+            "cypher_output": [], "error": err,
+        })
+
+    return {
+        "status": status,
+        "request": request_text,
+        "response": final_text,
+        "guids": None,
+        "count": count,
+        "queries": queries,
+        "warnings": [],
+        "errors": errors,
+    }
+
+
 def _count_from_record(record: dict) -> int:
     """Extract count from a write record's cypher_output (matching update's logic)."""
     summary = (record.get("cypher_output") or [{}])[0] or {}
@@ -559,10 +669,15 @@ async def _sync_continue(
         queries=queries, errors=errors, turn=iteration,
     )
     for q in queries:
-        if q.get("mode") == "write" and "rejected" not in q:
+        mode = q.get("mode")
+        if mode == "write" and "rejected" not in q:
             write_executed = True
             if _DELETE_KEYWORDS.search(q.get("cypher") or ""):
                 delete_executed = True
+        elif mode == "forget_episode" and "error" not in q:
+            # forget_episode is structurally a deletion — no Cypher to grep.
+            write_executed = True
+            delete_executed = True
     messages.append({"role": "user", "content": tool_results})
 
     final_text = ""
@@ -602,10 +717,14 @@ async def _sync_continue(
         )
         prev_query_count = len(queries) - len(new_results)
         for q in queries[prev_query_count:]:
-            if q.get("mode") == "write" and "rejected" not in q:
+            mode = q.get("mode")
+            if mode == "write" and "rejected" not in q:
                 write_executed = True
                 if _DELETE_KEYWORDS.search(q.get("cypher") or ""):
                     delete_executed = True
+            elif mode == "forget_episode" and "error" not in q:
+                write_executed = True
+                delete_executed = True
         messages.append({"role": "user", "content": new_results})
 
         if response.stop_reason == "end_turn":
@@ -620,7 +739,10 @@ async def _sync_continue(
     else:
         status = "Rejected"
 
-    count = sum(_count_from_record(q) for q in queries if q.get("mode") == "write")
+    count = sum(
+        _count_from_record(q) for q in queries
+        if q.get("mode") in ("write", "forget_episode")
+    )
 
     return {
         "status": status,
@@ -658,6 +780,8 @@ async def _run_tool_calls(
                 payload, record = await _run_read(service, **inputs)
             elif name == "execute_cypher_write":
                 payload, record = await _run_write(service, **inputs)
+            elif name == "forget_episode":
+                payload, record = await _run_forget_episode(service, **inputs)
             else:
                 payload = {"error": f"unknown tool: {name}"}
                 record = {
@@ -670,13 +794,24 @@ async def _run_tool_calls(
             err = f"{type(e).__name__}: {e}"
             errors.append(err)
             payload = {"error": err}
-            record = {
-                "mode": "write" if name == "execute_cypher_write" else "read",
-                "cypher": (inputs or {}).get("query"),
-                "params": (inputs or {}).get("params") or {},
-                "cypher_output": [],
-                "error": err,
-            }
+            safe_inputs = inputs or {}
+            if name == "forget_episode":
+                record = {
+                    "mode": "forget_episode",
+                    "uuid": safe_inputs.get("uuid"),
+                    "cypher": None,
+                    "params": {"uuid": safe_inputs.get("uuid")},
+                    "cypher_output": [],
+                    "error": err,
+                }
+            else:
+                record = {
+                    "mode": "write" if name == "execute_cypher_write" else "read",
+                    "cypher": safe_inputs.get("query"),
+                    "params": safe_inputs.get("params") or {},
+                    "cypher_output": [],
+                    "error": err,
+                }
         # Attach turn + thinking. Thinking on first tool of the turn only.
         is_first_of_turn = not queries or queries[-1]["turn"] != turn
         record = {
@@ -880,6 +1015,54 @@ async def _run_write(
             "cypher": query,
             "params": params,
             "cypher_output": [summary],
+        },
+    )
+
+
+async def _run_forget_episode(
+    service: PratyabhijnaService,
+    *,
+    uuid: str,
+) -> tuple[dict, dict]:
+    """Cascade-delete an Episodic node by UUID.
+
+    Wraps ``service.remove_episode(uuid)`` (→ ``graphiti.remove_episode``),
+    which drops the HAS_EPISODE / MENTIONS edges originated by the episode
+    and any entity nodes that were only referenced by it. Returns the
+    ``(tool_result_payload, query_record)`` pair in the same shape as
+    ``_run_write``, with ``mode="forget_episode"`` so the outcome path can
+    classify it as a deletion without parsing Cypher.
+
+    ``NodeNotFoundError`` from graphiti (UUID was already removed between
+    audit and update) is returned as an error payload rather than raised —
+    parallel to how ``_run_read`` shapes its forbidden-clause rejection.
+    """
+    _log.info("update EXEC FORGET_EPISODE uuid=%r", uuid)
+    try:
+        await service.remove_episode(uuid)
+    except NodeNotFoundError as exc:
+        msg = f"{type(exc).__name__}: {exc}"
+        _log.info("update FORGET_EPISODE not_found uuid=%r (%s)", uuid, msg)
+        return (
+            {"error": "not_found", "uuid": uuid, "message": msg},
+            {
+                "mode": "forget_episode",
+                "uuid": uuid,
+                "cypher": None,
+                "params": {"uuid": uuid},
+                "cypher_output": [],
+                "error": msg,
+            },
+        )
+    _log.info("update EXEC FORGET_EPISODE removed uuid=%r", uuid)
+    return (
+        {"forgot_episode_uuid": uuid},
+        {
+            "mode": "forget_episode",
+            "uuid": uuid,
+            "cypher": None,
+            "params": {"uuid": uuid},
+            "cypher_output": [{"nodes_deleted": 1}],
         },
     )
 
