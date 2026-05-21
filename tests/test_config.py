@@ -55,6 +55,35 @@ class TestConfigLoading:
         assert config.synthesis.max_age_hours == 24
         assert config.synthesis.max_delta_changes == 3
 
+    def test_has_add_episode_settings(self, config_yaml):
+        """Config includes the add_episode feature-flag block with safe defaults."""
+        from pratyabhijna.config import PratyabhijnaConfig
+
+        config = PratyabhijnaConfig.from_yaml(config_yaml)
+        # Defaults are flag off + sensible per-stage knobs.
+        assert config.add_episode.use_in_house is False
+        assert config.add_episode.candidate_k == 5
+        assert config.add_episode.previous_episodes_n == 5
+
+    def test_add_episode_yaml_override(self, tmp_path, monkeypatch):
+        """Setting add_episode.use_in_house in YAML flips the flag."""
+        from pratyabhijna.config import PratyabhijnaConfig
+
+        for key in list(os.environ):
+            if key.startswith("PRATYABHIJNA_"):
+                monkeypatch.delenv(key, raising=False)
+
+        yaml_content = (
+            "neo4j:\n  uri: \"bolt://localhost:7687\"\n"
+            "add_episode:\n  use_in_house: true\n  candidate_k: 8\n"
+        )
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml_content)
+
+        config = PratyabhijnaConfig.from_yaml(config_file)
+        assert config.add_episode.use_in_house is True
+        assert config.add_episode.candidate_k == 8
+
     def test_subject_name_from_yaml(self, tmp_path, monkeypatch):
         """subject_name set in YAML is loaded correctly."""
         from pratyabhijna.config import PratyabhijnaConfig

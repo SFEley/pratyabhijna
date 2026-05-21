@@ -50,6 +50,7 @@ def mock_service():
     service.config.synthesis.rebuild_delay_hours = 2.0
     service.config.synthesis.max_age_hours = 24
     service.config.synthesis.max_delta_changes = 3
+    service.config.add_episode.use_in_house = False
     service.get_entity_by_name = AsyncMock(return_value=None)
     service.get_edges_for_node = AsyncMock(return_value=[])
     service.get_entity_by_uuid = AsyncMock(return_value=None)

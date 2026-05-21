@@ -81,22 +81,37 @@ def make_handler(service: PratyabhijnaService, queue: WorkQueue | None = None):
         saga = payload.get("saga")
         saga_prev = payload.get("saga_previous_episode_uuid")
         _log.info(
-            "add_episode starting (type=%s, len=%d, reference_time=%s%s)",
+            "add_episode starting (type=%s, len=%d, reference_time=%s%s, pipeline=%s)",
             payload["memory_type"],
             len(payload["content"]),
             reference_time.isoformat(),
             f", saga={saga}" if saga else "",
+            "in-house" if service.config.add_episode.use_in_house else "graphiti",
         )
-        await service._graphiti.add_episode(
-            name=f"{payload['memory_type']}:{now.isoformat()}",
-            episode_body=payload["content"],
-            source_description=payload["source"],
-            reference_time=reference_time,
-            group_id=service.config.subject_name,
-            entity_types=service.entity_types,
-            saga=saga,
-            saga_previous_episode_uuid=saga_prev,
-        )
+
+        if service.config.add_episode.use_in_house:
+            from pratyabhijna.add_episode import add_episode as in_house_add_episode
+            await in_house_add_episode(
+                service,
+                name=f"{payload['memory_type']}:{now.isoformat()}",
+                episode_body=payload["content"],
+                source_description=payload["source"],
+                reference_time=reference_time,
+                group_id=service.config.subject_name,
+                saga=saga,
+                saga_previous_episode_uuid=saga_prev,
+            )
+        else:
+            await service._graphiti.add_episode(
+                name=f"{payload['memory_type']}:{now.isoformat()}",
+                episode_body=payload["content"],
+                source_description=payload["source"],
+                reference_time=reference_time,
+                group_id=service.config.subject_name,
+                entity_types=service.entity_types,
+                saga=saga,
+                saga_previous_episode_uuid=saga_prev,
+            )
         _log.info("add_episode complete (type=%s)", payload["memory_type"])
 
     return handle_add_episode

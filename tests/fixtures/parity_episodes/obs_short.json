@@ -1,0 +1,7 @@
+{
+  "name": "obs:parity-short",
+  "body": "Vesper noticed today that the writing-plans skill kept saying TODO when really it meant 'this is filled in below.' Worth tightening the language.",
+  "source": "message",
+  "source_description": "self",
+  "reference_time": "2026-05-20T10:00:00+00:00"
+}

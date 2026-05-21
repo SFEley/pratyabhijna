@@ -138,6 +138,20 @@ class PratyabhijnaService:
             embedder=embedder,
             cross_encoder=cross_encoder,
         )
+        await self._ensure_episode_hash_index()
+
+    async def _ensure_episode_hash_index(self) -> None:
+        """Create the composite index used by Stage 0 idempotency lookups.
+
+        Idempotent: `CREATE INDEX ... IF NOT EXISTS` is a no-op if the index
+        already exists. Safe to call on every service start.
+        """
+        await self._graphiti.driver.execute_query(
+            """
+            CREATE INDEX idx_episodic_group_hash IF NOT EXISTS
+            FOR (e:Episodic) ON (e.group_id, e.episode_hash)
+            """,
+        )
 
     async def stop(self):
         """Shut down the Graphiti client."""

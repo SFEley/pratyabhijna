@@ -23,11 +23,16 @@ from helpers import wait_for
 
 @pytest.fixture
 def mock_service():
-    """A mock PratyabhijnaService with a mock graphiti client."""
+    """A mock PratyabhijnaService with a mock graphiti client.
+
+    use_in_house defaults to False to match production config; tests that
+    exercise the in-house path explicitly set it on the fixture.
+    """
     service = MagicMock()
     service.is_connected = True
     service._graphiti = AsyncMock()
     service._graphiti.add_episode = AsyncMock()
+    service.config.add_episode.use_in_house = False
     service.entity_types = {
         "Person": MagicMock(),
         "Observation": MagicMock(),
@@ -268,3 +273,41 @@ class TestRememberHandler:
         kwargs = mock_service._graphiti.add_episode.call_args.kwargs
         assert kwargs["saga"] is None
         assert kwargs["saga_previous_episode_uuid"] is None
+
+
+# ---------------------------------------------------------------------------
+# Feature flag — in-house dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestInHouseDispatch:
+    """When config.add_episode.use_in_house is True, dispatch to pratyabhijna.add_episode."""
+
+    async def test_remember_calls_in_house_when_flag_on(self, tmp_path, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+        from pratyabhijna.queue import WorkQueue
+        from pratyabhijna.tools.remember import make_handler, remember
+
+        service = MagicMock()
+        service._graphiti = MagicMock()
+        service._graphiti.add_episode = AsyncMock()
+        service.config.add_episode.use_in_house = True
+        service.config.subject_name = "Vesper"
+        service.entity_types = {}
+
+        in_house = AsyncMock()
+        monkeypatch.setattr("pratyabhijna.add_episode.add_episode", in_house)
+
+        db_path = str(tmp_path / "test_inhouse.sqlite")
+        q = WorkQueue(db_path=db_path, max_retries=1, poll_interval=0.05)
+        q.register("add_episode", make_handler(service))
+        await q.start()
+        try:
+            await remember(queue=q, content="test")
+            await wait_for(lambda: in_house.called)
+        finally:
+            await q.stop()
+
+        in_house.assert_awaited_once()
+        # Graphiti's add_episode was NOT called.
+        service._graphiti.add_episode.assert_not_called()

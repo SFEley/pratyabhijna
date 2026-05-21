@@ -111,6 +111,18 @@ class SynthesisConfig(BaseModel):
     ingestion_lookback_days: int | None = 14
 
 
+class AddEpisodeConfig(BaseModel):
+    # Feature flag for the in-house add_episode pipeline. False routes
+    # remember/correct/synthesis_agent.ingest_file through graphiti.add_episode
+    # (the original path). True routes them through pratyabhijna.add_episode.
+    # Default False during PR-1 land; flipped True in PR-2.
+    use_in_house: bool = False
+    # K for candidate fetching (per extracted node and per extracted edge).
+    candidate_k: int = 5
+    # Number of previous episodes included as prompt context in Stage 2.
+    previous_episodes_n: int = 5
+
+
 class ServerConfig(BaseModel):
     url: str = ""    # Public-facing HTTPS URL (e.g. https://vesper.example.com). Required for HTTP transport + auth.
     port: int = 3000  # Local bind port for streamable-http transport (Caddy proxies externally).
@@ -159,6 +171,7 @@ class PratyabhijnaConfig(BaseSettings):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     queue: QueueConfig = Field(default_factory=QueueConfig)
     synthesis: SynthesisConfig = Field(default_factory=SynthesisConfig)
+    add_episode: AddEpisodeConfig = Field(default_factory=AddEpisodeConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     oauth: OAuthConfig = Field(default_factory=OAuthConfig)
     seed: SeedConfig = Field(default_factory=SeedConfig)
