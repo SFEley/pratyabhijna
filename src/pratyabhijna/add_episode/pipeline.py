@@ -34,6 +34,27 @@ class AddEpisodeResult:
     short_circuited: bool
 
 
+async def _check_idempotency(driver, *, group_id: str, episode_hash: str) -> str | None:
+    """Stage 0 — return uuid of an existing Episodic with this hash, else None.
+
+    Uses the composite index (Episodic.group_id, Episodic.episode_hash) created
+    by PratyabhijnaService._ensure_episode_hash_index. Returns the first match
+    if any; pipeline writes only ever produce one Episodic per hash, so the
+    LIMIT 1 is a defensive cap rather than a correctness requirement.
+    """
+    records, _, _ = await driver.execute_query(
+        """
+        MATCH (e:Episodic {group_id: $group_id, episode_hash: $episode_hash})
+        RETURN e.uuid AS uuid
+        LIMIT 1
+        """,
+        group_id=group_id,
+        episode_hash=episode_hash,
+        routing_="r",
+    )
+    return records[0]["uuid"] if records else None
+
+
 async def add_episode(*args, **kwargs) -> AddEpisodeResult:  # pragma: no cover
     """In-house replacement for graphiti.add_episode.
 
