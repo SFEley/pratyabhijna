@@ -3,6 +3,108 @@
 Layered for prompt caching: system (stable across all episodes) → per-session
 (stable across a saga) → previous-episode context (changes per session) →
 the episode itself.
-
-Implemented across Tasks 7, 11, 13.
 """
+
+from __future__ import annotations
+
+from datetime import datetime
+from textwrap import dedent
+
+from graphiti_core.nodes import EpisodeType, EpisodicNode
+
+from pratyabhijna.entity_types import PRATYABHIJNA_ENTITY_TYPES
+
+
+# ---------------------------------------------------------------------------
+# Extract (Stage 2)
+# ---------------------------------------------------------------------------
+
+
+def build_extract_system_prompt() -> str:
+    """Stable system prompt across every extract call. Cacheable.
+
+    The entity-type docstrings carry the GOOD/BAD examples that shape what
+    the extractor reaches for; they're embedded verbatim under per-type
+    headings so the LLM sees the same surface today and a year from now.
+    """
+    type_blocks = []
+    for name, model in PRATYABHIJNA_ENTITY_TYPES.items():
+        doc = (model.__doc__ or "").strip()
+        type_blocks.append(f"### {name}\n\n{doc}")
+    types_section = "\n\n".join(type_blocks)
+    return (
+        dedent(
+            """
+            You are an entity-and-relation extractor for a knowledge graph that
+            represents one subject's structured self-knowledge.
+
+            For the supplied episode (text written by or about the subject), extract:
+
+            - The named entities mentioned, typed by the schemas below.
+            - The factual relations between them, expressed as edges with a
+              semantic predicate (e.g. "works_on", "remembers", "supersedes")
+              and a single short sentence stating the fact.
+
+            Do not extract entities that appear only as passing mentions with no
+            information attached. Do not invent edges that the text doesn't assert.
+
+            Return your output by calling the extract_episode tool with two
+            dense-indexed arrays (nodes and edges). Edge endpoints reference
+            node idx values; both endpoints must exist in the nodes array.
+
+            ## Entity Types
+
+            """
+        ).strip()
+        + "\n\n"
+        + types_section
+    )
+
+
+_SOURCE_HINTS: dict[EpisodeType, str] = {
+    EpisodeType.message: "This episode is a conversational message.",
+    EpisodeType.text: "This episode is a document or written passage.",
+    EpisodeType.json: "This episode is structured JSON.",
+}
+
+
+def build_extract_user_message(
+    *,
+    episode_name: str,
+    source: EpisodeType,
+    source_description: str,
+    reference_time: datetime,
+    body: str,
+    previous_episodes: list[EpisodicNode],
+) -> str:
+    """Per-episode body of the extract prompt.
+
+    Previous episodes are listed for conversational context; the episode
+    body comes last so it's the freshest context in the model's window.
+    """
+    src_hint = _SOURCE_HINTS[source]
+
+    prev_block = ""
+    if previous_episodes:
+        rendered = "\n\n---\n\n".join(
+            f"[{ep.valid_at.isoformat() if getattr(ep, 'valid_at', None) else 'unknown'}] "
+            f"{getattr(ep, 'content', '') or ''}"
+            for ep in previous_episodes
+        )
+        prev_block = f"## Previous Episodes (for context)\n\n{rendered}\n\n"
+
+    return dedent(
+        f"""
+        {src_hint}
+
+        Source: {source_description}
+        Reference time: {reference_time.isoformat()}
+        Episode name: {episode_name}
+
+        {prev_block}## Episode
+
+        {body}
+
+        Now call the extract_episode tool with the entities and edges.
+        """
+    ).strip()
