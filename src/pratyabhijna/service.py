@@ -8,6 +8,8 @@ and graphiti-core.
 from __future__ import annotations
 
 import asyncio
+import time
+from collections import deque
 from datetime import datetime
 
 from graphiti_core import Graphiti
@@ -113,12 +115,60 @@ def _build_cross_encoder(config: PratyabhijnaConfig):
     raise ValueError(f"No cross-encoder available for provider: {emb.provider}")
 
 
+class AddEpisodeStats:
+    """Rolling per-add_episode counters for the status() telemetry block.
+
+    Keeps a sliding window of (timestamp, latency_ms, llm_calls, embed_batches)
+    samples and drops anything older than ``window_seconds`` on each call.
+    The window defaults to 24h; that's the timescale ``status()`` reports.
+
+    Recording is intentionally cheap (one append + a left-side trim) so the
+    pipeline hot path can call it without worrying about overhead.
+    """
+
+    def __init__(self, window_seconds: float = 24 * 3600) -> None:
+        self.window_seconds = window_seconds
+        self._samples: deque[tuple[float, float, int, int]] = deque()
+
+    def record(
+        self,
+        *,
+        latency_ms: float,
+        llm_calls: int,
+        embed_batches: int,
+    ) -> None:
+        now = time.time()
+        self._samples.append((now, latency_ms, llm_calls, embed_batches))
+        cutoff = now - self.window_seconds
+        while self._samples and self._samples[0][0] < cutoff:
+            self._samples.popleft()
+
+    def snapshot(self) -> dict:
+        """Aggregate of the current window. Means are None when count == 0."""
+        n = len(self._samples)
+        if n == 0:
+            return {
+                "count": 0,
+                "mean_latency_ms": None,
+                "mean_llm_calls": None,
+                "mean_embed_batches": None,
+            }
+        return {
+            "count": n,
+            "mean_latency_ms": sum(s[1] for s in self._samples) / n,
+            "mean_llm_calls": sum(s[2] for s in self._samples) / n,
+            "mean_embed_batches": sum(s[3] for s in self._samples) / n,
+        }
+
+
 class PratyabhijnaService:
     """Wraps graphiti-core client with Pratyabhijna-specific lifecycle."""
 
     def __init__(self, config: PratyabhijnaConfig):
         self.config = config
         self._graphiti = None
+        # Per-add_episode rolling counters, surfaced by status().
+        self.add_episode_stats = AddEpisodeStats()
 
     async def start(self):
         """Initialize the Graphiti client and connect to Neo4j."""

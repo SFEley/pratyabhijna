@@ -1,6 +1,6 @@
 """The `status` MCP tool.
 
-Returns system orientation as a nested dict with three blocks:
+Returns system orientation as a nested dict with four blocks:
 
 - ``queue`` — pending/running/completed/dead-letter counts, plus a
   per-task-type breakdown. Read from SQLite directly via
@@ -12,6 +12,9 @@ Returns system orientation as a nested dict with three blocks:
   current ``subject_delta_count`` (subject-connected atoms accumulated
   since), and ``new_episodes_count`` (every Episodic node since,
   whether or not it produced a subject-connected fact).
+- ``add_episode`` — rolling 24h means for in-house pipeline runs
+  (count, mean latency, mean LLM calls, mean embed batches). In-memory
+  on the service instance, so a process restart resets it.
 
 Plus top-level ``version``, ``db_connected``, and ``subject_name``.
 
@@ -50,6 +53,7 @@ async def status(
         "queue": await _collect_queue(queue_db_path),
         "graph": await _collect_graph(service),
         "synthesis": await _collect_synthesis(service),
+        "add_episode": _collect_add_episode(service),
     }
 
 
@@ -121,6 +125,24 @@ async def _collect_synthesis(service: PratyabhijnaService) -> dict:
         "subject_delta_count": subject_delta_count,
         "new_episodes_count": new_episodes_count,
     }
+
+
+def _collect_add_episode(service: PratyabhijnaService) -> dict:
+    """Rolling 24h add_episode telemetry.
+
+    Returns the empty snapshot ({count: 0, means: None}) on a service
+    that hasn't been started yet, or one without the stats attribute
+    (older PratyabhijnaService variants).
+    """
+    stats = getattr(service, "add_episode_stats", None)
+    if stats is None:
+        return {
+            "count": 0,
+            "mean_latency_ms": None,
+            "mean_llm_calls": None,
+            "mean_embed_batches": None,
+        }
+    return stats.snapshot()
 
 
 async def _safe(coro_fn, default=None):

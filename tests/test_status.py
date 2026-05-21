@@ -353,3 +353,87 @@ class TestStatusSynthesisBlock:
 
         service.count_episodes_since.assert_awaited_once_with(None)
         assert result["synthesis"]["new_episodes_count"] == 42
+
+
+# ---------------------------------------------------------------------------
+# add_episode telemetry block
+# ---------------------------------------------------------------------------
+
+
+class TestStatusAddEpisodeBlock:
+    """The status() add_episode block reflects the AddEpisodeStats snapshot."""
+
+    @pytest.mark.asyncio
+    async def test_block_empty_when_no_runs(self, tmp_path):
+        """A fresh service exposes count=0 and None means."""
+        from pratyabhijna.service import AddEpisodeStats
+        from pratyabhijna.tools.status import status
+
+        service = _make_service()
+        service.add_episode_stats = AddEpisodeStats()
+
+        result = await status(service=service, queue_db_path=str(tmp_path / "q.db"))
+        assert result["add_episode"] == {
+            "count": 0,
+            "mean_latency_ms": None,
+            "mean_llm_calls": None,
+            "mean_embed_batches": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_block_aggregates_recorded_samples(self, tmp_path):
+        """After two record() calls, count is 2 and means are correct."""
+        from pratyabhijna.service import AddEpisodeStats
+        from pratyabhijna.tools.status import status
+
+        stats = AddEpisodeStats()
+        stats.record(latency_ms=1000.0, llm_calls=3, embed_batches=1)
+        stats.record(latency_ms=2000.0, llm_calls=1, embed_batches=2)
+
+        service = _make_service()
+        service.add_episode_stats = stats
+
+        result = await status(service=service, queue_db_path=str(tmp_path / "q.db"))
+        block = result["add_episode"]
+        assert block["count"] == 2
+        assert block["mean_latency_ms"] == 1500.0
+        assert block["mean_llm_calls"] == 2.0
+        assert block["mean_embed_batches"] == 1.5
+
+    @pytest.mark.asyncio
+    async def test_block_drops_samples_outside_window(self, tmp_path):
+        """Samples older than window_seconds are evicted on the next record()."""
+        from pratyabhijna.service import AddEpisodeStats
+        from pratyabhijna.tools.status import status
+
+        # Tiny window so the eviction is immediate.
+        stats = AddEpisodeStats(window_seconds=0.01)
+        stats.record(latency_ms=100.0, llm_calls=3, embed_batches=1)
+        import time
+        time.sleep(0.05)
+        stats.record(latency_ms=200.0, llm_calls=1, embed_batches=2)
+
+        service = _make_service()
+        service.add_episode_stats = stats
+
+        result = await status(service=service, queue_db_path=str(tmp_path / "q.db"))
+        block = result["add_episode"]
+        # Only the second sample survives.
+        assert block["count"] == 1
+        assert block["mean_latency_ms"] == 200.0
+
+    @pytest.mark.asyncio
+    async def test_block_degrades_on_missing_attribute(self, tmp_path):
+        """A service without add_episode_stats (older variant) reports zeros."""
+        from pratyabhijna.tools.status import status
+
+        service = _make_service()
+        # Explicitly drop the attribute to mimic an older service instance.
+        if hasattr(service, "add_episode_stats"):
+            delattr(service, "add_episode_stats")
+        # MagicMock would otherwise auto-create the attr on access; disable that.
+        service.add_episode_stats = None
+
+        result = await status(service=service, queue_db_path=str(tmp_path / "q.db"))
+        assert result["add_episode"]["count"] == 0
+        assert result["add_episode"]["mean_latency_ms"] is None
