@@ -24,16 +24,14 @@ from helpers import wait_for
 
 @pytest.fixture
 def mock_service():
-    """A mock PratyabhijnaService with a mock graphiti client.
+    """A mock PratyabhijnaService.
 
-    use_in_house defaults to False to match production config; tests that
-    exercise the in-house path explicitly set it on the fixture.
+    The correct handler dispatches to pratyabhijna.add_episode.add_episode
+    directly since the cutover; tests intercept that via patched_add_episode.
     """
     service = MagicMock()
     service.is_connected = True
     service._graphiti = AsyncMock()
-    service._graphiti.add_episode = AsyncMock()
-    service.config.add_episode.use_in_house = False
     service.entity_types = {
         "Person": MagicMock(),
         "Observation": MagicMock(),
@@ -42,7 +40,15 @@ def mock_service():
 
 
 @pytest.fixture
-async def wired_queue(tmp_path, mock_service):
+def patched_add_episode(monkeypatch):
+    """Replace pratyabhijna.add_episode.add_episode with an AsyncMock."""
+    mock = AsyncMock()
+    monkeypatch.setattr("pratyabhijna.add_episode.add_episode", mock)
+    return mock
+
+
+@pytest.fixture
+async def wired_queue(tmp_path, mock_service, patched_add_episode):
     """A real WorkQueue with correct handler registered and started."""
     from pratyabhijna.queue import WorkQueue
     from pratyabhijna.tools.correct import make_handler
@@ -105,16 +111,16 @@ class TestCorrectEnqueue:
         assert payload["content"] == "The graph DB is Neo4j, not Kuzu."
         assert payload["search_terms"] == "graph database backend"
 
-    async def test_correct_does_not_block(self, wired_queue, mock_service):
+    async def test_correct_does_not_block(self, wired_queue, patched_add_episode):
         """correct() returns before the handler finishes processing."""
         processing = asyncio.Event()
         released = asyncio.Event()
 
-        async def slow_add_episode(**kwargs):
+        async def slow_add_episode(*args, **kwargs):
             processing.set()
             await released.wait()
 
-        mock_service._graphiti.add_episode = slow_add_episode
+        patched_add_episode.side_effect = slow_add_episode
 
         from pratyabhijna.tools.correct import correct
 
@@ -133,8 +139,8 @@ class TestCorrectEnqueue:
 # ---------------------------------------------------------------------------
 
 class TestCorrectHandler:
-    async def test_handler_calls_add_episode(self, wired_queue, mock_service):
-        """After processing, graphiti.add_episode is called with correction content."""
+    async def test_handler_calls_add_episode(self, wired_queue, patched_add_episode):
+        """After processing, the in-house add_episode is called with the correction content."""
         from pratyabhijna.tools.correct import correct
 
         await correct(
@@ -143,13 +149,14 @@ class TestCorrectHandler:
             search_terms="Serah pronouns",
         )
 
-        await wait_for(lambda: mock_service._graphiti.add_episode.called)
-        call_kwargs = mock_service._graphiti.add_episode.call_args
-        # Correction content should be passed through
-        assert "Serah's pronouns are she/her" in str(call_kwargs)
+        await wait_for(lambda: patched_add_episode.called)
+        kwargs = patched_add_episode.call_args.kwargs
+        assert "Serah's pronouns are she/her" in kwargs["episode_body"]
+        # The correction flow threads search_terms into custom_extraction_instructions.
+        assert "Serah pronouns" in (kwargs.get("custom_extraction_instructions") or "")
 
     async def test_handler_uses_occurred_at_when_provided(
-        self, wired_queue, mock_service
+        self, wired_queue, patched_add_episode
     ):
         """occurred_at (ISO-8601) becomes the add_episode reference_time."""
         from datetime import datetime, timezone
@@ -162,6 +169,6 @@ class TestCorrectHandler:
             search_terms="move 2019",
             occurred_at="2019-07-01T00:00:00+00:00",
         )
-        await wait_for(lambda: mock_service._graphiti.add_episode.called)
-        ref = mock_service._graphiti.add_episode.call_args.kwargs["reference_time"]
+        await wait_for(lambda: patched_add_episode.called)
+        ref = patched_add_episode.call_args.kwargs["reference_time"]
         assert ref == datetime(2019, 7, 1, tzinfo=timezone.utc)

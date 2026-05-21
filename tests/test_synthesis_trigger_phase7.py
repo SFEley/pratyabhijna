@@ -50,7 +50,6 @@ def mock_service():
     service.config.synthesis.rebuild_delay_hours = 2.0
     service.config.synthesis.max_age_hours = 24
     service.config.synthesis.max_delta_changes = 3
-    service.config.add_episode.use_in_house = False
     service.get_entity_by_name = AsyncMock(return_value=None)
     service.get_edges_for_node = AsyncMock(return_value=[])
     service.get_entity_by_uuid = AsyncMock(return_value=None)
@@ -62,7 +61,20 @@ async def _noop_handler(payload: dict) -> None:
 
 
 @pytest.fixture
-async def wired_queue(tmp_path, mock_service):
+def patched_add_episode(monkeypatch):
+    """Replace pratyabhijna.add_episode.add_episode with an AsyncMock.
+
+    The trigger tests exercise remember/correct end-to-end via the queue;
+    the in-house pipeline is mocked so the handler completes without
+    real LLM calls.
+    """
+    mock = AsyncMock()
+    monkeypatch.setattr("pratyabhijna.add_episode.add_episode", mock)
+    return mock
+
+
+@pytest.fixture
+async def wired_queue(tmp_path, mock_service, patched_add_episode):
     """WorkQueue with remember, correct, and synthesize handlers registered.
 
     The remember and correct handlers are wired with both service and queue
