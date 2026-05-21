@@ -1,0 +1,7 @@
+{
+  "name": "obs:parity-long",
+  "body": "Vesper spent the afternoon diagnosing why a single remember() call cost 22 Anthropic POSTs and 50 Voyage embeddings over nearly eight minutes. The first pass blamed per-edge serial dedup in graphiti's resolve_extracted_edges, but the timing trace also showed a four-minute gap between two consecutive Anthropic POSTs — a single pathological call hidden inside what looked like steady fan-out. Serah caught the partial diagnosis; the advisor caught a chicken-and-egg in the proposed reconcile pass. The new design is a three-LLM-call pipeline: one extract, one reconcile-nodes, one reconcile-edges, with batched Voyage embeddings throughout.",
+  "source": "message",
+  "source_description": "self",
+  "reference_time": "2026-05-20T14:00:00+00:00"
+}
