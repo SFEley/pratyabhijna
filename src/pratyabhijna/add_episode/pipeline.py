@@ -7,7 +7,11 @@ currently carries the public dataclass and a NotImplementedError stub.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+from datetime import datetime
+
+from graphiti_core.nodes import EpisodeType, EpisodicNode
 
 
 @dataclass
@@ -32,6 +36,69 @@ class AddEpisodeResult:
     edges_created: int
     supersessions: int
     short_circuited: bool
+
+
+@dataclass
+class PrefetchResult:
+    """Output of Stage 1 — what the extractor needs before it can run."""
+
+    previous_episodes: list[EpisodicNode]
+    saga_prior_uuid: str | None
+
+
+async def _get_saga_latest_episode_uuid(
+    driver, group_id: str, saga_name: str,
+) -> str | None:
+    records, _, _ = await driver.execute_query(
+        """
+        MATCH (s:Saga {group_id: $group_id, name: $saga_name})-[:HAS_EPISODE]->(e:Episodic)
+        RETURN e.uuid AS uuid
+        ORDER BY e.created_at DESC
+        LIMIT 1
+        """,
+        group_id=group_id,
+        saga_name=saga_name,
+        routing_="r",
+    )
+    return records[0]["uuid"] if records else None
+
+
+async def _prefetch(
+    *,
+    graphiti,
+    group_id: str,
+    reference_time: datetime,
+    source: EpisodeType,
+    previous_n: int,
+    saga: str | None,
+    saga_previous_episode_uuid: str | None,
+) -> PrefetchResult:
+    """Stage 1 — load previous-episode context and (optionally) the saga prior.
+
+    Both lookups run in parallel under asyncio.gather. The saga lookup is
+    skipped entirely if saga is None or the caller already provided
+    saga_previous_episode_uuid.
+    """
+
+    async def _episodes() -> list[EpisodicNode]:
+        return await graphiti.retrieve_episodes(
+            reference_time,
+            last_n=previous_n,
+            group_ids=[group_id],
+            source=source,
+        )
+
+    async def _saga_prior() -> str | None:
+        if not saga:
+            return None
+        if saga_previous_episode_uuid:
+            return saga_previous_episode_uuid
+        return await _get_saga_latest_episode_uuid(
+            graphiti.driver, group_id, saga,
+        )
+
+    episodes, saga_prior = await asyncio.gather(_episodes(), _saga_prior())
+    return PrefetchResult(previous_episodes=episodes, saga_prior_uuid=saga_prior)
 
 
 async def _check_idempotency(driver, *, group_id: str, episode_hash: str) -> str | None:
