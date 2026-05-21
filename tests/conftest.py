@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
@@ -40,6 +40,12 @@ def mock_graphiti(live_mode):
              patch("pratyabhijna.service._build_llm_client") as mock_llm, \
              patch("pratyabhijna.service._build_embedder") as mock_embedder, \
              patch("pratyabhijna.service._build_cross_encoder") as mock_cross:
+            # service.start() awaits self._graphiti.driver.execute_query(...) for
+            # the Stage 0 idempotency index. The default MagicMock isn't awaitable;
+            # configure that one method as AsyncMock so mocked-mode tests don't break.
+            mock_graphiti_cls.return_value.driver.execute_query = AsyncMock(
+                return_value=([], None, None),
+            )
             yield MagicNS(driver_cls=mock_driver, graphiti_cls=mock_graphiti_cls,
                            llm_builder=mock_llm, embedder_builder=mock_embedder,
                            cross_encoder_builder=mock_cross)

@@ -110,3 +110,39 @@ class TestGraphitiInitialization:
         await service.start()
         assert service.entity_types is PRATYABHIJNA_ENTITY_TYPES
         await service.stop()
+
+
+class TestEpisodeHashIndex:
+    """The Stage 0 idempotency index is created on service start."""
+
+    @pytest.mark.asyncio
+    async def test_index_creation_call_made(self, mock_graphiti, live_config, live_mode):
+        """start() issues a CREATE INDEX ... IF NOT EXISTS call.
+
+        In mock mode, asserts on the call. In live mode, asserts the index
+        is actually present in Neo4j.
+        """
+        from pratyabhijna.service import PratyabhijnaService
+
+        service = PratyabhijnaService(live_config)
+        await service.start()
+        try:
+            if not live_mode:
+                # Mock mode: the Graphiti instance is a MagicMock, so its driver
+                # captured every execute_query call. Search for the index DDL.
+                ctor = mock_graphiti.graphiti_cls
+                graphiti_instance = ctor.return_value
+                calls = graphiti_instance.driver.execute_query.await_args_list
+                index_calls = [
+                    c for c in calls
+                    if "idx_episodic_group_hash" in (c.args[0] if c.args else "")
+                ]
+                assert index_calls, "expected CREATE INDEX call with idx_episodic_group_hash"
+            else:
+                records, _, _ = await service._graphiti.driver.execute_query(
+                    "SHOW INDEXES YIELD name WHERE name = 'idx_episodic_group_hash' "
+                    "RETURN name"
+                )
+                assert len(records) == 1
+        finally:
+            await service.stop()
