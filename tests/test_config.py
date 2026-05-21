@@ -56,12 +56,14 @@ class TestConfigLoading:
         assert config.synthesis.max_delta_changes == 3
 
     def test_has_add_episode_settings(self, config_yaml):
-        """Config includes the add_episode feature-flag block with safe defaults."""
+        """Config includes the add_episode block with sensible defaults."""
         from pratyabhijna.config import PratyabhijnaConfig
 
         config = PratyabhijnaConfig.from_yaml(config_yaml)
-        # Defaults are flag off + sensible per-stage knobs.
-        assert config.add_episode.use_in_house is False
+        # use_in_house is deprecated since 0.20.0 — the in-house pipeline is
+        # the only path. Default flips to True so any legacy YAML missing the
+        # field still reads as "in-house" (the production reality).
+        assert config.add_episode.use_in_house is True
         assert config.add_episode.candidate_k == 5
         assert config.add_episode.previous_episodes_n == 5
 
