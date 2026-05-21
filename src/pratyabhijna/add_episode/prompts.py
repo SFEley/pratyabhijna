@@ -108,3 +108,102 @@ def build_extract_user_message(
         Now call the extract_episode tool with the entities and edges.
         """
     ).strip()
+
+
+# ---------------------------------------------------------------------------
+# Reconcile nodes (Stage 4a)
+# ---------------------------------------------------------------------------
+
+
+def build_reconcile_nodes_prompt(
+    *,
+    extracted_nodes: list[dict],
+    candidates: list[list[dict]],
+) -> str:
+    """Render the per-extracted-node candidate listing plus instructions."""
+    blocks = []
+    for i, node in enumerate(extracted_nodes):
+        cand_lines = []
+        for c in candidates[i]:
+            summary = (c.get("summary") or "")[:120]
+            cand_lines.append(
+                f"  - uuid={c['uuid']} name={c['name']!r} "
+                f"labels={c.get('labels', [])} summary={summary!r}"
+            )
+        cand_str = "\n".join(cand_lines) if cand_lines else "  (no candidates)"
+        blocks.append(
+            f"Extracted node idx={i} name={node['name']!r} type={node['type']}\n"
+            f"Candidates:\n{cand_str}"
+        )
+    body = "\n\n".join(blocks)
+    return dedent(
+        f"""
+        For each extracted node below, decide whether it matches one of the
+        candidate existing nodes (decision="existing", with existing_uuid set
+        to the candidate's uuid) or is a new node (decision="new", no
+        existing_uuid).
+
+        Match liberally on identity but conservatively on type: two candidates
+        with the same name but different labels are usually different entities
+        (a Person named "Vesper" is not the AI named "Vesper").
+
+        If matching, you may optionally include attribute_updates with fields
+        to merge onto the existing node. Use sparingly — only when the episode
+        adds genuinely new information.
+
+        Return exactly one decision per extracted node. Every extracted idx
+        must appear in node_decisions exactly once.
+
+        {body}
+
+        Call the reconcile_nodes tool with your decisions.
+        """
+    ).strip()
+
+
+# ---------------------------------------------------------------------------
+# Reconcile edges (Stage 4b)
+# ---------------------------------------------------------------------------
+
+
+def build_reconcile_edges_prompt(
+    *,
+    extracted_edges: list[dict],
+    candidates: list[list[dict]],
+) -> str:
+    blocks = []
+    for i, edge in enumerate(extracted_edges):
+        cand_lines = []
+        for c in candidates[i]:
+            cand_lines.append(
+                f"  - uuid={c['uuid']} name={c['name']!r} fact={c['fact']!r} "
+                f"valid_at={c.get('valid_at')} invalid_at={c.get('invalid_at')}"
+            )
+        cand_str = "\n".join(cand_lines) if cand_lines else "  (no candidates)"
+        blocks.append(
+            f"Extracted edge idx={i}: name={edge['name']!r} fact={edge['fact']!r}\n"
+            f"Candidates:\n{cand_str}"
+        )
+    body = "\n\n".join(blocks)
+    return dedent(
+        f"""
+        For each extracted edge, decide one of three outcomes:
+
+        - "new": the edge is genuinely new information.
+        - "existing": the edge already exists (existing_uuid required); reuse it.
+        - "supersedes": the edge asserts a state of the world that contradicts
+          an existing candidate edge (existing_uuid required); the candidate
+          will be marked invalid as of this episode's reference time.
+
+        Supersession is for *contradiction*, not for "same subject" — two edges
+        about the same subject can both be true at once. If you're unsure
+        between "new" and "supersedes", choose "new".
+
+        Return exactly one decision per extracted edge. Every extracted idx
+        must appear in edge_decisions exactly once.
+
+        {body}
+
+        Call the reconcile_edges tool with your decisions.
+        """
+    ).strip()
