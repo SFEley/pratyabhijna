@@ -102,11 +102,39 @@ async def _summarize_graph(driver, group_id: str) -> dict:
         "MATCH (e:Episodic {group_id: $g}) RETURN count(e) AS n", g=group_id,
     )
     episode_count = records[0]["n"]
+    # Track summary presence so a regression (e.g. EntityNode(..., summary="")
+    # silently shipping) surfaces in parity output instead of staying invisible.
+    records, _, _ = await driver.execute_query(
+        "MATCH (n:Entity {group_id: $g}) "
+        "WHERE n.summary IS NULL OR n.summary = '' "
+        "RETURN count(n) AS n",
+        g=group_id,
+    )
+    empty_summary_count = records[0]["n"]
+    # Bidirectional provenance: every Entity edge should reference at least
+    # one episode; every Episodic should reference the edges it produced.
+    records, _, _ = await driver.execute_query(
+        "MATCH ()-[r:RELATES_TO {group_id: $g}]->() "
+        "WHERE r.episodes IS NULL OR size(r.episodes) = 0 "
+        "RETURN count(r) AS n",
+        g=group_id,
+    )
+    edges_without_episodes = records[0]["n"]
+    records, _, _ = await driver.execute_query(
+        "MATCH (e:Episodic {group_id: $g}) "
+        "WHERE e.entity_edges IS NULL OR size(e.entity_edges) = 0 "
+        "RETURN count(e) AS n",
+        g=group_id,
+    )
+    episodes_without_entity_edges = records[0]["n"]
     return {
         "node_count": node_count,
         "edge_count": edge_count,
         "supersession_count": supersession_count,
         "episode_count": episode_count,
+        "empty_summary_count": empty_summary_count,
+        "edges_without_episodes": edges_without_episodes,
+        "episodes_without_entity_edges": episodes_without_entity_edges,
     }
 
 
@@ -164,4 +192,15 @@ async def test_parity(path, parity_service_graphiti, parity_service_inhouse):
     assert abs(g_summary["edge_count"] - p_summary["edge_count"]) <= 3, (
         f"{path.name}: edge count diverged: graphiti={g_summary['edge_count']} "
         f"in-house={p_summary['edge_count']}"
+    )
+    # In-house invariants the pipeline guarantees (parity-independent):
+    # - every Entity carries a non-empty summary (extractor + name fallback)
+    # - every Entity edge references the episode that asserted it
+    assert p_summary["empty_summary_count"] == 0, (
+        f"{path.name}: in-house created {p_summary['empty_summary_count']} entities "
+        f"with empty summary — regression vs graphiti's summary-extraction behaviour"
+    )
+    assert p_summary["edges_without_episodes"] == 0, (
+        f"{path.name}: in-house created {p_summary['edges_without_episodes']} edges "
+        f"with empty episodes list — breaks tools/inspect.py and forget_episode"
     )

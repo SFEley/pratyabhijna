@@ -108,7 +108,7 @@ async def test_persist_edges_writes_edges_and_episode_with_hash():
     episode = _episode()
     await persist_edges_and_episode(
         driver,
-        new_edges=edges, supersedes_uuids=[],
+        new_edges=edges, corroborated_edge_uuids=[], supersedes_uuids=[],
         episode=episode, episode_hash="deadbeef",
         touched_node_uuids=["ua", "ub"],
         saga=None, saga_prior_episode_uuid=None,
@@ -127,7 +127,7 @@ async def test_persist_edges_invalidates_supersedes():
     episode = _episode()
     await persist_edges_and_episode(
         driver,
-        new_edges=[], supersedes_uuids=["old-e1", "old-e2"],
+        new_edges=[], corroborated_edge_uuids=[], supersedes_uuids=["old-e1", "old-e2"],
         episode=episode, episode_hash="h",
         touched_node_uuids=[],
         saga=None, saga_prior_episode_uuid=None,
@@ -145,13 +145,37 @@ async def test_persist_edges_invalidates_supersedes():
 
 
 @pytest.mark.asyncio
+async def test_persist_appends_episode_to_corroborated_edges():
+    """`existing` edge decisions append the new episode uuid to r.episodes."""
+    driver = AsyncMock()
+    driver.execute_query = AsyncMock()
+    episode = _episode(uuid="ep-99")
+    await persist_edges_and_episode(
+        driver,
+        new_edges=[],
+        corroborated_edge_uuids=["existing-edge-1", "existing-edge-2"],
+        supersedes_uuids=[],
+        episode=episode, episode_hash="h",
+        touched_node_uuids=[],
+        saga=None, saga_prior_episode_uuid=None,
+    )
+    corroborate_call = next(
+        c for c in driver.execute_query.await_args_list
+        if "r.episodes" in c.args[0] and "SET" in c.args[0]
+    )
+    assert corroborate_call.kwargs["uuids"] == ["existing-edge-1", "existing-edge-2"]
+    assert corroborate_call.kwargs["ep"] == "ep-99"
+    assert corroborate_call.kwargs["g"] == episode.group_id
+
+
+@pytest.mark.asyncio
 async def test_persist_creates_mentions_edges():
     driver = AsyncMock()
     driver.execute_query = AsyncMock()
     episode = _episode()
     await persist_edges_and_episode(
         driver,
-        new_edges=[], supersedes_uuids=[],
+        new_edges=[], corroborated_edge_uuids=[], supersedes_uuids=[],
         episode=episode, episode_hash="h",
         touched_node_uuids=["u1", "u2", "u3"],
         saga=None, saga_prior_episode_uuid=None,
@@ -170,7 +194,7 @@ async def test_persist_saga_chain_adds_has_episode_and_next_episode():
     saga.uuid = "s1"
     await persist_edges_and_episode(
         driver,
-        new_edges=[], supersedes_uuids=[],
+        new_edges=[], corroborated_edge_uuids=[], supersedes_uuids=[],
         episode=episode, episode_hash="h",
         touched_node_uuids=[],
         saga=saga, saga_prior_episode_uuid="prev-ep",
@@ -189,7 +213,7 @@ async def test_persist_saga_without_prior_skips_next_episode():
     saga.uuid = "s1"
     await persist_edges_and_episode(
         driver,
-        new_edges=[], supersedes_uuids=[],
+        new_edges=[], corroborated_edge_uuids=[], supersedes_uuids=[],
         episode=episode, episode_hash="h",
         touched_node_uuids=[],
         saga=saga, saga_prior_episode_uuid=None,

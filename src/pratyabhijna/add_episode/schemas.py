@@ -23,6 +23,13 @@ class ExtractedNode(BaseModel):
     idx: int = Field(ge=0)
     name: str = Field(min_length=1)
     type: EntityTypeName
+    summary: str = Field(
+        default="",
+        description=(
+            "One short sentence describing this entity in a way that "
+            "disambiguates it from similarly-named candidates on future runs."
+        ),
+    )
     attributes: dict[str, Any] = Field(default_factory=dict)
 
 

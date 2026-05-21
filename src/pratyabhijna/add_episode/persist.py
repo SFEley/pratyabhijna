@@ -69,6 +69,7 @@ async def persist_edges_and_episode(
     driver,
     *,
     new_edges: list[EntityEdge],
+    corroborated_edge_uuids: list[str],
     supersedes_uuids: list[str],
     episode: EpisodicNode,
     episode_hash: str,
@@ -82,6 +83,10 @@ async def persist_edges_and_episode(
     schema doesn't include the hash property and the underlying save query
     is generated from the model. A trailing SET attaches the hash; that's
     what the Stage 0 idempotency MATCH reads on future runs.
+
+    `corroborated_edge_uuids` are pre-existing edges that this episode
+    re-asserted (reconcile_edges returned "existing"); the episode UUID is
+    appended to each edge's `episodes` provenance list (dedup-aware).
     """
     edge_tasks = [edge.save(driver) for edge in new_edges]
 
@@ -100,9 +105,27 @@ async def persist_edges_and_episode(
             valid_at=episode.valid_at,
         )
 
+    corroborate_task = None
+    if corroborated_edge_uuids:
+        corroborate_task = driver.execute_query(
+            """
+            MATCH ()-[r:RELATES_TO]-()
+            WHERE r.uuid IN $uuids AND r.group_id = $g
+            SET r.episodes = CASE
+                WHEN $ep IN coalesce(r.episodes, []) THEN r.episodes
+                ELSE coalesce(r.episodes, []) + $ep
+            END
+            """,
+            uuids=corroborated_edge_uuids,
+            g=episode.group_id,
+            ep=episode.uuid,
+        )
+
     awaitable_tasks = list(edge_tasks)
     if super_task is not None:
         awaitable_tasks.append(super_task)
+    if corroborate_task is not None:
+        awaitable_tasks.append(corroborate_task)
     if awaitable_tasks:
         await asyncio.gather(*awaitable_tasks)
 

@@ -40,7 +40,13 @@ def build_extract_system_prompt() -> str:
 
             For the supplied episode (text written by or about the subject), extract:
 
-            - The named entities mentioned, typed by the schemas below.
+            - The named entities mentioned, typed by the schemas below. For each
+              entity, provide a short (one sentence) summary that captures what
+              this entity *is* in a form that disambiguates it from similarly
+              named candidates on future runs — e.g. "Vesper, the AI subject of
+              this graph (not the Person named Vesper)". The summary is what
+              the reconcile stage of a future episode will see when deciding
+              whether your entity is the same one already in the graph.
             - The factual relations between them, expressed as edges with a
               semantic predicate (e.g. "works_on", "remembers", "supersedes")
               and a single short sentence stating the fact.

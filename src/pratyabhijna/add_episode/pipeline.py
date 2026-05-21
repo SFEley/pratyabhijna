@@ -241,82 +241,99 @@ async def add_episode(
         ",".join(f"{k}:{v}" for k, v in sorted(edge_name_counts.items())) or "(none)",
     )
 
-    if not extracted.nodes and not extracted.edges:
-        # Nothing to reconcile or persist — still create an Episodic for the
-        # historical record and to honor idempotency.
-        return await _short_persist_empty_episode(
-            driver=driver, name=name, group_id=group_id,
-            source=source, source_description=source_description,
-            episode_body=episode_body, reference_time=reference_time,
-            episode_hash=h, t_total=t_total,
-        )
-
-    # --- Stage 3a (embed + node candidates, in parallel) ---
-    t = time.perf_counter()
-    embed_task = asyncio.create_task(embed_all(embedder, extracted))
-    node_emb, edge_emb = await embed_task
-    node_candidates = await fetch_node_candidates(
-        driver, group_id, extracted,
-        node_embeddings=node_emb,
-        k=config.add_episode.candidate_k,
-    )
-    embed_total = len(node_emb) + len(edge_emb)
-    embed_batches = (embed_total + 127) // 128 if embed_total else 0
-    _log.info(
-        "add_episode stage=embed batches=%d texts=%d latency_ms=%.0f",
-        embed_batches, embed_total, (time.perf_counter() - t) * 1000,
-    )
-    _log.info(
-        "add_episode stage=fetch_node_candidates total_candidates=%d max_per_node=%d",
-        sum(len(c) for c in node_candidates),
-        max((len(c) for c in node_candidates), default=0),
-    )
-
-    # --- Stage 4a: reconcile nodes ---
-    t = time.perf_counter()
-    node_decisions = await reconcile_nodes(
-        llm_client=llm_client, extracted=extracted, candidates=node_candidates,
-    )
-    existing_count = sum(1 for d in node_decisions.node_decisions if d.decision == "existing")
-    new_count = sum(1 for d in node_decisions.node_decisions if d.decision == "new")
-    attr_updates = sum(1 for d in node_decisions.node_decisions if d.attribute_updates)
-    _log.info(
-        "add_episode stage=reconcile_nodes llm_calls=1 latency_ms=%.0f existing=%d new=%d attribute_updates=%d",
-        (time.perf_counter() - t) * 1000, existing_count, new_count, attr_updates,
-    )
-
-    # Materialize node objects + build idx → resolved-uuid map.
+    # Build the EpisodicNode up front. Its uuid is auto-assigned and we need
+    # it now so that new EntityEdges can carry episodes=[episode.uuid] and the
+    # episode itself can carry entity_edges back-pointers before save.
     now = datetime.now(timezone.utc)
+    episode_node = EpisodicNode(
+        name=name,
+        group_id=group_id,
+        labels=[],
+        source=source,
+        content=episode_body,
+        source_description=source_description,
+        created_at=now,
+        valid_at=reference_time,
+    )
+
+    # Defaults that hold for the empty-extraction case; reconcile stages
+    # below populate these when there's anything to decide on.
+    node_emb: list[list[float]] = []
+    edge_emb: list[list[float]] = []
+    embed_batches = 0
     node_resolution: dict[int, str] = {}
     new_node_objects: list[EntityNode] = []
     updated_node_objects: list[tuple[EntityNode, dict]] = []
-    for decision in node_decisions.node_decisions:
-        ext = extracted.nodes[decision.extracted_idx]
-        if decision.decision == "existing":
-            node_resolution[decision.extracted_idx] = decision.existing_uuid
-            if decision.attribute_updates:
-                existing = await EntityNode.get_by_uuid(driver, decision.existing_uuid)
-                updated_node_objects.append((existing, decision.attribute_updates))
-        else:
-            new_uuid = str(uuid_module.uuid4())
-            node_resolution[decision.extracted_idx] = new_uuid
-            new_node_objects.append(EntityNode(
-                uuid=new_uuid,
-                name=ext.name,
-                group_id=group_id,
-                labels=["Entity", ext.type],
-                created_at=now,
-                summary="",
-                name_embedding=node_emb[decision.extracted_idx] if node_emb else None,
-                attributes=ext.attributes,
-            ))
+    new_edge_objects: list[EntityEdge] = []
+    corroborated_edge_uuids: list[str] = []
+    supersedes_uuids: list[str] = []
+    llm_calls = 1  # extract; reconcile stages add to this when they run.
+
+    if extracted.nodes or extracted.edges:
+        # --- Stage 3a-i: embed + Stage 3a-ii: node candidates ---
+        t = time.perf_counter()
+        node_emb, edge_emb = await embed_all(embedder, extracted)
+        embed_total = len(node_emb) + len(edge_emb)
+        embed_batches = (embed_total + 127) // 128 if embed_total else 0
+        _log.info(
+            "add_episode stage=embed batches=%d texts=%d latency_ms=%.0f",
+            embed_batches, embed_total, (time.perf_counter() - t) * 1000,
+        )
+
+        node_candidates: list[list[dict]] = []
+        if extracted.nodes:
+            node_candidates = await fetch_node_candidates(
+                driver, group_id, extracted,
+                node_embeddings=node_emb,
+                k=config.add_episode.candidate_k,
+            )
+            _log.info(
+                "add_episode stage=fetch_node_candidates total_candidates=%d max_per_node=%d",
+                sum(len(c) for c in node_candidates),
+                max((len(c) for c in node_candidates), default=0),
+            )
+
+        # --- Stage 4a: reconcile nodes ---
+        if extracted.nodes:
+            t = time.perf_counter()
+            node_decisions = await reconcile_nodes(
+                llm_client=llm_client, extracted=extracted, candidates=node_candidates,
+            )
+            llm_calls += 1
+            existing_count = sum(1 for d in node_decisions.node_decisions if d.decision == "existing")
+            new_count = sum(1 for d in node_decisions.node_decisions if d.decision == "new")
+            attr_updates = sum(1 for d in node_decisions.node_decisions if d.attribute_updates)
+            _log.info(
+                "add_episode stage=reconcile_nodes llm_calls=1 latency_ms=%.0f existing=%d new=%d attribute_updates=%d",
+                (time.perf_counter() - t) * 1000, existing_count, new_count, attr_updates,
+            )
+
+            # Materialize node objects + build idx → resolved-uuid map.
+            for decision in node_decisions.node_decisions:
+                ext = extracted.nodes[decision.extracted_idx]
+                if decision.decision == "existing":
+                    node_resolution[decision.extracted_idx] = decision.existing_uuid
+                    if decision.attribute_updates:
+                        existing = await EntityNode.get_by_uuid(driver, decision.existing_uuid)
+                        updated_node_objects.append((existing, decision.attribute_updates))
+                else:
+                    new_uuid = str(uuid_module.uuid4())
+                    node_resolution[decision.extracted_idx] = new_uuid
+                    new_node_objects.append(EntityNode(
+                        uuid=new_uuid,
+                        name=ext.name,
+                        group_id=group_id,
+                        labels=["Entity", ext.type],
+                        created_at=now,
+                        # Fall back to the name if the LLM elided summary — keeps
+                        # downstream reads (recall, inspect, future reconcile)
+                        # from showing a blank summary for this entity.
+                        summary=ext.summary or ext.name,
+                        name_embedding=node_emb[decision.extracted_idx] if node_emb else None,
+                        attributes=ext.attributes,
+                    ))
 
     # --- Stage 3b: edge candidates (now that endpoints are known) ---
-    edge_decisions = None
-    new_edge_objects: list[EntityEdge] = []
-    supersedes_uuids: list[str] = []
-    ee_existing = ee_new = ee_super = 0
-
     if extracted.edges:
         t = time.perf_counter()
         edge_candidates = await fetch_edge_candidates(
@@ -336,6 +353,7 @@ async def add_episode(
         edge_decisions = await reconcile_edges(
             llm_client=llm_client, extracted=extracted, candidates=edge_candidates,
         )
+        llm_calls += 1
         ee_existing = sum(1 for d in edge_decisions.edge_decisions if d.decision == "existing")
         ee_new = sum(1 for d in edge_decisions.edge_decisions if d.decision == "new")
         ee_super = sum(1 for d in edge_decisions.edge_decisions if d.decision == "supersedes")
@@ -344,10 +362,12 @@ async def add_episode(
             (time.perf_counter() - t) * 1000, ee_existing, ee_new, ee_super,
         )
 
-        # Materialize edge objects.
+        # Materialize edge objects; track corroborated existing edges so we
+        # can append the new episode to their `episodes` provenance list.
         for decision in edge_decisions.edge_decisions:
             ext = extracted.edges[decision.extracted_idx]
             if decision.decision == "existing":
+                corroborated_edge_uuids.append(decision.existing_uuid)
                 continue
             if decision.decision == "supersedes":
                 supersedes_uuids.append(decision.existing_uuid)
@@ -360,22 +380,18 @@ async def add_episode(
                 created_at=now,
                 valid_at=reference_time,
                 fact_embedding=edge_emb[decision.extracted_idx] if edge_emb else None,
-                episodes=[],
+                episodes=[episode_node.uuid],
             ))
+
+    # Stamp the episode with the edges it touched, so graphiti.remove_episode
+    # (the engine behind `forget_episode`) can find them later. Includes both
+    # newly created edges and existing edges that this episode re-asserted.
+    episode_node.entity_edges = (
+        [e.uuid for e in new_edge_objects] + corroborated_edge_uuids
+    )
 
     # --- Stage 5: persist ---
     t = time.perf_counter()
-    episode_node = EpisodicNode(
-        name=name,
-        group_id=group_id,
-        labels=[],
-        source=source,
-        content=episode_body,
-        source_description=source_description,
-        created_at=now,
-        valid_at=reference_time,
-    )
-
     saga_node = await persist_nodes_and_saga(
         driver,
         new_nodes=new_node_objects,
@@ -388,6 +404,7 @@ async def add_episode(
     await persist_edges_and_episode(
         driver,
         new_edges=new_edge_objects,
+        corroborated_edge_uuids=corroborated_edge_uuids,
         supersedes_uuids=supersedes_uuids,
         episode=episode_node,
         episode_hash=h,
@@ -397,13 +414,13 @@ async def add_episode(
     )
     _log.info(
         "add_episode stage=persist nodes_created=%d nodes_updated=%d edges_created=%d "
-        "supersessions=%d mentions=%d latency_ms=%.0f",
+        "edges_corroborated=%d supersessions=%d mentions=%d latency_ms=%.0f",
         len(new_node_objects), len(updated_node_objects),
-        len(new_edge_objects), len(supersedes_uuids), len(touched_uuids),
+        len(new_edge_objects), len(corroborated_edge_uuids),
+        len(supersedes_uuids), len(touched_uuids),
         (time.perf_counter() - t) * 1000,
     )
 
-    llm_calls = 2 + (1 if extracted.edges else 0)  # extract + reconcile_nodes (+ reconcile_edges)
     _log.info(
         "add_episode complete episode_uuid=%s total_latency_ms=%.0f llm_calls=%d embed_batches=%d",
         episode_node.uuid, (time.perf_counter() - t_total) * 1000,
@@ -417,49 +434,4 @@ async def add_episode(
         edges_created=len(new_edge_objects),
         supersessions=len(supersedes_uuids),
         short_circuited=False,
-    )
-
-
-async def _short_persist_empty_episode(
-    *,
-    driver,
-    name: str,
-    group_id: str,
-    source: EpisodeType,
-    source_description: str,
-    episode_body: str,
-    reference_time: datetime,
-    episode_hash: str,
-    t_total: float,
-) -> AddEpisodeResult:
-    """Persist an Episodic with zero extracted content.
-
-    Keeps the hash idempotency contract: a re-queue of the same body will
-    Stage-0-hit and skip re-extraction even when extraction returned nothing.
-    """
-    now = datetime.now(timezone.utc)
-    episode_node = EpisodicNode(
-        name=name,
-        group_id=group_id,
-        labels=[],
-        source=source,
-        content=episode_body,
-        source_description=source_description,
-        created_at=now,
-        valid_at=reference_time,
-    )
-    await episode_node.save(driver)
-    await driver.execute_query(
-        "MATCH (e:Episodic {uuid: $u}) SET e.episode_hash = $h",
-        u=episode_node.uuid, h=episode_hash,
-    )
-    _log.info(
-        "add_episode complete episode_uuid=%s total_latency_ms=%.0f llm_calls=1 embed_batches=0 "
-        "(no entities or edges extracted)",
-        episode_node.uuid, (time.perf_counter() - t_total) * 1000,
-    )
-    return AddEpisodeResult(
-        episode_uuid=episode_node.uuid,
-        nodes_created=0, nodes_updated=0, edges_created=0,
-        supersessions=0, short_circuited=False,
     )
