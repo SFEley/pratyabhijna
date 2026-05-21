@@ -159,6 +159,7 @@ async def add_episode(
     group_id: str,
     saga: str | None = None,
     saga_previous_episode_uuid: str | None = None,
+    custom_extraction_instructions: str | None = None,
 ) -> AddEpisodeResult:
     """In-house replacement for graphiti.add_episode.
 
@@ -225,6 +226,7 @@ async def add_episode(
         reference_time=reference_time,
         body=episode_body,
         previous_episodes=prefetch.previous_episodes,
+        custom_instructions=custom_extraction_instructions,
     )
     extract_ms = (time.perf_counter() - t) * 1000
     type_counts = Counter(n.type for n in extracted.nodes)

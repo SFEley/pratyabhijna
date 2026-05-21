@@ -24,11 +24,16 @@ from helpers import wait_for
 
 @pytest.fixture
 def mock_service():
-    """A mock PratyabhijnaService with a mock graphiti client."""
+    """A mock PratyabhijnaService with a mock graphiti client.
+
+    use_in_house defaults to False to match production config; tests that
+    exercise the in-house path explicitly set it on the fixture.
+    """
     service = MagicMock()
     service.is_connected = True
     service._graphiti = AsyncMock()
     service._graphiti.add_episode = AsyncMock()
+    service.config.add_episode.use_in_house = False
     service.entity_types = {
         "Person": MagicMock(),
         "Observation": MagicMock(),

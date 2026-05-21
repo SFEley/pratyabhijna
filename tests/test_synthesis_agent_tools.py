@@ -71,6 +71,9 @@ def service():
     svc.get_entity_by_name = AsyncMock()
     svc.entity_types = {}
     svc.config = MagicMock(subject_name="TestSubject")
+    # add_episode.use_in_house defaults False to match production; in-house
+    # code path covered by add_episode unit tests, not synthesis-agent tests.
+    svc.config.add_episode.use_in_house = False
     svc._graphiti = MagicMock()
     svc._graphiti.add_episode = AsyncMock()
     svc._graphiti.remove_episode = AsyncMock()
