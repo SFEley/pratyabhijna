@@ -20,6 +20,19 @@ from pratyabhijna.entity_types import PRATYABHIJNA_ENTITY_TYPES
 # ---------------------------------------------------------------------------
 
 
+def _type_attribute_fields() -> dict[str, list[str]]:
+    """Per-type attribute field names, derived from the Pydantic models.
+
+    Stays in sync with entity_types.py automatically — adding a field to a
+    model surfaces it in the extract prompt's attribute guidance without a
+    second edit here.
+    """
+    return {
+        name: list(model.model_fields.keys())
+        for name, model in PRATYABHIJNA_ENTITY_TYPES.items()
+    }
+
+
 def build_extract_system_prompt() -> str:
     """Stable system prompt across every extract call. Cacheable.
 
@@ -32,6 +45,13 @@ def build_extract_system_prompt() -> str:
         doc = (model.__doc__ or "").strip()
         type_blocks.append(f"### {name}\n\n{doc}")
     types_section = "\n\n".join(type_blocks)
+
+    attr_lines = [
+        f"- {name}: {', '.join(fields)}"
+        for name, fields in _type_attribute_fields().items()
+    ]
+    attrs_section = "\n".join(attr_lines)
+
     return (
         dedent(
             """
@@ -47,6 +67,13 @@ def build_extract_system_prompt() -> str:
               this graph (not the Person named Vesper)". The summary is what
               the reconcile stage of a future episode will see when deciding
               whether your entity is the same one already in the graph.
+            - For each entity, also populate the `attributes` object with the
+              type-specific fields listed under "Attribute Fields" below, for any
+              field the episode gives you a value for. Omit fields you can't fill
+              — never invent values — but do fill the ones the text supports. For
+              example an Observation usually has a `domain` (ethics, identity,
+              epistemology, ...); an Event usually has a `when`; a Person may have
+              `status` or `aliases`. The `notes` field is freeform overflow.
             - The factual relations between them, expressed as edges with a
               semantic predicate (e.g. "works_on", "remembers", "supersedes")
               and a single short sentence stating the fact.
@@ -64,6 +91,9 @@ def build_extract_system_prompt() -> str:
         ).strip()
         + "\n\n"
         + types_section
+        + "\n\n## Attribute Fields\n\n"
+        + "For each entity type, the `attributes` keys you may populate:\n\n"
+        + attrs_section
     )
 
 
