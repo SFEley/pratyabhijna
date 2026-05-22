@@ -14,7 +14,13 @@ Returns system orientation as a nested dict with four blocks:
   whether or not it produced a subject-connected fact).
 - ``add_episode`` — rolling 24h means for in-house pipeline runs
   (count, mean latency, mean LLM calls, mean embed batches). In-memory
-  on the service instance, so a process restart resets it.
+  on the service instance, so a process restart resets it. Unlike the
+  other three blocks (queue → SQLite, graph/synthesis → Neo4j), this
+  one has no cross-process backing: it only reflects add_episode runs
+  in the *current* process. The long-lived MCP server accumulates real
+  numbers here, but ``python -m pratyabhijna status`` spins up a fresh
+  service per invocation that has run no episodes, so the CLI always
+  reports ``count: 0`` for this block. Read it from the live server.
 
 Plus top-level ``version``, ``db_connected``, and ``subject_name``.
 

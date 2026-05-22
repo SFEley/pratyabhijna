@@ -422,6 +422,29 @@ class TestStatusAddEpisodeBlock:
         assert block["count"] == 1
         assert block["mean_latency_ms"] == 200.0
 
+    def test_snapshot_trims_on_read_without_record(self):
+        """snapshot() evicts stale samples even when record() is never called again.
+
+        Regression: trimming used to live only in record(), so after a quiet
+        period longer than the window the status block kept reporting the last
+        burst as the 'rolling 24h' aggregate.
+        """
+        from pratyabhijna.service import AddEpisodeStats
+
+        stats = AddEpisodeStats(window_seconds=0.01)
+        stats.record(latency_ms=100.0, llm_calls=3, embed_batches=1)
+        import time
+
+        time.sleep(0.05)
+
+        # No intervening record() — the read path must trim on its own.
+        assert stats.snapshot() == {
+            "count": 0,
+            "mean_latency_ms": None,
+            "mean_llm_calls": None,
+            "mean_embed_batches": None,
+        }
+
     @pytest.mark.asyncio
     async def test_block_degrades_on_missing_attribute(self, tmp_path):
         """A service without add_episode_stats (older variant) reports zeros."""

@@ -130,6 +130,11 @@ class AddEpisodeStats:
         self.window_seconds = window_seconds
         self._samples: deque[tuple[float, float, int, int]] = deque()
 
+    def _trim(self) -> None:
+        cutoff = time.time() - self.window_seconds
+        while self._samples and self._samples[0][0] < cutoff:
+            self._samples.popleft()
+
     def record(
         self,
         *,
@@ -137,14 +142,17 @@ class AddEpisodeStats:
         llm_calls: int,
         embed_batches: int,
     ) -> None:
-        now = time.time()
-        self._samples.append((now, latency_ms, llm_calls, embed_batches))
-        cutoff = now - self.window_seconds
-        while self._samples and self._samples[0][0] < cutoff:
-            self._samples.popleft()
+        self._samples.append((time.time(), latency_ms, llm_calls, embed_batches))
+        self._trim()
 
     def snapshot(self) -> dict:
-        """Aggregate of the current window. Means are None when count == 0."""
+        """Aggregate of the current window. Means are None when count == 0.
+
+        Trims on read as well as write so a long quiet period (no
+        ``record`` calls for longer than the window) reports an empty
+        window rather than stale samples.
+        """
+        self._trim()
         n = len(self._samples)
         if n == 0:
             return {
