@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import deque
 from datetime import datetime
+from pathlib import Path
 
 from graphiti_core import Graphiti
 from graphiti_core.driver.neo4j_driver import Neo4jDriver
@@ -115,25 +115,42 @@ def _build_cross_encoder(config: PratyabhijnaConfig):
     raise ValueError(f"No cross-encoder available for provider: {emb.provider}")
 
 
+_EMPTY_SNAPSHOT = {
+    "count": 0,
+    "mean_latency_ms": None,
+    "mean_llm_calls": None,
+    "mean_embed_batches": None,
+}
+
+_ADD_EPISODE_SAMPLES_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS add_episode_samples (
+    recorded_at   REAL NOT NULL,
+    latency_ms    REAL NOT NULL,
+    llm_calls     INTEGER NOT NULL,
+    embed_batches INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ae_samples_recorded
+    ON add_episode_samples(recorded_at);
+"""
+
+
 class AddEpisodeStats:
     """Rolling per-add_episode counters for the status() telemetry block.
 
-    Keeps a sliding window of (timestamp, latency_ms, llm_calls, embed_batches)
-    samples and drops anything older than ``window_seconds`` on each call.
-    The window defaults to 24h; that's the timescale ``status()`` reports.
+    Persisted to a table in the queue's SQLite file rather than process
+    memory, so the long-lived MCP server and the ``python -m pratyabhijna
+    status`` subcommand read the same window — same cross-process contract
+    the ``queue`` block already honors via ``collect_queue_stats``.
 
-    Recording is intentionally cheap (one append + a left-side trim) so the
-    pipeline hot path can call it without worrying about overhead.
+    The window (default 24h) is enforced declaratively: ``snapshot`` only
+    aggregates rows newer than the cutoff, and ``record`` prunes older rows
+    so the table stays bounded. ``record`` adds one INSERT + a cheap indexed
+    DELETE to the pipeline hot path, negligible against the LLM/embed work.
     """
 
-    def __init__(self, window_seconds: float = 24 * 3600) -> None:
+    def __init__(self, db_path: str, window_seconds: float = 24 * 3600) -> None:
+        self.db_path = db_path
         self.window_seconds = window_seconds
-        self._samples: deque[tuple[float, float, int, int]] = deque()
-
-    def _trim(self) -> None:
-        cutoff = time.time() - self.window_seconds
-        while self._samples and self._samples[0][0] < cutoff:
-            self._samples.popleft()
 
     def record(
         self,
@@ -142,30 +159,55 @@ class AddEpisodeStats:
         llm_calls: int,
         embed_batches: int,
     ) -> None:
-        self._samples.append((time.time(), latency_ms, llm_calls, embed_batches))
-        self._trim()
+        import sqlite3
+
+        now = time.time()
+        cutoff = now - self.window_seconds
+        with sqlite3.connect(self.db_path, timeout=5.0) as conn:
+            conn.executescript(_ADD_EPISODE_SAMPLES_SCHEMA)
+            conn.execute(
+                "INSERT INTO add_episode_samples "
+                "(recorded_at, latency_ms, llm_calls, embed_batches) "
+                "VALUES (?, ?, ?, ?)",
+                (now, latency_ms, llm_calls, embed_batches),
+            )
+            conn.execute(
+                "DELETE FROM add_episode_samples WHERE recorded_at < ?", (cutoff,)
+            )
 
     def snapshot(self) -> dict:
         """Aggregate of the current window. Means are None when count == 0.
 
-        Trims on read as well as write so a long quiet period (no
-        ``record`` calls for longer than the window) reports an empty
-        window rather than stale samples.
+        Reads stay read-only: if the db file or samples table doesn't
+        exist yet (no episode recorded in this deployment), returns the
+        empty snapshot rather than creating anything.
         """
-        self._trim()
-        n = len(self._samples)
-        if n == 0:
-            return {
-                "count": 0,
-                "mean_latency_ms": None,
-                "mean_llm_calls": None,
-                "mean_embed_batches": None,
-            }
+        import sqlite3
+
+        if not Path(self.db_path).exists():
+            return dict(_EMPTY_SNAPSHOT)
+
+        cutoff = time.time() - self.window_seconds
+        with sqlite3.connect(self.db_path, timeout=5.0) as conn:
+            table = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='add_episode_samples'"
+            ).fetchone()
+            if table is None:
+                return dict(_EMPTY_SNAPSHOT)
+            count, mean_latency, mean_llm, mean_embed = conn.execute(
+                "SELECT COUNT(*), AVG(latency_ms), AVG(llm_calls), AVG(embed_batches) "
+                "FROM add_episode_samples WHERE recorded_at >= ?",
+                (cutoff,),
+            ).fetchone()
+
+        if count == 0:
+            return dict(_EMPTY_SNAPSHOT)
         return {
-            "count": n,
-            "mean_latency_ms": sum(s[1] for s in self._samples) / n,
-            "mean_llm_calls": sum(s[2] for s in self._samples) / n,
-            "mean_embed_batches": sum(s[3] for s in self._samples) / n,
+            "count": count,
+            "mean_latency_ms": mean_latency,
+            "mean_llm_calls": mean_llm,
+            "mean_embed_batches": mean_embed,
         }
 
 
@@ -175,8 +217,10 @@ class PratyabhijnaService:
     def __init__(self, config: PratyabhijnaConfig):
         self.config = config
         self._graphiti = None
-        # Per-add_episode rolling counters, surfaced by status().
-        self.add_episode_stats = AddEpisodeStats()
+        # Per-add_episode rolling counters, surfaced by status(). Backed by
+        # the queue's SQLite file so the CLI status path sees the same window
+        # as the live server.
+        self.add_episode_stats = AddEpisodeStats(db_path=config.queue.db_path)
 
     async def start(self):
         """Initialize the Graphiti client and connect to Neo4j."""

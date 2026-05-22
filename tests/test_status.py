@@ -370,7 +370,7 @@ class TestStatusAddEpisodeBlock:
         from pratyabhijna.tools.status import status
 
         service = _make_service()
-        service.add_episode_stats = AddEpisodeStats()
+        service.add_episode_stats = AddEpisodeStats(db_path=str(tmp_path / "stats.db"))
 
         result = await status(service=service, queue_db_path=str(tmp_path / "q.db"))
         assert result["add_episode"] == {
@@ -386,7 +386,7 @@ class TestStatusAddEpisodeBlock:
         from pratyabhijna.service import AddEpisodeStats
         from pratyabhijna.tools.status import status
 
-        stats = AddEpisodeStats()
+        stats = AddEpisodeStats(db_path=str(tmp_path / "stats.db"))
         stats.record(latency_ms=1000.0, llm_calls=3, embed_batches=1)
         stats.record(latency_ms=2000.0, llm_calls=1, embed_batches=2)
 
@@ -402,12 +402,12 @@ class TestStatusAddEpisodeBlock:
 
     @pytest.mark.asyncio
     async def test_block_drops_samples_outside_window(self, tmp_path):
-        """Samples older than window_seconds are evicted on the next record()."""
+        """Samples older than window_seconds are excluded from the aggregate."""
         from pratyabhijna.service import AddEpisodeStats
         from pratyabhijna.tools.status import status
 
         # Tiny window so the eviction is immediate.
-        stats = AddEpisodeStats(window_seconds=0.01)
+        stats = AddEpisodeStats(db_path=str(tmp_path / "stats.db"), window_seconds=0.01)
         stats.record(latency_ms=100.0, llm_calls=3, embed_batches=1)
         import time
         time.sleep(0.05)
@@ -422,28 +422,48 @@ class TestStatusAddEpisodeBlock:
         assert block["count"] == 1
         assert block["mean_latency_ms"] == 200.0
 
-    def test_snapshot_trims_on_read_without_record(self):
-        """snapshot() evicts stale samples even when record() is never called again.
+    def test_snapshot_drops_stale_samples_on_read(self, tmp_path):
+        """snapshot() excludes stale samples even when record() isn't called again.
 
-        Regression: trimming used to live only in record(), so after a quiet
-        period longer than the window the status block kept reporting the last
-        burst as the 'rolling 24h' aggregate.
+        Regression: the window must be enforced on the read path, not just on
+        write, so after a quiet period longer than the window the block doesn't
+        keep reporting the last burst as the 'rolling 24h' aggregate.
         """
         from pratyabhijna.service import AddEpisodeStats
 
-        stats = AddEpisodeStats(window_seconds=0.01)
+        stats = AddEpisodeStats(db_path=str(tmp_path / "stats.db"), window_seconds=0.01)
         stats.record(latency_ms=100.0, llm_calls=3, embed_batches=1)
         import time
 
         time.sleep(0.05)
 
-        # No intervening record() — the read path must trim on its own.
+        # No intervening record() — the read path must drop the stale sample.
         assert stats.snapshot() == {
             "count": 0,
             "mean_latency_ms": None,
             "mean_llm_calls": None,
             "mean_embed_batches": None,
         }
+
+    def test_snapshot_reads_samples_written_by_another_instance(self, tmp_path):
+        """The cross-process contract: a fresh instance on the same db file
+        sees samples a different instance recorded.
+
+        This is the bug #2 regression — the CLI builds its own service, so its
+        AddEpisodeStats must read what the live server wrote, not start empty.
+        """
+        from pratyabhijna.service import AddEpisodeStats
+
+        db_path = str(tmp_path / "stats.db")
+        writer = AddEpisodeStats(db_path=db_path)
+        writer.record(latency_ms=1500.0, llm_calls=2, embed_batches=1)
+
+        reader = AddEpisodeStats(db_path=db_path)
+        snap = reader.snapshot()
+        assert snap["count"] == 1
+        assert snap["mean_latency_ms"] == 1500.0
+        assert snap["mean_llm_calls"] == 2.0
+        assert snap["mean_embed_batches"] == 1.0
 
     @pytest.mark.asyncio
     async def test_block_degrades_on_missing_attribute(self, tmp_path):
