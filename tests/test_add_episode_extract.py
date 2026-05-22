@@ -39,6 +39,19 @@ def test_system_prompt_includes_entity_type_docstrings():
         )
 
 
+def test_system_prompt_lists_attribute_fields_per_type():
+    """The prompt guides per-type attribute population (else the LLM leaves
+    `attributes` empty and in-house nodes lose domain/status/when/etc.)."""
+    system = build_extract_system_prompt()
+    assert "Attribute Fields" in system
+    # Each type's actual model fields should appear in the guidance.
+    for name, cls in PRATYABHIJNA_ENTITY_TYPES.items():
+        for field in cls.model_fields:
+            assert field in system, (
+                f"attribute field {field!r} for {name} missing from extract prompt"
+            )
+
+
 def test_user_message_includes_episode_body_and_metadata():
     msg = build_extract_user_message(
         episode_name="obs:2026-05-20",

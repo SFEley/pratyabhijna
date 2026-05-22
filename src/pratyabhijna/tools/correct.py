@@ -85,34 +85,21 @@ def make_handler(service: PratyabhijnaService, queue: WorkQueue | None = None):
             "these terms and update or invalidate contradicted edges."
         ) if search_terms else None
 
+        from pratyabhijna.add_episode import add_episode as in_house_add_episode
+
         _log.info(
-            "add_episode starting (type=correction, len=%d, pipeline=%s)",
-            len(payload["content"]),
-            "in-house" if service.config.add_episode.use_in_house else "graphiti",
+            "add_episode starting (type=correction, len=%d)", len(payload["content"]),
         )
 
-        if service.config.add_episode.use_in_house:
-            from pratyabhijna.add_episode import add_episode as in_house_add_episode
-            await in_house_add_episode(
-                service,
-                name=f"correction:{now.isoformat()}",
-                episode_body=payload["content"],
-                source_description="correction",
-                reference_time=reference_time,
-                group_id=service.config.subject_name,
-                custom_extraction_instructions=extraction_hint,
-            )
-        else:
-            await service._graphiti.add_episode(
-                name=f"correction:{now.isoformat()}",
-                episode_body=payload["content"],
-                source_description="correction",
-                reference_time=reference_time,
-                group_id=service.config.subject_name,
-                entity_types=service.entity_types,
-                **({"custom_extraction_instructions": extraction_hint}
-                   if extraction_hint else {}),
-            )
+        await in_house_add_episode(
+            service,
+            name=f"correction:{now.isoformat()}",
+            episode_body=payload["content"],
+            source_description="correction",
+            reference_time=reference_time,
+            group_id=service.config.subject_name,
+            custom_extraction_instructions=extraction_hint,
+        )
         _log.info("add_episode complete (type=correction)")
 
         if queue is None:

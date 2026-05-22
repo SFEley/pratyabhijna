@@ -190,9 +190,13 @@ async def add_episode(
         _log.info(
             "add_episode stage=idempotency decision=existing_hit episode_uuid=%s", hit,
         )
+        total_ms = (time.perf_counter() - t_total) * 1000
         _log.info(
             "add_episode complete episode_uuid=%s total_latency_ms=%.0f llm_calls=0 embed_batches=0",
-            hit, (time.perf_counter() - t_total) * 1000,
+            hit, total_ms,
+        )
+        service.add_episode_stats.record(
+            latency_ms=total_ms, llm_calls=0, embed_batches=0,
         )
         return AddEpisodeResult(
             episode_uuid=hit, nodes_created=0, nodes_updated=0,
@@ -421,10 +425,14 @@ async def add_episode(
         (time.perf_counter() - t) * 1000,
     )
 
+    total_ms = (time.perf_counter() - t_total) * 1000
     _log.info(
         "add_episode complete episode_uuid=%s total_latency_ms=%.0f llm_calls=%d embed_batches=%d",
-        episode_node.uuid, (time.perf_counter() - t_total) * 1000,
+        episode_node.uuid, total_ms,
         llm_calls, embed_batches,
+    )
+    service.add_episode_stats.record(
+        latency_ms=total_ms, llm_calls=llm_calls, embed_batches=embed_batches,
     )
 
     return AddEpisodeResult(

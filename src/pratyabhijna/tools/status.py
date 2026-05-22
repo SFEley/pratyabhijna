@@ -1,6 +1,6 @@
 """The `status` MCP tool.
 
-Returns system orientation as a nested dict with three blocks:
+Returns system orientation as a nested dict with four blocks:
 
 - ``queue`` — pending/running/completed/dead-letter counts, plus a
   per-task-type breakdown. Read from SQLite directly via
@@ -12,6 +12,10 @@ Returns system orientation as a nested dict with three blocks:
   current ``subject_delta_count`` (subject-connected atoms accumulated
   since), and ``new_episodes_count`` (every Episodic node since,
   whether or not it produced a subject-connected fact).
+- ``add_episode`` — rolling 24h means for in-house pipeline runs
+  (count, mean latency, mean LLM calls, mean embed batches). Persisted
+  to a table in the queue's SQLite file (like the ``queue`` block), so
+  the CLI subcommand and the live MCP server read the same window.
 
 Plus top-level ``version``, ``db_connected``, and ``subject_name``.
 
@@ -50,6 +54,7 @@ async def status(
         "queue": await _collect_queue(queue_db_path),
         "graph": await _collect_graph(service),
         "synthesis": await _collect_synthesis(service),
+        "add_episode": await _collect_add_episode(service),
     }
 
 
@@ -121,6 +126,32 @@ async def _collect_synthesis(service: PratyabhijnaService) -> dict:
         "subject_delta_count": subject_delta_count,
         "new_episodes_count": new_episodes_count,
     }
+
+
+_EMPTY_ADD_EPISODE = {
+    "count": 0,
+    "mean_latency_ms": None,
+    "mean_llm_calls": None,
+    "mean_embed_batches": None,
+}
+
+
+async def _collect_add_episode(service: PratyabhijnaService) -> dict:
+    """Rolling 24h add_episode telemetry.
+
+    Reads the snapshot in a worker thread (it does SQLite I/O) so a
+    status() call doesn't block the event loop. Returns the empty
+    snapshot on a service without the stats attribute (older variants)
+    or if the read fails — status never raises.
+    """
+    stats = getattr(service, "add_episode_stats", None)
+    if stats is None:
+        return dict(_EMPTY_ADD_EPISODE)
+    try:
+        return await asyncio.to_thread(stats.snapshot)
+    except Exception:  # noqa: BLE001 — status should never raise
+        _log.warning("collect_add_episode failed", exc_info=True)
+        return dict(_EMPTY_ADD_EPISODE)
 
 
 async def _safe(coro_fn, default=None):

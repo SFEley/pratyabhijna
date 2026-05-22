@@ -523,34 +523,20 @@ class AgentTools:
             raise ToolError(f"not a regular file: {path}")
         content = abs_path.read_text(encoding="utf-8")
         from graphiti_core.nodes import EpisodeType  # local import to avoid top-level dep at schema time
+        from pratyabhijna.add_episode import add_episode as in_house_add_episode
 
-        if self.service.config.add_episode.use_in_house:
-            from pratyabhijna.add_episode import add_episode as in_house_add_episode
-            result = await in_house_add_episode(
-                self.service,
-                name=path,
-                episode_body=content,
-                source=EpisodeType.text,
-                source_description=f"Ingested from subject repo: {path}",
-                reference_time=datetime.now(timezone.utc),
-                group_id=self.service.config.subject_name,
-                saga=saga,
-                saga_previous_episode_uuid=saga_previous_episode_uuid,
-            )
-            episode_uuid = result.episode_uuid
-        else:
-            result = await self.service._graphiti.add_episode(
-                name=path,
-                episode_body=content,
-                source=EpisodeType.text,
-                source_description=f"Ingested from subject repo: {path}",
-                reference_time=datetime.now(timezone.utc),
-                group_id=self.service.config.subject_name,
-                entity_types=self.service.entity_types,
-                saga=saga,
-                saga_previous_episode_uuid=saga_previous_episode_uuid,
-            )
-            episode_uuid = result.episode.uuid
+        result = await in_house_add_episode(
+            self.service,
+            name=path,
+            episode_body=content,
+            source=EpisodeType.text,
+            source_description=f"Ingested from subject repo: {path}",
+            reference_time=datetime.now(timezone.utc),
+            group_id=self.service.config.subject_name,
+            saga=saga,
+            saga_previous_episode_uuid=saga_previous_episode_uuid,
+        )
+        episode_uuid = result.episode_uuid
         bytes_ingested = len(content.encode("utf-8"))
         _log.info(
             "synthesis: ingested %s (%d bytes%s)",

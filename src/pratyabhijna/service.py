@@ -8,7 +8,9 @@ and graphiti-core.
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime
+from pathlib import Path
 
 from graphiti_core import Graphiti
 from graphiti_core.driver.neo4j_driver import Neo4jDriver
@@ -113,12 +115,112 @@ def _build_cross_encoder(config: PratyabhijnaConfig):
     raise ValueError(f"No cross-encoder available for provider: {emb.provider}")
 
 
+_EMPTY_SNAPSHOT = {
+    "count": 0,
+    "mean_latency_ms": None,
+    "mean_llm_calls": None,
+    "mean_embed_batches": None,
+}
+
+_ADD_EPISODE_SAMPLES_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS add_episode_samples (
+    recorded_at   REAL NOT NULL,
+    latency_ms    REAL NOT NULL,
+    llm_calls     INTEGER NOT NULL,
+    embed_batches INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ae_samples_recorded
+    ON add_episode_samples(recorded_at);
+"""
+
+
+class AddEpisodeStats:
+    """Rolling per-add_episode counters for the status() telemetry block.
+
+    Persisted to a table in the queue's SQLite file rather than process
+    memory, so the long-lived MCP server and the ``python -m pratyabhijna
+    status`` subcommand read the same window — same cross-process contract
+    the ``queue`` block already honors via ``collect_queue_stats``.
+
+    The window (default 24h) is enforced declaratively: ``snapshot`` only
+    aggregates rows newer than the cutoff, and ``record`` prunes older rows
+    so the table stays bounded. ``record`` adds one INSERT + a cheap indexed
+    DELETE to the pipeline hot path, negligible against the LLM/embed work.
+    """
+
+    def __init__(self, db_path: str, window_seconds: float = 24 * 3600) -> None:
+        self.db_path = db_path
+        self.window_seconds = window_seconds
+
+    def record(
+        self,
+        *,
+        latency_ms: float,
+        llm_calls: int,
+        embed_batches: int,
+    ) -> None:
+        import sqlite3
+
+        now = time.time()
+        cutoff = now - self.window_seconds
+        with sqlite3.connect(self.db_path, timeout=5.0) as conn:
+            conn.executescript(_ADD_EPISODE_SAMPLES_SCHEMA)
+            conn.execute(
+                "INSERT INTO add_episode_samples "
+                "(recorded_at, latency_ms, llm_calls, embed_batches) "
+                "VALUES (?, ?, ?, ?)",
+                (now, latency_ms, llm_calls, embed_batches),
+            )
+            conn.execute(
+                "DELETE FROM add_episode_samples WHERE recorded_at < ?", (cutoff,)
+            )
+
+    def snapshot(self) -> dict:
+        """Aggregate of the current window. Means are None when count == 0.
+
+        Reads stay read-only: if the db file or samples table doesn't
+        exist yet (no episode recorded in this deployment), returns the
+        empty snapshot rather than creating anything.
+        """
+        import sqlite3
+
+        if not Path(self.db_path).exists():
+            return dict(_EMPTY_SNAPSHOT)
+
+        cutoff = time.time() - self.window_seconds
+        with sqlite3.connect(self.db_path, timeout=5.0) as conn:
+            table = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='add_episode_samples'"
+            ).fetchone()
+            if table is None:
+                return dict(_EMPTY_SNAPSHOT)
+            count, mean_latency, mean_llm, mean_embed = conn.execute(
+                "SELECT COUNT(*), AVG(latency_ms), AVG(llm_calls), AVG(embed_batches) "
+                "FROM add_episode_samples WHERE recorded_at >= ?",
+                (cutoff,),
+            ).fetchone()
+
+        if count == 0:
+            return dict(_EMPTY_SNAPSHOT)
+        return {
+            "count": count,
+            "mean_latency_ms": mean_latency,
+            "mean_llm_calls": mean_llm,
+            "mean_embed_batches": mean_embed,
+        }
+
+
 class PratyabhijnaService:
     """Wraps graphiti-core client with Pratyabhijna-specific lifecycle."""
 
     def __init__(self, config: PratyabhijnaConfig):
         self.config = config
         self._graphiti = None
+        # Per-add_episode rolling counters, surfaced by status(). Backed by
+        # the queue's SQLite file so the CLI status path sees the same window
+        # as the live server.
+        self.add_episode_stats = AddEpisodeStats(db_path=config.queue.db_path)
 
     async def start(self):
         """Initialize the Graphiti client and connect to Neo4j."""

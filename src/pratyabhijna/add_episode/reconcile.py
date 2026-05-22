@@ -79,7 +79,9 @@ async def fetch_node_candidates(
     """Per-extracted-node candidate sets, unioned from name + embedding sources.
 
     Returns a list indexed by extracted-node idx; each entry is a list of
-    candidate dicts (uuid, name, summary, attributes, labels) deduped by uuid.
+    candidate dicts (uuid, name, summary, labels) deduped by uuid. Entity
+    attributes are flattened onto nodes (not a dict property) and the
+    reconcile prompt keys off name/labels/summary, so they're not fetched.
     """
     name_results = await _name_similar_candidates(driver, group_id, extracted, k=k)
     embed_results = await _embedding_similar_node_candidates(
@@ -116,8 +118,7 @@ async def _name_similar_candidates(
             WHERE toLower(n.name) = toLower($exact)
                OR toLower(n.name) CONTAINS toLower($substr)
             RETURN n.uuid AS uuid, n.name AS name,
-                   n.summary AS summary, n.attributes AS attributes,
-                   labels(n) AS labels
+                   n.summary AS summary, labels(n) AS labels
             LIMIT $k
             """,
             group_id=group_id,
@@ -154,8 +155,7 @@ async def _embedding_similar_node_candidates(
             WITH n, vector.similarity.cosine(n.name_embedding, $emb) AS score
             WHERE score > $min_score
             RETURN n.uuid AS uuid, n.name AS name,
-                   n.summary AS summary, n.attributes AS attributes,
-                   labels(n) AS labels, score
+                   n.summary AS summary, labels(n) AS labels, score
             ORDER BY score DESC
             LIMIT $k
             """,

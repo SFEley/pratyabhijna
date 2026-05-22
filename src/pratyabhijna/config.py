@@ -112,11 +112,11 @@ class SynthesisConfig(BaseModel):
 
 
 class AddEpisodeConfig(BaseModel):
-    # Feature flag for the in-house add_episode pipeline. False routes
-    # remember/correct/synthesis_agent.ingest_file through graphiti.add_episode
-    # (the original path). True routes them through pratyabhijna.add_episode.
-    # Default False during PR-1 land; flipped True in PR-2.
-    use_in_house: bool = False
+    # Deprecated since 0.20.0. The in-house pipeline is now the only path;
+    # callers no longer read this flag. Kept on the schema so YAML configs
+    # that still mention it don't blow up validation; remove in a future
+    # minor after one release cycle.
+    use_in_house: bool = True
     # K for candidate fetching (per extracted node and per extracted edge).
     candidate_k: int = 5
     # Number of previous episodes included as prompt context in Stage 2.
