@@ -406,12 +406,22 @@ class TestStatusAddEpisodeBlock:
         from pratyabhijna.service import AddEpisodeStats
         from pratyabhijna.tools.status import status
 
-        # Tiny window so the eviction is immediate.
-        stats = AddEpisodeStats(db_path=str(tmp_path / "stats.db"), window_seconds=0.01)
-        stats.record(latency_ms=100.0, llm_calls=3, embed_batches=1)
+        import sqlite3
         import time
-        time.sleep(0.05)
+
+        db_path = str(tmp_path / "stats.db")
+        stats = AddEpisodeStats(db_path=db_path, window_seconds=60.0)
+        stats.record(latency_ms=100.0, llm_calls=3, embed_batches=1)
         stats.record(latency_ms=200.0, llm_calls=1, embed_batches=2)
+
+        # Backdate the first sample past the cutoff rather than sleeping out a
+        # real window — a tiny window races the read path on slow machines.
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE add_episode_samples SET recorded_at = ? "
+                "WHERE latency_ms = 100.0",
+                (time.time() - 120.0,),
+            )
 
         service = _make_service()
         service.add_episode_stats = stats

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pratyabhijna"
-version = "0.20.2"
+version = "0.20.3"
 description = "Pratyabhijna memory system — MCP server for persistent semantic memory"
 requires-python = ">=3.10,<4"
 dependencies = [
@@ -12,7 +12,7 @@ dependencies = [
     "graphiti-core[anthropic]>=0.28.2,<0.29",
     "neo4j>=5.26.0",
     "voyageai>=0.2.3",
-    "mcp>=1.9.4",
+    "mcp>=1.9.4,<2",
     "pydantic-settings>=2.0",
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
