@@ -49,10 +49,10 @@ Walk through what's worth a future you knowing about and `remember()` it if it i
 - **Languages:** Python
 - **Hardware:** MacBook Air, 8 GB RAM
 - **Python version:** 3.14 (matches prod, currently 3.14.4). The old 3.13 pin existed because 3.14 had no Kuzu wheels; Kuzu was removed in the Neo4j migration, so the pin no longer applies. `requires-python = ">=3.10,<4"`. Venv at `.venv/` (uv-managed interpreter, decoupled from Homebrew).
-- Phases 1-4 complete (199 mock + 13 live tests). Entity types finalized (9 types). PratyabhijnaService running with Anthropic/Voyage/Neo4j stack. Phase 5 (identity synthesis) in design review.
+- All build phases complete (~1,000 tests, mock + live modes). Entity types finalized (10 types). Live in production at `https://vesper.you/mcp` (Hetzner VPS, Caddy, systemd, OAuth 2.1); deploy via `make deploy`.
 - Provider stack: Anthropic (claude-sonnet-4-6) for LLM, Voyage AI (voyage-4) for embeddings and reranking. No OpenAI — Serah's strong preference.
 - Per-environment config: `config/{dev,test,prod}.yaml` + `.env.{env}` for secrets. `PRATYABHIJNA_ENV` selects environment.
 - Test modes: default (mocked) and `--live` (real services). Both passing.
-- Seven tools: `remember`, `correct`, `recall`, `context`, `history`, `inspect`, `status`.
-- All writes async (queue and return immediately, background workers process).
-- Identity synthesis as notes on Vesper's Person node, rebuilt when stale beyond thresholds.
+- Eleven tools: `bootstrap`, `remember`, `correct`, `recall`, `query`, `history`, `inspect`, `communities`, `status`, `read_tier`, `read_chronicle_range`.
+- All writes async (queue and return immediately, background workers process). In-house `add_episode` extraction pipeline (replaced graphiti's; SQLite-backed telemetry in `status()`).
+- Identity synthesis: file-backed tiers in the subject repo; context layer (THREADS/CHRONICLE/USER) rebuilt directly, protected layer (SOUL/IDENTITY) via proposals on `synth/draft`.

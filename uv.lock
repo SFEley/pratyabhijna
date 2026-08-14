@@ -1644,7 +1644,7 @@ wheels = [
 
 [[package]]
 name = "pratyabhijna"
-version = "0.20.1"
+version = "0.20.3"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -1667,7 +1667,7 @@ dev = [
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "graphiti-core", extras = ["anthropic"], specifier = ">=0.28.2,<0.29" },
-    { name = "mcp", specifier = ">=1.9.4" },
+    { name = "mcp", specifier = ">=1.9.4,<2" },
     { name = "neo4j", specifier = ">=5.26.0" },
     { name = "pydantic-settings", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },

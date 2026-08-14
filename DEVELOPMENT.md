@@ -8,7 +8,7 @@ For architecture, see [`doc/architecture.md`](doc/architecture.md). For the impl
 
 ## Prerequisites
 
-- **Python 3.13.** (3.14 has no Kuzu wheels; 3.13 is the target.)
+- **Python 3.14.** (The old 3.13 pin existed because 3.14 had no Kuzu wheels; Kuzu was removed in the Neo4j migration. `requires-python = ">=3.10,<4"` — prod runs 3.14.)
 - **Neo4j** running locally. The easiest option on macOS is [Neo4j Desktop](https://neo4j.com/download/). Dev config expects `neo4j://127.0.0.1:7687`.
 - **API accounts:** Anthropic (for LLM) and Voyage AI (for embeddings/reranking).
 - **A subject repo.** Pratyabhijna reads identity files from a configured git repo path (default: `~/vesper`). The repo should contain `memory/SOUL.md`, `memory/IDENTITY.md`, `memory/USER.md`, `memory/THREADS.md`, `memory/CHRONICLE.md`. See `doc/architecture.md` for what each file holds.
@@ -20,19 +20,15 @@ For architecture, see [`doc/architecture.md`](doc/architecture.md). For the impl
 ### 1. Create a virtual environment
 
 ```bash
-python3.13 -m venv .venv
+uv venv --python 3.14
 ```
 
-Python's venv on macOS omits pip by default. Bootstrap it explicitly:
-
-```bash
-.venv/bin/python3.13 -m ensurepip --upgrade
-```
+The venv uses a [uv](https://docs.astral.sh/uv/)-managed interpreter, decoupled from Homebrew — a `brew upgrade` can't break it.
 
 ### 2. Install the package and dev dependencies
 
 ```bash
-.venv/bin/python3.13 -m pip install -e ".[dev]"
+uv pip install -e ".[dev]"
 ```
 
 This installs `pratyabhijna` in editable mode plus `pytest` and `pytest-asyncio`.
@@ -70,7 +66,7 @@ mkdir -p data logs
 The knowledge graph needs a Person node representing the subject before any tool can return identity data:
 
 ```bash
-PRATYABHIJNA_ENV=dev .venv/bin/python3.13 -m pratyabhijna seed
+PRATYABHIJNA_ENV=dev .venv/bin/python -m pratyabhijna seed
 ```
 
 This creates the node (or is a no-op if it already exists). Re-running is safe.
@@ -86,7 +82,7 @@ The repo includes `.mcp.json` at the root. Claude Code picks it up automatically
 To run manually:
 
 ```bash
-PRATYABHIJNA_ENV=dev .venv/bin/python3.13 -m pratyabhijna
+PRATYABHIJNA_ENV=dev .venv/bin/python -m pratyabhijna
 ```
 
 ### Connecting from all Claude Code sessions (user-level)
@@ -97,7 +93,7 @@ To make the server available in every Claude Code session regardless of working 
 {
   "mcpServers": {
     "Pratyabhijna": {
-      "command": "/path/to/pratyabhijna/.venv/bin/python3.13",
+      "command": "/path/to/pratyabhijna/.venv/bin/python",
       "args": ["-m", "pratyabhijna"],
       "cwd": "/path/to/pratyabhijna",
       "env": { "PRATYABHIJNA_ENV": "dev" }
@@ -123,7 +119,7 @@ Production runs on a VPS behind Caddy (auto-TLS). See `doc/architecture.md` for 
 All external dependencies (Neo4j, Anthropic, Voyage AI) are mocked. Runs fast, no network required.
 
 ```bash
-.venv/bin/python3.13 -m pytest
+.venv/bin/python -m pytest
 ```
 
 ### Live mode
@@ -131,7 +127,7 @@ All external dependencies (Neo4j, Anthropic, Voyage AI) are mocked. Runs fast, n
 Runs against real services. Requires Neo4j running and all API keys set in `.env.test`.
 
 ```bash
-.venv/bin/python3.13 -m pytest --live
+.venv/bin/python -m pytest --live
 ```
 
 Live tests write to and read from the test Neo4j database. They clear the graph before running.
